@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'accounts',
     'listings',
     'viewings',
@@ -207,6 +208,14 @@ MIDDLEWARE = [
     # to intercept static file requests early, before session/auth
     # middleware does unrelated work on a request that's just asking
     # for a CSS file
+    'corsheaders.middleware.CorsMiddleware',
+    # Must come BEFORE CommonMiddleware (django-cors-headers' own docs
+    # require this exact ordering) — CORS is fundamentally about
+    # deciding whether to add specific response HEADERS
+    # (Access-Control-Allow-Origin, etc.) telling the BROWSER "yes, this
+    # other origin is allowed to read this response." It needs to run
+    # early enough to attach those headers to every response, including
+    # ones later middleware might otherwise short-circuit
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -214,6 +223,27 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:3000',
+    cast=lambda v: [origin.strip() for origin in v.split(',')],
+)
+# The actual ALLOW-LIST — every origin (protocol + domain + port,
+# EXACTLY, e.g. "https://paddy.com", not just "paddy.com") that's
+# permitted to make cross-origin requests to this API and have the
+# browser actually let the frontend JavaScript read the response.
+# Defaults to the local Next.js dev server's default port for local
+# dev. In production, this needs your REAL deployed frontend domain —
+# set via .env, not hardcoded here, same reasoning as ALLOWED_HOSTS
+# above: differs per environment without needing a code change
+#
+# Deliberately an ALLOW-LIST, never CORS_ALLOW_ALL_ORIGINS=True — that
+# setting exists in django-cors-headers but would let ANY website on
+# the internet read responses from this API on behalf of a logged-in
+# user's browser, which defeats the entire purpose of CORS as a
+# security boundary. An API serving real user data (subscriptions,
+# viewing requests, contact info) should never use it
 
 ROOT_URLCONF = 'config.urls'
 

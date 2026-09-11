@@ -16,6 +16,7 @@ pillow = "*"
 django-anymail = {extras = ["resend"], version = "*"}
 gunicorn = "*"
 whitenoise = "*"
+django-cors-headers = "*"
 
 [dev-packages]
 
