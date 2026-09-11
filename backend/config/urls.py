@@ -15,8 +15,21 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('accounts/', include('accounts.urls')),
+    path('listings/', include('listings.urls')),
+    path('viewings/', include('viewings.urls')),
+    path('payments/', include('payments.urls'))
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    # Only in DEBUG (local dev) — production serves media differently
+    # (via Cloudflare R2 directly, per your AGENTS.md), this line is
+    # purely a local-dev convenience so uploaded images are actually
+    # viewable through the dev server

@@ -11,6 +11,20 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+from decouple import config
+
+import os
+
+if os.name == 'nt':
+    OSGEO4W = r'C:\Users\g\AppData\Local\Programs\OSGeo4W'
+    os.environ['OSGEO4W_ROOT'] = OSGEO4W
+    os.environ['GDAL_DATA'] = OSGEO4W + r'\share\gdal'
+    os.environ['PROJ_LIB'] = OSGEO4W + r'\share\proj'
+    os.environ['PATH'] = OSGEO4W + r'\bin;' + os.environ['PATH']
+
+    GDAL_LIBRARY_PATH = OSGEO4W + r'\bin\gdal313.dll'
+    GEOS_LIBRARY_PATH = OSGEO4W + r'\bin\geos_c.dll'
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -31,13 +45,78 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'unfold',
+    'anymail',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'accounts',
+    'listings',
+    'viewings',
+    'payments',
+    'rest_framework',
+    'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
+    'django.contrib.gis'
 ]
+
+REST_FRAMEWORK = {
+    # Global DRF settings — a dict DRF looks for by this exact name
+
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    # Tells DRF: on every incoming request, check for a JWT in the
+    # Authorization header, and if valid, treat it as identifying the user.
+    # Without this, DRF wouldn't know JWTs exist at all — SimpleJWT is
+    # installed, but not yet "plugged in" as the actual auth method
+}
+
+
+AUTH_USER_MODEL = 'accounts.User'
+
+EMAIL_BACKEND = "anymail.backends.resend.EmailBackend"
+ANYMAIL = {
+    "RESEND_API_KEY": config("RESEND_API_KEY"),
+    # config(...) — same decouple pattern as PAYSTACK_SECRET_KEY/
+    # GOOGLE_CLIENT_ID, reads from .env correctly. The previous
+    # os.environ.get(...) silently returned None here, since
+    # os.environ only sees REAL OS/shell env vars — python-decouple's
+    # .env-file loading is a separate mechanism that os.environ.get()
+    # never taps into on its own
+}
+DEFAULT_FROM_EMAIL = "hello@thegeneralyst.com"
+# Local dev only — prints the email content to your terminal instead of
+# actually sending it. We'll swap this for a real email service
+# (e.g. SendGrid, AWS SES) once we're closer to production
+
+MEDIA_URL = 'media/'
+
+PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY')
+# config(...) — same decouple pattern as GOOGLE_CLIENT_ID, reads the
+# real key out of .env, never hardcoded here. This is the KEY every
+# payments/views.py Paystack API call will authenticate with — same
+# "one central setting" idea as EMAIL_BACKEND, just for Paystack instead
+
+PAYSTACK_PLAN_CODE = config('PAYSTACK_PLAN_CODE', default='')
+# LEGACY — superseded by the two tier-specific codes below once 3-tier
+# pricing was decided. Left in place for now rather than removed, in
+# case anything still references it; safe to delete once confirmed unused
+
+PAYSTACK_AGENT_PLAN_CODE = config('PAYSTACK_AGENT_PLAN_CODE', default='')
+PAYSTACK_LORD_PLAN_CODE = config('PAYSTACK_LORD_PLAN_CODE', default='')
+# One real Paystack Plan per PAID tier (GHS 250/mo and GHS 1,000/mo
+# respectively, created via a one-off API call, not through the
+# dashboard — Paystack's dashboard doesn't have an obvious standalone
+# "Plans" page, it's buried under Payment Pages). The FREE tier
+# deliberately has no plan code at all — no Paystack interaction
+# happens for a landlord who never exceeds their free listing
+MEDIA_ROOT = BASE_DIR / 'media'
+
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -74,8 +153,12 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST'),
+        'PORT': config('DB_PORT'),
     }
 }
 
@@ -115,6 +198,16 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+# NEW — this is the actual filesystem folder collectstatic will copy
+# everything into. BASE_DIR is already defined at the top of settings.py
+# (it's your project root), so this creates a folder called
+# "staticfiles" right alongside manage.py
+
+# STATIC_URL = where browsers ask for static files (a URL)
+# STATIC_ROOT = where Django actually stores them on disk (a folder path)
+# Two different things, easy to conflate since they're both "static"-named
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

@@ -5,6 +5,15 @@ name = "pypi"
 
 [packages]
 django = "*"
+psycopg2-binary = "*"
+python-decouple = "*"
+djangorestframework = "*"
+google-auth = "*"
+requests = "*"
+djangorestframework-simplejwt = {extras = ["blacklist"], version = "*"}
+django-unfold = "*"
+pillow = "*"
+django-anymail = {extras = ["resend"], version = "*"}
 
 [dev-packages]
 

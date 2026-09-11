@@ -1,0 +1,119 @@
+name: Backend CI
+
+# Runs on every push to a pull request targeting main, and on pushes
+# directly to main (e.g. after a PR merges) — this is what actually
+# gates merging once branch protection is turned on: GitHub won't allow
+# a PR to merge until this workflow reports success
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # A real PostGIS-enabled Postgres, running as a "service container"
+    # alongside the job — this matters because our tests genuinely use
+    # GeoDjango (PointField, Polygon.from_bbox, __within lookups), which
+    # plain Postgres or SQLite cannot do at all. postgis/postgis is the
+    # official image with PostGIS pre-installed on top of Postgres
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: paddy_test
+          POSTGRES_USER: paddy
+          POSTGRES_PASSWORD: paddy
+        ports:
+          - 5432:5432
+        # healthcheck — waits for Postgres to actually be ready to
+        # accept connections before the job continues, rather than
+        # racing ahead and failing on a database that hasn't started yet
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+        # Same reasoning as the pipenv gotcha we hit locally — every
+        # command in this job needs to run FROM backend/, since that's
+        # where Pipfile/manage.py live
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+        # actions/checkout — a pre-built GitHub Action that clones this
+        # exact commit into the runner. Every workflow needs this as its
+        # first step, or there's no code to test at all
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          # Matches the Python version already pinned in Pipfile's
+          # [requires] section locally
+
+      - name: Install GDAL (system dependency, same as OSGeo4W did locally)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev
+        # GDAL is a C library, not a pip package — same reason it
+        # needed OSGeo4W on Windows locally. On Ubuntu (what GitHub
+        # Actions runners use), apt-get is the equivalent system-level
+        # install. This is the ONE piece of the Windows GDAL setup that
+        # has a direct Linux equivalent — no GDAL_LIBRARY_PATH/
+        # GEOS_LIBRARY_PATH env var hacks needed here, since apt installs
+        # it to a standard system location GeoDjango finds automatically
+
+      - name: Install pipenv
+        run: pip install pipenv
+
+      - name: Install Python dependencies
+        run: pipenv install --dev --deploy
+        # --deploy — fails the build if Pipfile.lock is out of sync with
+        # Pipfile, rather than silently regenerating it. This is a real
+        # safety net: catches "someone edited Pipfile but forgot to run
+        # pipenv lock" before it becomes a mystery failure later
+
+      - name: Run Django system checks
+        run: pipenv run python manage.py check
+        env:
+          # Every setting read via decouple.config(...) in settings.py
+          # needs a real value here, since there's no .env file on the
+          # CI runner at all — GitHub Actions env vars are how we supply
+          # these instead. Values here are TEST-ONLY placeholders/dummies
+          # except where a real test-mode key is genuinely needed
+          DB_NAME: paddy_test
+          DB_USER: paddy
+          DB_PASSWORD: paddy
+          DB_HOST: localhost
+          DB_PORT: 5432
+          GOOGLE_CLIENT_ID: 'dummy-for-ci'
+          PAYSTACK_SECRET_KEY: 'sk_test_dummy_for_ci'
+          PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
+          PAYSTACK_LORD_PLAN_CODE: 'PLN_dummy'
+          RESEND_API_KEY: 'dummy-for-ci'
+          # Real values (GOOGLE_CLIENT_ID etc.) are never needed here —
+          # CI doesn't make real external API calls to Google/Paystack/
+          # Resend, it only needs these settings to not crash at import
+          # time. GitHub Secrets (Settings > Secrets > Actions) would be
+          # the right place for anything that DID need to be real
+
+      - name: Run test suite
+        run: pipenv run python manage.py test
+        env:
+          DB_NAME: paddy_test
+          DB_USER: paddy
+          DB_PASSWORD: paddy
+          DB_HOST: localhost
+          DB_PORT: 5432
+          GOOGLE_CLIENT_ID: 'dummy-for-ci'
+          PAYSTACK_SECRET_KEY: 'sk_test_dummy_for_ci'
+          PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
+          PAYSTACK_LORD_PLAN_CODE: 'PLN_dummy'
+          RESEND_API_KEY: 'dummy-for-ci'
