@@ -595,3 +595,203 @@ class ListingMapBoundsTests(APITestCase):
         # Inside the box geographically, but wrong bedroom count —
         # correctly excluded, proving both filters are genuinely
         # combined with AND, not just the box filter alone deciding
+
+
+class ListingUnlockGatingTests(APITestCase):
+    # Covers _has_access on ListingSerializer — the actual security
+    # boundary for the "pay per listing" feature. Every test here
+    # checks the RAW response data for address_precise/landlord_contact
+    # directly, not just a status code, since the whole point of this
+    # feature is exactly WHAT gets included in the response body
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='unlocklandlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Unlock Landlord',
+            national_id_number='GHA-777', momo_or_bank_details='0557777777'
+        )
+        self.landlord_user.phone = '0207654321'
+        self.landlord_user.save()
+        # Giving this landlord a real phone number specifically so we
+        # can assert the UNLOCKED case genuinely returns it, not just
+        # that the LOCKED case hides an empty string (which would be a
+        # much weaker, less convincing test)
+
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Gated listing', description='Test', listing_type='rent',
+            price_monthly='2000.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='42 Secret Ave',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        self.renter_user = User.objects.create_user(
+            email='unlockrenter@example.com', password='pass123456'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Renter')
+
+        self.other_landlord_user = User.objects.create_user(
+            email='otherlandlord@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=self.other_landlord_user, full_name='Other Landlord',
+            national_id_number='GHA-666', momo_or_bank_details='0556666666'
+        )
+        # A SECOND, unrelated landlord — used to prove landlords don't
+        # get a blanket free pass on EVERY listing just for having the
+        # landlord role, only their OWN listings or via an active
+        # subscription
+
+        self.staff_user = User.objects.create_user(
+            email='unlockstaff@example.com', password='pass123456', role='staff'
+        )
+
+    def test_renter_without_payment_sees_locked_details(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertIsNone(response.data['address_precise'])
+        self.assertIsNone(response.data['landlord_contact'])
+        self.assertFalse(response.data['is_unlocked'])
+        # The actual security check — not just a locked-looking flag,
+        # but confirming the REAL address text and contact dict never
+        # made it into the response body at all
+
+    def test_owner_landlord_sees_own_listing_unlocked(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.data['address_precise'], '42 Secret Ave')
+        self.assertEqual(response.data['landlord_contact']['phone'], '0207654321')
+        self.assertTrue(response.data['is_unlocked'])
+
+    def test_other_landlord_without_subscription_sees_locked_details(self):
+        # THE key negative case for this feature's actual product
+        # decision — a landlord role alone is NOT a free pass on
+        # someone ELSE's listing, only an ACTIVE subscription is
+
+        self.client.force_authenticate(user=self.other_landlord_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertIsNone(response.data['address_precise'])
+        self.assertIsNone(response.data['landlord_contact'])
+        self.assertFalse(response.data['is_unlocked'])
+
+    def test_landlord_with_active_subscription_sees_unlocked(self):
+        from payments.models import LandlordSubscription
+        from django.utils import timezone
+        from datetime import timedelta
+
+        LandlordSubscription.objects.create(
+            landlord_profile=self.other_landlord_user.landlordprofile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.ACTIVE,
+            current_period_end=timezone.now() + timedelta(days=20),
+        )
+
+        self.client.force_authenticate(user=self.other_landlord_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.data['address_precise'], '42 Secret Ave')
+        self.assertTrue(response.data['is_unlocked'])
+        # An ACTIVE paid subscription is a genuine platform-wide perk —
+        # unlocks OTHER landlords' listings too, not just raising their
+        # own listing cap
+
+    def test_landlord_with_expired_subscription_stays_locked(self):
+        from payments.models import LandlordSubscription
+        from django.utils import timezone
+        from datetime import timedelta
+
+        LandlordSubscription.objects.create(
+            landlord_profile=self.other_landlord_user.landlordprofile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.ACTIVE,
+            current_period_end=timezone.now() - timedelta(days=1),
+            # Expired
+        )
+
+        self.client.force_authenticate(user=self.other_landlord_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertIsNone(response.data['address_precise'])
+        self.assertFalse(response.data['is_unlocked'])
+
+    def test_staff_always_sees_unlocked(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.data['address_precise'], '42 Secret Ave')
+        self.assertTrue(response.data['is_unlocked'])
+
+    def test_renter_who_paid_sees_unlocked(self):
+        from payments.models import ListingUnlock
+
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        # Simulates what the webhook does on a confirmed charge.success —
+        # we're testing the GATING logic here, not the Paystack
+        # round-trip itself, so creating the row directly is correct
+
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.data['address_precise'], '42 Secret Ave')
+        self.assertEqual(response.data['landlord_contact']['phone'], '0207654321')
+        self.assertTrue(response.data['is_unlocked'])
+
+    def test_unlock_is_per_listing_not_platform_wide(self):
+        # THE test proving this is genuinely pay-PER-LISTING, not a
+        # platform-wide pass — a real risk if _has_access were ever
+        # accidentally written to check "has this user unlocked ANY
+        # listing" instead of "has this user unlocked THIS listing"
+
+        from payments.models import ListingUnlock
+
+        other_listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='A different listing', description='Test', listing_type='rent',
+            price_monthly='1500.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='99 Other Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        # Paid to unlock ONLY self.listing, not other_listing
+
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{other_listing.id}/')
+
+        self.assertIsNone(response.data['address_precise'])
+        self.assertFalse(response.data['is_unlocked'])
+        # The unlock for a DIFFERENT listing must not leak access here
+
+    def test_map_pin_stays_visible_when_locked(self):
+        # Per the explicit product decision: the lat/long point (used
+        # for the Discovery Hub map) is NOT part of the paywall — only
+        # address_precise (the text address) and landlord contact are
+        # gated. Confirms `location` is never touched by _has_access at
+        # all, since it's excluded from the gating logic entirely
+
+        from django.contrib.gis.geos import Point
+
+        self.listing.location = Point(-0.18, 5.60)
+        self.listing.save()
+
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertIsNone(response.data['address_precise'])
+        self.assertFalse(response.data['is_unlocked'])
+        self.assertIsNotNone(response.data['location'])
+        # Locked on address/contact, but the map pin is still there

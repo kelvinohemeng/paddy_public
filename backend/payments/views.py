@@ -16,7 +16,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 
 from accounts.models import User
-from .models import LandlordSubscription
+from .models import LandlordSubscription, ListingUnlock
 from .serializers import LandlordSubscriptionSerializer
 from . import paystack
 
@@ -75,8 +75,8 @@ def initiate_subscription(request):
         # should match the real plan price; Paystack's plan param
         # OVERRIDES whatever amount we send anyway, per their docs, so
         # this value mostly just needs to be a valid positive number
-        plan_code=plan_code,
         callback_url=request.data.get('callback_url', ''),
+        plan_code=plan_code,
     )
 
     if not result.get('status'):
@@ -123,6 +123,76 @@ def my_subscription(request):
         })
 
     return Response(LandlordSubscriptionSerializer(subscription).data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
+def initiate_listing_unlock(request):
+    # ANY authenticated user hits this — renter, or a landlord without
+    # an active subscription browsing someone else's listing. Unlike
+    # initiate_subscription, there's no role check here at all: the
+    # actual "who needs to pay" decision already happened inside
+    # ListingSerializer._has_access — if someone reaches this endpoint
+    # for a listing they already have free access to, that's harmless
+    # (they'd just be paying for something they didn't need to), not a
+    # security problem worth blocking here
+
+    from listings.models import Listing
+    # Imported here, not at the top — same circular-import avoidance
+    # reasoning as ListingUnlock.listing being a string reference:
+    # listings/views.py already imports FROM payments, so payments
+    # importing FROM listings at module load time would create a loop
+
+    listing_id = request.data.get('listing_id')
+
+    try:
+        listing = Listing.objects.get(id=listing_id)
+    except Listing.DoesNotExist:
+        return Response({'error': 'Listing not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if ListingUnlock.objects.filter(user=request.user, listing=listing).exists():
+        return Response(
+            {'error': 'You have already unlocked this listing'}, status=status.HTTP_400_BAD_REQUEST
+        )
+        # Guard against paying twice for the same listing — cheap check
+        # here saves the user from an avoidable duplicate charge; the
+        # database's unique_together constraint is the REAL backstop
+        # (see ListingUnlock.Meta) in case this check and the webhook
+        # ever raced each other, but failing fast here is better UX
+
+    result = paystack.initialize_transaction(
+        email=request.user.email,
+        amount_kobo=settings.LISTING_UNLOCK_PRICE_PESEWAS,
+        # From OUR settings, never request.data — see the comment on
+        # LISTING_UNLOCK_PRICE_PESEWAS in settings.py for why this one
+        # specifically can't be trusted from the frontend the way
+        # initiate_subscription's amount_kobo safely can be
+
+        callback_url=request.data.get('callback_url', ''),
+        metadata={
+            'purpose': 'listing_unlock',
+            'listing_id': listing.id,
+            'user_id': request.user.id,
+        },
+        # This is how paystack_webhook will know WHICH listing this
+        # charge was for, once Paystack confirms it — see charge.success
+        # handling below. user_id is included too, even though the
+        # webhook could also look the user up by email like the
+        # subscription flow does — being explicit here means the
+        # webhook doesn't need to assume request.user.email at
+        # payment-time still matches their email later (e.g. if they
+        # changed it in between)
+    )
+
+    if not result.get('status'):
+        return Response({'error': result.get('message', 'Could not start payment')}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response(result['data'])
+
+initiate_listing_unlock.throttle_scope = 'payments'
+# Same reasoning as initiate_subscription — protects against a client
+# hammering this endpoint into repeatedly calling Paystack's real API
 
 
 def _verify_paystack_signature(request):
@@ -199,6 +269,56 @@ def paystack_webhook(request):
     elif event == 'charge.success':
         # Fires for BOTH the very first charge and every successful
         # renewal — the moment we actually know money genuinely moved
+
+        metadata = data.get('metadata') or {}
+        # metadata is OUR OWN data, round-tripped back to us unchanged —
+        # set by whichever initiate_* view started this specific charge.
+        # subscription charges never set metadata at all (see
+        # initiate_subscription — no metadata= argument passed there),
+        # so metadata.get('purpose') is None for those, which is exactly
+        # what lets us tell the two charge types apart below
+
+        if metadata.get('purpose') == 'listing_unlock':
+            # A one-off listing-unlock charge, NOT a subscription
+            # payment — handled completely separately below, never
+            # falls through to the subscription logic beneath this block
+
+            from listings.models import Listing
+            # Imported here, same circular-import reasoning as the
+            # initiate_listing_unlock view above
+
+            try:
+                user = User.objects.get(id=metadata.get('user_id'))
+                listing = Listing.objects.get(id=metadata.get('listing_id'))
+            except (User.DoesNotExist, Listing.DoesNotExist):
+                return Response(status=status.HTTP_200_OK)
+                # Same "still acknowledge with 200" reasoning as every
+                # other not-found case in this view — a malformed or
+                # stale metadata payload isn't something retrying will
+                # fix, so there's no point telling Paystack to resend it
+
+            ListingUnlock.objects.get_or_create(
+                user=user,
+                listing=listing,
+                defaults={'paystack_reference': data.get('reference', '')},
+            )
+            # get_or_create rather than a plain .create() — protects
+            # against a genuine edge case: Paystack CAN deliver the same
+            # webhook event more than once (their own docs say webhooks
+            # aren't guaranteed exactly-once). Without this, a duplicate
+            # delivery would try to INSERT a second row for the same
+            # user+listing pair, which the unique_together constraint on
+            # ListingUnlock.Meta would then reject with an IntegrityError
+            # — get_or_create instead just finds the existing row and
+            # does nothing further, so a duplicate webhook is a harmless
+            # no-op rather than a 500 error
+
+            return Response(status=status.HTTP_200_OK)
+            # Return here specifically — this charge has nothing to do
+            # with LandlordSubscription at all, so we deliberately don't
+            # let execution continue into the subscription-handling code
+            # directly below
+
         email = data.get('customer', {}).get('email')
 
         try:

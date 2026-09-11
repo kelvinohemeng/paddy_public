@@ -174,6 +174,20 @@ PAYSTACK_LORD_PLAN_CODE = config('PAYSTACK_LORD_PLAN_CODE', default='')
 # "Plans" page, it's buried under Payment Pages). The FREE tier
 # deliberately has no plan code at all — no Paystack interaction
 # happens for a landlord who never exceeds their free listing
+
+LISTING_UNLOCK_PRICE_PESEWAS = config('LISTING_UNLOCK_PRICE_PESEWAS', default=500, cast=int)
+# The price (in the smallest currency unit — pesewas for GHS, same
+# convention Paystack itself uses) to unlock ONE listing's protected
+# details. Deliberately a SETTINGS value, never trusted from the
+# frontend request — unlike initiate_subscription (where Paystack's own
+# plan_code overrides whatever amount we send, making the frontend's
+# number harmless either way), a one-off listing-unlock charge has NO
+# plan attached, so whatever amount we pass to Paystack is genuinely
+# what gets charged. If we trusted request.data here, a malicious
+# client could request amount_kobo=1 and unlock a listing for a
+# fraction of a pesewa. Price genuinely TBD (default GHS 5.00 here is a
+# placeholder) — change via .env, not by editing this file, so it can
+# be adjusted without a code deploy
 MEDIA_ROOT = BASE_DIR / 'media'
 
 
