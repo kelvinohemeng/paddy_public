@@ -21,6 +21,10 @@ agent must follow manually** until that's turned on.
 
 ## Multiple agents working in parallel
 
+For true simultaneous parallel agents (each agent physically isolated in
+its own folder, not just a branch), see `docs/multi-agent-workflow.md`
+for the full git worktree setup/cleanup steps.
+
 If several agents (Claude Code, etc.) are working on this repo at once:
 
 - **Each agent works on its own branch**, named after the feature/area
