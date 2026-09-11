@@ -5,7 +5,8 @@ from decouple import config
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, RenterProfile, LandlordProfile
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.request import Request
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
 from django.core.mail import send_mail
@@ -113,10 +114,12 @@ def me(request: Request) -> Response:
 # (signup is an action that CREATES something, so POST is the correct verb —
 # same REST convention you'd already follow in a Next.js API route)
 
-def register(request: Request) -> Response:
-    # request = the incoming HTTP request object, same concept as the
-    # `request` object in a Next.js route handler — holds the body, headers, etc.
+@throttle_classes([ScopedRateThrottle])
+# Overrides the global DEFAULT_THROTTLE_CLASSES for THIS view specifically
+# — register gets ONLY the scoped limit below, not the generic anon/user
+# ones on top of it (which would just add redundant, looser limits)
 
+def register(request: Request) -> Response:
     serializer = RegisterSerializer(data=request.data)
     # Hand the incoming request body to the Serializer we wrote.
     # data=... = "here's the raw data, please validate it against your rules"
@@ -148,7 +151,16 @@ def register(request: Request) -> Response:
     # (e.g. {"email": ["This field is required."]}) so the frontend can
     # show the right error message. 400 = the request itself was invalid.
 
+register.throttle_scope = 'register'
+# ScopedRateThrottle looks for a `throttle_scope` attribute on the view
+# function to know WHICH rate from DEFAULT_THROTTLE_RATES to apply —
+# matches the 'register': '5/min' entry in settings.py. Set ONCE here,
+# right after the function is defined (not inside the function body,
+# which would just re-set the same value on every single request —
+# harmless but wasteful and not the idiomatic pattern)
+
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 def google_login(request):
     # A new endpoint, same @api_view pattern as `register`
     token = request.data.get('token')
@@ -225,6 +237,11 @@ def google_login(request):
     # Same shape of response as normal login — the frontend doesn't need
     # to treat Google login any differently once it gets this back
 
+google_login.throttle_scope = 'login'
+# Same login-attempt abuse concern as password login — 'login' scope
+# (5/min) applies here too, since this is also fundamentally "someone
+# trying to authenticate," just via a different mechanism
+
 @api_view(['POST'])
 def logout(request):
     # Logout is a POST because it's an action that changes server state
@@ -292,6 +309,7 @@ def send_verification_email(user):
 
 
 @api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
 def verify_email(request: Request) -> Response:
     uid = request.data.get('uid')
     token = request.data.get('token')
@@ -316,3 +334,10 @@ def verify_email(request: Request) -> Response:
         return Response({'message': 'Email verified successfully'})
 
     return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
+
+verify_email.throttle_scope = 'sensitive'
+# A real user might legitimately click an old/already-used verification
+# link a couple of times by mistake — 'sensitive' (10/min) is a looser
+# limit than login/register, while still blocking automated abuse
+# attempts against this endpoint (e.g. trying to guess valid uid/token
+# combinations)

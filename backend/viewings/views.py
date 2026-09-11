@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.throttling import ScopedRateThrottle
 
 from datetime import timedelta
 # timedelta — Python's standard library tool for date/time MATH (adding
@@ -118,6 +119,31 @@ class ViewingViewSet(viewsets.ModelViewSet):
     # router level to just these four. Any PUT/PATCH/DELETE request to
     # /viewings/<id>/ will now get a clean 405 Method Not Allowed,
     # automatically, without us writing that check ourselves
+
+    def get_throttles(self):
+        # Unlike a plain @api_view function (which just gets ONE fixed
+        # throttle_scope for its entire body), a ViewSet handles MANY
+        # different actions (list, retrieve, create, plus our custom
+        # @actions) behind one class — so DRF calls this method fresh
+        # on every single request, letting us choose different
+        # throttling PER ACTION rather than one blanket rule for
+        # everything the class does
+
+        if self.action == 'create':
+            # self.action — DRF automatically sets this to a string
+            # naming whichever method is actually handling this request
+            # ('list', 'retrieve', 'create', 'assign_staff', etc.)
+
+            self.throttle_scope = 'viewing_request'
+            # Only booking a NEW viewing gets the strict 10/min limit —
+            # this is the actual abuse case worth guarding tightly
+            return [ScopedRateThrottle()]
+
+        return super().get_throttles()
+        # Every other action (list, retrieve, assign-staff, complete,
+        # cancel) falls back to the normal global throttle classes from
+        # DEFAULT_THROTTLE_CLASSES in settings.py (anon/user rates) —
+        # unchanged from before this method existed
 
     def get_queryset(self):
         user = self.request.user

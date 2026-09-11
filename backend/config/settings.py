@@ -34,10 +34,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-removed-from-history)p%m=ll+x@-dsi^py6'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False)
 
 ALLOWED_HOSTS = []
 
@@ -73,6 +73,66 @@ REST_FRAMEWORK = {
     # Authorization header, and if valid, treat it as identifying the user.
     # Without this, DRF wouldn't know JWTs exist at all — SimpleJWT is
     # installed, but not yet "plugged in" as the actual auth method
+
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    # Applied to EVERY view by default, unless a specific view overrides
+    # throttle_classes itself. AnonRateThrottle tracks by IP address (for
+    # requests with no logged-in user), UserRateThrottle tracks by user
+    # ID (once authenticated) — different buckets, so a logged-in user
+    # isn't sharing their rate limit with anonymous traffic from the
+    # same IP (e.g. behind a shared office/mobile network NAT)
+
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '30/min',
+        'user': '120/min',
+        # Baseline limits for ordinary browsing/API use — generous
+        # enough that a real user scrolling Discovery Hub or a
+        # landlord managing listings never notices them
+
+        'login': '5/min',
+        'register': '5/min',
+        # Deliberately MUCH stricter — these are the exact endpoints a
+        # brute-force/credential-stuffing attack or a spam-signup bot
+        # would hammer. 5/min per IP makes that kind of automated abuse
+        # genuinely slow and impractical, while still being generous
+        # enough that a real person mistyping their password twice
+        # never gets blocked
+
+        'sensitive': '10/min',
+        # For verify-email and similar token-based flows — not as
+        # tightly limited as login/register (a real user might
+        # reasonably retry a broken verification link), but still
+        # meaningfully throttled against abuse
+
+        'payments': '10/min',
+        # initiate_subscription proxies to Paystack's API — throttling
+        # this protects against a bug or malicious client hammering
+        # OUR server into hammering Paystack's, which could trigger
+        # Paystack's own abuse detection against our account
+
+        'webhook': '100/min',
+        # Deliberately generous — this endpoint's real protection is the
+        # HMAC signature check, not this limit. A tight limit here risks
+        # dropping GENUINE Paystack webhooks if several landlords pay
+        # around the same time (Paystack could send a burst of calls).
+        # This exists only to cap how much CPU a flood of garbage,
+        # unsigned requests can cost us, not to gate real traffic
+
+        'viewing_request': '10/min',
+        # Applied ONLY to creating a new viewing request (see
+        # ViewingViewSet.get_throttles below) — this is specifically the
+        # "renter spamming viewing requests" abuse case: without this, a
+        # malicious or buggy client could flood a landlord's inbox with
+        # bogus viewing bookings (each one triggers a real confirmation
+        # email too, so this also protects against burning through email
+        # sending quota). Listing/retrieving/staff actions on viewings
+        # are NOT scoped this tightly — they just fall back to the
+        # global 'user' rate (120/min), since browsing your own
+        # viewings isn't the same abuse risk as creating new ones
+    },
 }
 
 

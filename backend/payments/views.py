@@ -10,8 +10,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 
 from accounts.models import User
@@ -22,6 +23,7 @@ from . import paystack
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
 def initiate_subscription(request):
     # A landlord hits this when they need to upgrade beyond what their
     # current tier allows. Same @api_view function-based pattern as
@@ -88,6 +90,12 @@ def initiate_subscription(request):
     # result['data'] contains authorization_url + access_code + reference
     # — exactly what the frontend needs to open Paystack's Popup
 
+initiate_subscription.throttle_scope = 'payments'
+# Protects OUR server from a bug or malicious client hammering this
+# endpoint, which would in turn hammer Paystack's real API on our
+# behalf — repeated rapid-fire calls here could trigger Paystack's own
+# abuse detection against our account, or just waste real API quota
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -151,6 +159,7 @@ def _verify_paystack_signature(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([ScopedRateThrottle])
 # AllowAny — deliberately NOT IsAuthenticated. Paystack's server is the
 # one calling this URL, not a logged-in paddy user — there's no JWT to
 # check here at all. The signature verification below IS the real
@@ -257,3 +266,5 @@ def paystack_webhook(request):
     # non-200 response tells Paystack "retry this later", which we only
     # want for genuine failures on OUR end, not "we simply don't act on
     # this particular event type"
+
+paystack_webhook.throttle_scope = 'webhook'
