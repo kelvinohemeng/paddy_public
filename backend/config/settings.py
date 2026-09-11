@@ -37,9 +37,27 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=False)
+DEBUG = config('DEBUG', default=False, cast=bool)
+# cast=bool — WITHOUT this, config('DEBUG', ...) reads .env as a plain
+# TEXT string. A classic python-decouple trap: even the string "False"
+# is TRUTHY in Python (any non-empty string is truthy), so DEBUG='False'
+# in .env would actually evaluate to True at runtime — the opposite of
+# what it says. cast=bool tells decouple to specifically recognize the
+# text "True"/"False" (case-insensitively) and convert it to a REAL
+# Python boolean, avoiding that trap entirely
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lambda v: [h.strip() for h in v.split(',')])
+# Reads a comma-separated list from .env (e.g.
+# "api.paddy.com,paddy-backend.up.railway.app") and splits it into the
+# list Django actually expects. Defaults to localhost-only for local
+# dev. The wildcard '*' that was here before is a genuine security risk
+# in production — it accepts a request claiming ANY hostname at all,
+# which is the classic ingredient for Host-header-based attacks (e.g.
+# a maliciously crafted password-reset link pointing at an attacker's
+# domain, if any code ever builds a URL from request.get_host()).
+# Real deployed domains go in .env, not hardcoded here, so they can
+# differ between environments (local/staging/production) without a
+# code change
 
 
 # Application definition
@@ -174,26 +192,21 @@ PAYSTACK_LORD_PLAN_CODE = config('PAYSTACK_LORD_PLAN_CODE', default='')
 # "Plans" page, it's buried under Payment Pages). The FREE tier
 # deliberately has no plan code at all — no Paystack interaction
 # happens for a landlord who never exceeds their free listing
-
-LISTING_UNLOCK_PRICE_PESEWAS = config('LISTING_UNLOCK_PRICE_PESEWAS', default=500, cast=int)
-# The price (in the smallest currency unit — pesewas for GHS, same
-# convention Paystack itself uses) to unlock ONE listing's protected
-# details. Deliberately a SETTINGS value, never trusted from the
-# frontend request — unlike initiate_subscription (where Paystack's own
-# plan_code overrides whatever amount we send, making the frontend's
-# number harmless either way), a one-off listing-unlock charge has NO
-# plan attached, so whatever amount we pass to Paystack is genuinely
-# what gets charged. If we trusted request.data here, a malicious
-# client could request amount_kobo=1 and unlock a listing for a
-# fraction of a pesewa. Price genuinely TBD (default GHS 5.00 here is a
-# placeholder) — change via .env, not by editing this file, so it can
-# be adjusted without a code deploy
 MEDIA_ROOT = BASE_DIR / 'media'
 
 
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    # WhiteNoise — serves static files (CSS/JS/admin assets) directly
+    # from gunicorn itself in production, compressed and cache-busted,
+    # without needing a separate nginx/CDN setup just to get started.
+    # MUST sit directly after SecurityMiddleware (WhiteNoise's own docs
+    # specify this exact position) and BEFORE anything else — it needs
+    # to intercept static file requests early, before session/auth
+    # middleware does unrelated work on a request that's just asking
+    # for a CSS file
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -282,6 +295,23 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # STATIC_URL = where browsers ask for static files (a URL)
 # STATIC_ROOT = where Django actually stores them on disk (a folder path)
 # Two different things, easy to conflate since they're both "static"-named
+
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        # Tells WhiteNoise to (1) gzip/brotli-compress every static
+        # file once at deploy time (via `manage.py collectstatic`),
+        # rather than compressing on every single request, and (2)
+        # rename each file with a content hash in its filename (e.g.
+        # styles.a3f9c2.css) — this is what makes it SAFE to set a
+        # far-future cache header on static files: if the file's
+        # content ever changes, its hashed filename changes too, so
+        # browsers never serve a stale cached version by mistake
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

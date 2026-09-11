@@ -14,6 +14,8 @@ djangorestframework-simplejwt = {extras = ["blacklist"], version = "*"}
 django-unfold = "*"
 pillow = "*"
 django-anymail = {extras = ["resend"], version = "*"}
+gunicorn = "*"
+whitenoise = "*"
 
 [dev-packages]
 

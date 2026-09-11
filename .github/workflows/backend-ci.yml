@@ -94,6 +94,8 @@ jobs:
           DB_HOST: localhost
           DB_PORT: 5432
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
+          DEBUG: 'False'
+          ALLOWED_HOSTS: 'localhost'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
           PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
           PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
@@ -114,6 +116,43 @@ jobs:
           DB_HOST: localhost
           DB_PORT: 5432
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
+          DEBUG: 'False'
+          ALLOWED_HOSTS: 'localhost'
+          GOOGLE_CLIENT_ID: 'dummy-for-ci'
+          PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
+          PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
+          PAYSTACK_LORD_PLAN_CODE: 'PLN_dummy'
+          RESEND_API_KEY: 'dummy-for-ci'
+
+      - name: Verify the app boots under gunicorn (production-like check)
+        # This is genuinely a DIFFERENT check from "manage.py check" and
+        # "manage.py test" above — those two only prove the CODE is
+        # valid Django. They never prove the app can actually START the
+        # way it will in real production (via gunicorn, not runserver).
+        # gunicorn doesn't even run on Windows at all (it depends on
+        # fcntl, a Unix-only module) — so this Ubuntu CI runner is
+        # LITERALLLY the only place this can be verified before a real
+        # deploy, since local dev on Windows can't test it directly
+        run: |
+          pipenv run python manage.py collectstatic --noinput
+          pipenv run gunicorn config.wsgi:application --bind 0.0.0.0:8000 --daemon --pid /tmp/gunicorn.pid
+          sleep 2
+          curl -sf http://localhost:8000/admin/login/ -o /dev/null
+          # -f = fail loudly (non-zero exit) if the response is a 4xx/5xx
+          # error, rather than curl treating a 500 page as "success"
+          # just because SOME response came back. If gunicorn failed to
+          # boot at all, this curl call fails outright with a connection
+          # error instead
+          kill $(cat /tmp/gunicorn.pid)
+        env:
+          DB_NAME: paddy_test
+          DB_USER: paddy
+          DB_PASSWORD: paddy
+          DB_HOST: localhost
+          DB_PORT: 5432
+          SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
+          DEBUG: 'False'
+          ALLOWED_HOSTS: 'localhost'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
           PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
           PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
