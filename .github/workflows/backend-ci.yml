@@ -93,8 +93,9 @@ jobs:
           DB_PASSWORD: paddy
           DB_HOST: localhost
           DB_PORT: 5432
+          SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
-          PAYSTACK_SECRET_KEY: 'sk_test_dummy_for_ci'
+          PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
           PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
           PAYSTACK_LORD_PLAN_CODE: 'PLN_dummy'
           RESEND_API_KEY: 'dummy-for-ci'
@@ -112,8 +113,9 @@ jobs:
           DB_PASSWORD: paddy
           DB_HOST: localhost
           DB_PORT: 5432
+          SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
-          PAYSTACK_SECRET_KEY: 'sk_test_dummy_for_ci'
+          PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
           PAYSTACK_AGENT_PLAN_CODE: 'PLN_dummy'
           PAYSTACK_LORD_PLAN_CODE: 'PLN_dummy'
           RESEND_API_KEY: 'dummy-for-ci'
