@@ -17,6 +17,8 @@ django-anymail = {extras = ["resend"], version = "*"}
 gunicorn = "*"
 whitenoise = "*"
 django-cors-headers = "*"
+django-storages = "*"
+boto3 = "*"
 
 [dev-packages]
 

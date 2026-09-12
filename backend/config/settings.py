@@ -172,7 +172,6 @@ DEFAULT_FROM_EMAIL = "hello@thegeneralyst.com"
 # actually sending it. We'll swap this for a real email service
 # (e.g. SendGrid, AWS SES) once we're closer to production
 
-MEDIA_URL = 'media/'
 
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY')
 # config(...) — same decouple pattern as GOOGLE_CLIENT_ID, reads the
@@ -193,8 +192,6 @@ PAYSTACK_LORD_PLAN_CODE = config('PAYSTACK_LORD_PLAN_CODE', default='')
 # "Plans" page, it's buried under Payment Pages). The FREE tier
 # deliberately has no plan code at all — no Paystack interaction
 # happens for a landlord who never exceeds their free listing
-MEDIA_ROOT = BASE_DIR / 'media'
-
 
 
 MIDDLEWARE = [
@@ -326,24 +323,110 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # STATIC_ROOT = where Django actually stores them on disk (a folder path)
 # Two different things, easy to conflate since they're both "static"-named
 
-STORAGES = {
-    'default': {
-        'BACKEND': 'django.core.files.storage.FileSystemStorage',
-    },
-    'staticfiles': {
-        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
-        # Tells WhiteNoise to (1) gzip/brotli-compress every static
-        # file once at deploy time (via `manage.py collectstatic`),
-        # rather than compressing on every single request, and (2)
-        # rename each file with a content hash in its filename (e.g.
-        # styles.a3f9c2.css) — this is what makes it SAFE to set a
-        # far-future cache header on static files: if the file's
-        # content ever changes, its hashed filename changes too, so
-        # browsers never serve a stale cached version by mistake
-    },
-}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# --- Cloudflare R2 (media file storage) ---
+# R2 is Cloudflare's S3-compatible object storage — "S3-compatible"
+# means it speaks the exact same API as Amazon S3, so we can use
+# Amazon's own official tooling (boto3) and Django's own S3 storage
+# backend (django-storages) to talk to R2 instead, just by pointing
+# them at a different endpoint URL. Nothing else about how Django
+# handles file uploads changes — ImageField/FileField on your models
+# work exactly the same either way
+
+R2_ACCESS_KEY_ID = config('R2_STORAGE_ACCESS_KEY_ID')
+R2_SECRET_ACCESS_KEY = config('R2_STORAGE_SECRET_ACCESS_KEY')
+R2_BUCKET_NAME = config('R2_STORAGE_BUCKET_NAME')
+R2_ACCOUNT_ID = config('R2_STORAGE_ACCOUNT_ID')
+# Pulled from .env via decouple, same pattern as PAYSTACK_SECRET_KEY —
+# these are real credentials, never hardcoded, never committed to git
+
+
+AWS_ACCESS_KEY_ID = R2_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY
+AWS_STORAGE_BUCKET_NAME = R2_BUCKET_NAME
+# django-storages' S3 backend expects these EXACT setting names
+# (AWS_...) even though we're pointing it at Cloudflare, not Amazon —
+# the backend is generically written for "any S3-compatible service",
+# it just happens to default its naming to AWS's own terms. We copy
+# our R2 values into these AWS-named settings rather than renaming
+# our own — this way it's still obvious in code review that these are
+# actually R2 credentials, not real AWS ones
+
+AWS_S3_ENDPOINT_URL = f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
+# THE setting that actually redirects all this "AWS" configuration to
+# Cloudflare's servers instead of Amazon's. Without this, django-storages
+# would default to talking to real AWS S3, using YOUR R2 credentials,
+# which would just fail (R2 keys don't work against real AWS)
+AWS_S3_REGION_NAME = 'auto'
+# R2 doesn't use AWS's real region system (us-east-1, eu-west-2, etc.)
+# — 'auto' is R2's own documented placeholder value for this field,
+# since the S3-compatibility layer still expects SOMETHING here
+AWS_S3_ADDRESSING_STYLE = 'virtual'
+# Tells boto3 to build URLs as https://bucket.endpoint/key rather than
+# https://endpoint/bucket/key — R2's documented requirement, some
+# S3-compatible services differ on this
+AWS_S3_FILE_OVERWRITE = False
+# If a new upload happens to generate the exact same filename as an
+# existing file (e.g. two different landlords each upload something
+# named "photo.jpg"), this tells django-storages to save the new one
+# under a slightly modified name instead of silently overwriting the
+# old one. Genuinely important for shared object storage — the local
+# filesystem never had this collision risk in the same way, since each
+# listing's photos were already namespaced by Django's own upload_to
+# folder structure, but it's a free, zero-cost safety net to have
+AWS_DEFAULT_ACL = 'public-read'
+# Every uploaded file becomes readable via a plain public URL, with no
+# authentication required to VIEW it. This matches how your app
+# actually uses these files today — listing photos are shown to
+# anyone browsing Discovery Hub, logged in or not, so there's no
+# access-control reason to keep them private. (Genuinely different
+# question from the address/contact-info paywall we built earlier —
+# that's about DATA in the API response, this is about whether a
+# photo FILE is fetchable if you already have its direct URL)
+STORAGES = {
+    'default': {
+        'BACKEND': 'storages.backends.s3.S3Storage',
+        # Every uploaded file (listing photos, via ImageField) now goes
+        # to R2 instead of local disk — this is the actual switch.
+        # Nothing in listings/models.py needs to change at all; Django
+        # doesn't know or care which storage backend is behind
+        # ImageField, that's the whole point of Django's storage
+        # abstraction
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+        # CSS/JS/admin assets — completely separate from user-uploaded
+        # media, still served by WhiteNoise/gunicorn as before. R2 is
+        # ONLY for the 'default' (media) storage above
+    },
+}
+
+AWS_QUERYSTRING_AUTH = False
+# Without this, django-storages appends a temporary, EXPIRING signed
+# token to every file URL it generates (e.g. "?X-Amz-Signature=...") —
+# correct behavior for a PRIVATE bucket, where you want URLs that stop
+# working after a while. Our bucket is public-read (see
+# AWS_DEFAULT_ACL above), so we want plain, permanent URLs instead —
+# without this setting, listing photo URLs would silently start
+# returning 403 Forbidden once their embedded signature expired,
+# even though the file itself is still there and still public
+
+AWS_S3_CUSTOM_DOMAIN = 'pub-f2e74abdc1df4d9ebff24e2e0998446f.r2.dev'
+# THE actual public-facing domain django-storages will use to build
+# every file URL — completely SEPARATE from AWS_S3_ENDPOINT_URL above.
+# AWS_S3_ENDPOINT_URL is the PRIVATE API endpoint used for authenticated
+# operations (uploading, deleting) — it requires your R2 credentials to
+# use. This custom domain is the PUBLIC one, freely readable by anyone
+# with the URL, no credentials needed — this is what actually gets
+# embedded in API responses for the frontend to load images from.
+# NOTE: Cloudflare calls this a "Public Development URL" deliberately —
+# it's rate-limited and has no uptime guarantee, meant for testing only.
+# Before a real production launch, replace this with a proper custom
+# domain (e.g. media.paddy.com) connected via R2's "Custom Domains"
+# settings tab instead
