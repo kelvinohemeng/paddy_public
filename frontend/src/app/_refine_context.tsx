@@ -7,9 +7,6 @@ import { RefineKbar, RefineKbarProvider } from "@refinedev/kbar";
 import routerProvider from "@refinedev/nextjs-router";
 
 import { dataProvider } from "@providers/data-provider";
-import { Login } from "@/pages/login";
-import { Register } from "@/pages/register";
-import { ForgotPassword } from "@/pages/forgot-password";
 import { ErrorComponent } from "@/components/refine-ui/layout/error-component";
 import { Layout } from "@/components/refine-ui/layout/layout";
 import { Header } from "@/components/refine-ui/layout/header";
@@ -17,18 +14,6 @@ import { useNotificationProvider } from "@/components/refine-ui/notification/use
 import { Toaster } from "@/components/refine-ui/notification/toaster";
 import { ThemeProvider } from "@/components/refine-ui/theme/theme-provider";
 import "@/app/globals.css";
-import {
-  BlogPostList,
-  BlogPostCreate,
-  BlogPostEdit,
-  BlogPostShow,
-} from "@/pages/blog-posts";
-import {
-  CategoryList,
-  CategoryCreate,
-  CategoryEdit,
-  CategoryShow,
-} from "@/pages/categories";
 import { authProviderClient } from "@providers/auth-provider/auth-provider.client";
 
 type RefineContextProps = {

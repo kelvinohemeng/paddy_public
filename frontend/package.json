@@ -9,7 +9,7 @@
     "dev": "cross-env NODE_OPTIONS=--max_old_space_size=4096 refine dev",
     "build": "refine build",
     "start": "refine start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "refine": "refine"
   },
   "dependencies": {
@@ -18,9 +18,9 @@
     "@refinedev/devtools": "^2.0.1",
     "@refinedev/nextjs-router": "^7.0.0",
     "@refinedev/kbar": "^2.0.0",
-    "next": "15.3.1",
-    "react": "19.1.0",
-    "react-dom": "19.1.0",
+    "next": "16.3.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
     "@refinedev/simple-rest": "^6.0.0",
     "@hookform/resolvers": "^5.0.1",
     "@radix-ui/react-accordion": "^1.2.8",
@@ -78,13 +78,13 @@
     "js-cookie": "^3.0.5"
   },
   "devDependencies": {
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
     "@types/node": "^20",
     "typescript": "^5",
     "cross-env": "^7.0.3",
-    "eslint": "^8",
-    "eslint-config-next": "^15.0.3",
+    "eslint": "10.10.0",
+    "eslint-config-next": "16.3.5",
     "@netlify/plugin-nextjs": "^5.11.2",
     "@tailwindcss/postcss": "^4",
     "tailwindcss": "^4",
@@ -93,5 +93,9 @@
   },
   "refine": {
     "projectId": "hwzIwZ-bOR3kh-ChVpkQ"
+  },
+  "overrides": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0"
   }
 }
