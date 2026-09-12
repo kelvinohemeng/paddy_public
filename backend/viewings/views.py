@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 # Same imports as ListingViewSet — viewsets for ModelViewSet, status for
 # readable HTTP status codes
 
+from django.conf import settings
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -81,7 +82,13 @@ def send_viewing_confirmation_email(viewing):
             f"{viewing.scheduled_at}. Attached is a calendar file you can "
             f"use to add this to your calendar."
         ),
-        from_email='noreply@paddy.com',
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        # Was hardcoded as 'noreply@paddy.com' — same real bug as the
+        # one caught in accounts/views.py send_verification_email:
+        # paddy.com is a domain no one owns or has verified with Resend,
+        # so any real viewing-confirmation email would fail with a 403
+        # "domain not verified" error. Reusing settings.DEFAULT_FROM_EMAIL
+        # keeps this in sync with the one real, Resend-verified domain
         to=[viewing.renter_profile.user.email],
         # to= expects a LIST, even for one recipient — same reason
         # request.FILES.getlist() returns a list, this is just how

@@ -22,10 +22,14 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { InputPassword } from "@/components/refine-ui/form/input-password";
 import { cn } from "@/lib/utils";
+import { RadioGroup, RadioGroupItem } from "@radix-ui/react-radio-group";
+import SignUpCardSelect from "@components/paddy-ui/signupCardSelect";
 
 export const SignUpForm = () => {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // New state, alongside email/password/confirmPassword:
+  const [role, setRole] = useState("renter");
   const [confirmPassword, setConfirmPassword] = useState("");
 
   const { open } = useNotification();
@@ -53,6 +57,7 @@ export const SignUpForm = () => {
     register({
       email,
       password,
+      role,
     });
   };
 
@@ -77,7 +82,7 @@ export const SignUpForm = () => {
         "justify-center",
         "px-6",
         "py-8",
-        "min-h-svh"
+        "min-h-svh",
       )}
     >
       <div className={cn("flex", "items-center", "justify-center", "gap-2")}>
@@ -97,7 +102,7 @@ export const SignUpForm = () => {
               "text-green-600",
               "dark:text-green-400",
               "text-3xl",
-              "font-semibold"
+              "font-semibold",
             )}
           >
             Sign up
@@ -124,7 +129,6 @@ export const SignUpForm = () => {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-
             <div
               className={cn("relative", "flex", "flex-col", "gap-2", "mt-6")}
             >
@@ -136,7 +140,6 @@ export const SignUpForm = () => {
                 required
               />
             </div>
-
             <div
               className={cn("relative", "flex", "flex-col", "gap-2", "mt-6")}
             >
@@ -148,7 +151,23 @@ export const SignUpForm = () => {
                 required
               />
             </div>
-
+            {/* New JSX block, right after the confirm-password field, before the
+            Sign up button: */}
+            <div className={cn("flex", "flex-col", "gap-2", "mt-6")}>
+              <p>Sign up as:</p>
+              <div className={cn("flex items-center gap-4")}>
+                <SignUpCardSelect
+                  role={role}
+                  setRole={setRole}
+                  value="landlord"
+                />
+                <SignUpCardSelect
+                  role={role}
+                  setRole={setRole}
+                  value="renter"
+                />
+              </div>
+            </div>
             <Button
               type="submit"
               size="lg"
@@ -157,18 +176,16 @@ export const SignUpForm = () => {
                 "mt-6",
                 "bg-green-600",
                 "hover:bg-green-700",
-                "text-white"
+                "text-white",
               )}
             >
               Sign up
             </Button>
-
             <div className={cn("flex", "items-center", "gap-4", "mt-6")}>
               <Separator className={cn("flex-1")} />
               <span className={cn("text-sm", "text-muted-foreground")}>or</span>
               <Separator className={cn("flex-1")} />
             </div>
-
             <div className={cn("flex", "flex-col", "gap-4", "mt-6")}>
               <div className={cn("grid grid-cols-2", "gap-6")}>
                 <Button
@@ -231,7 +248,7 @@ export const SignUpForm = () => {
                 "text-blue-600",
                 "dark:text-blue-400",
                 "font-semibold",
-                "underline"
+                "underline",
               )}
             >
               Sign in

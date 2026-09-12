@@ -1,4 +1,7 @@
 
+import logging
+
+from django.conf import settings
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from decouple import config
@@ -9,7 +12,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.request import Request
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from rest_framework.response import Response
@@ -20,6 +23,12 @@ from .serializers import RegisterSerializer, UserSerializer, UserUpdateSerialize
 # (all serializers live together in serializers.py, all view/request
 # logic lives in views.py). Imported here since the `me` view below
 # still needs to call both of them.
+
+
+logger = logging.getLogger(__name__)
+# __name__ here is "accounts.views" — this is the standard Django/Python
+# pattern for a per-module logger, so any log line printed from this file
+# is automatically tagged with exactly where it came from
 
 
 @api_view(['GET', 'PATCH'])
@@ -114,7 +123,26 @@ def register(request: Request) -> Response:
         # this is the line that hashes the password, creates the User,
         # AND creates the matching profile row, all in one call
 
-        send_verification_email(user)
+        try:
+            send_verification_email(user)
+        except Exception:
+            # A failed verification email (Resend sandbox restrictions,
+            # a provider outage, a malformed address) must NEVER sink
+            # the whole signup — the User + profile row above are
+            # already safely committed to the database at this point.
+            # Without this try/except, an email-sending failure raises
+            # all the way up and Django returns a raw 500 error page —
+            # a real user would see "Server Error" despite their
+            # account having actually been created successfully.
+            logger.exception(
+                "Failed to send verification email to %s (user id %s) — "
+                "account was still created successfully.",
+                user.email, user.id,
+            )
+            # logger.exception (not just logger.error) automatically
+            # includes the full traceback in the log output, so this
+            # is still fully debuggable later even though it no longer
+            # crashes the request
 
         return Response(
             {'id': user.id, 'email': user.email, 'role': user.role},
@@ -276,12 +304,62 @@ def send_verification_email(user):
     # will read these two values and send them on to our Django endpoint.
     # The frontend itself doesn't verify anything — it just captures the
     # values from the URL and forwards them
-    send_mail(
+
+    plain_text_body = f"Click here to verify your account: {verification_link}"
+    # Kept as a genuine fallback — some email clients still render
+    # plain text only, and having ONE isn't itself a spam signal.
+    # The problem we're fixing is having ONLY this and nothing else.
+
+    html_body = f"""
+    <html>
+      <body style="font-family: sans-serif; color: #1a1a1a;">
+        <h2>Verify your paddy account</h2>
+        <p>
+          Thanks for signing up. Click the button below to verify your
+          email address and activate your account.
+        </p>
+        <p>
+          <a href="{verification_link}"
+             style="display: inline-block; padding: 12px 24px;
+                    background-color: #16a34a; color: #ffffff;
+                    text-decoration: none; border-radius: 6px;">
+            Verify my account
+          </a>
+        </p>
+        <p style="color: #666; font-size: 13px;">
+          If the button doesn't work, copy and paste this link into your
+          browser: {verification_link}
+        </p>
+      </body>
+    </html>
+    """
+    # A real HTML alternative alongside the plain text — legitimate
+    # transactional email (password resets, order confirmations, etc.)
+    # is almost always sent this way. A bare plain-text-only email with
+    # just one raw link and zero formatting is a pattern spam filters
+    # associate heavily with phishing/low-effort spam, REGARDLESS of
+    # how clean the sending domain's SPF/DKIM/DMARC setup is.
+
+    email = EmailMultiAlternatives(
         subject='Verify your paddy account',
-        message=f'Click here to verify your account: {verification_link}',
-        from_email='noreply@paddy.com',
-        recipient_list=[user.email],
+        body=plain_text_body,
+        # EmailMultiAlternatives still needs a plain-text `body` as the
+        # base message — attach_alternative() below adds the HTML
+        # version ON TOP of it, rather than replacing it
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[user.email],
+        headers={
+            "List-Unsubscribe": f"<mailto:{settings.DEFAULT_FROM_EMAIL}>",
+            # Gmail's own bulk-sender guidelines specifically look for
+            # this header, even on transactional mail — its ABSENCE is
+            # itself a real signal used by spam classifiers, not just
+            # a courtesy for marketing email
+        },
     )
+    email.attach_alternative(html_body, "text/html")
+    # This is what actually makes it a multipart email (plain text +
+    # HTML together) instead of a single, bare plain-text message
+    email.send()
     # With EMAIL_BACKEND set to console, this prints the whole email
     # (including the link) straight to your terminal — good enough to
     # manually test the flow without a real inbox
