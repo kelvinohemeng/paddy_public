@@ -3,7 +3,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from decouple import config
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User, RenterProfile, LandlordProfile
+from .models import User, RenterProfile, LandlordProfile, StaffProfile
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.throttling import ScopedRateThrottle
@@ -14,33 +14,12 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from rest_framework.response import Response
 from rest_framework import status
-from rest_framework import serializers
-from .serializers import RegisterSerializer
-
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        exclude = ['password']
-
-
-class UserUpdateSerializer(serializers.ModelSerializer):
-    # A SEPARATE serializer from UserSerializer, used only for updates —
-    # deliberately exposes far FEWER fields than UserSerializer (which is
-    # read-only display data). This is the actual security boundary: even
-    # if someone sends {"role": "admin", "is_verified": true} in a PATCH
-    # request, this serializer's `fields` list below means DRF silently
-    # ignores anything not listed here — those fields can never be changed
-    # through this endpoint, no matter what's in the request body
-
-    class Meta:
-        model = User
-        fields = ['phone']
-        # Only phone is self-service editable on the User model itself.
-        # email = identity-critical (used for login/JWT), role = controls
-        # permissions throughout the whole app, is_verified = staff/admin-
-        # controlled — none of these are safe to let a user change on
-        # themselves via a simple PATCH
+from .serializers import RegisterSerializer, UserSerializer, UserUpdateSerializer
+# UserSerializer and UserUpdateSerializer used to be defined directly in
+# this file — moved into serializers.py to match Django/DRF convention
+# (all serializers live together in serializers.py, all view/request
+# logic lives in views.py). Imported here since the `me` view below
+# still needs to call both of them.
 
 
 @api_view(['GET', 'PATCH'])
