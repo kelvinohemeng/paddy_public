@@ -417,7 +417,7 @@ AWS_QUERYSTRING_AUTH = False
 # returning 403 Forbidden once their embedded signature expired,
 # even though the file itself is still there and still public
 
-AWS_S3_CUSTOM_DOMAIN = 'pub-f2e74abdc1df4d9ebff24e2e0998446f.r2.dev'
+AWS_S3_CUSTOM_DOMAIN = 'app.mediaupload.thegeneralyst.com'
 # THE actual public-facing domain django-storages will use to build
 # every file URL — completely SEPARATE from AWS_S3_ENDPOINT_URL above.
 # AWS_S3_ENDPOINT_URL is the PRIVATE API endpoint used for authenticated
@@ -425,8 +425,8 @@ AWS_S3_CUSTOM_DOMAIN = 'pub-f2e74abdc1df4d9ebff24e2e0998446f.r2.dev'
 # use. This custom domain is the PUBLIC one, freely readable by anyone
 # with the URL, no credentials needed — this is what actually gets
 # embedded in API responses for the frontend to load images from.
-# NOTE: Cloudflare calls this a "Public Development URL" deliberately —
-# it's rate-limited and has no uptime guarantee, meant for testing only.
-# Before a real production launch, replace this with a proper custom
-# domain (e.g. media.paddy.com) connected via R2's "Custom Domains"
-# settings tab instead
+# A real custom domain on Kelvin's own Cloudflare account (not the
+# rate-limited "Public Development URL" r2.dev subdomain used
+# initially) — genuinely fine for production as-is. Swap this to a
+# paddy-branded domain later (e.g. media.paddy.com) once paddy has its
+# own domain — same one-line change, no other code affected
