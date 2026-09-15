@@ -26,10 +26,14 @@ class RegisterSerializer(serializers.ModelSerializer):
         # Meta = a special nested class ModelSerializer looks for, to know which
         # model this serializer is based on and which fields to expose
         model = User
-        fields = ['email', 'password', 'phone', 'role']
+        fields = ['email', 'password', 'phone', 'role', 'first_name', 'last_name']
         # Only these four fields are accepted from incoming signup requests —
         # anything else in the request body gets ignored (e.g. is_staff, is_superuser
         # can't be set this way, protecting against someone trying to self-promote)
+        extra_kwargs = {
+            'first_name': {'required': True},
+            'last_name': {'required': True},
+        }
 
     def create(self, validated_data):
         # Overriding the default create() behavior — ModelSerializer normally

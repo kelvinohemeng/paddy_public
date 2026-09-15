@@ -15,6 +15,7 @@ from django.contrib.gis.geos import Polygon
 # for THIS ONE request — it only exists for the life of this function call
 
 from .models import Listing, ListingPhoto
+from core.models import Amenity
 from .serializers import ListingSerializer, ListingPhotoSerializer
 
 
@@ -90,6 +91,30 @@ class ListingViewSet(viewsets.ModelViewSet):
         advance_rent_period = self.request.query_params.get('advance_rent_period')
         if advance_rent_period:
             queryset = queryset.filter(advance_rent_period=advance_rent_period)
+
+        amenities = self.request.query_params.getlist('amenities')
+        # .getlist(...) instead of .get(...) — this is the key difference from
+        # every other filter here. A URL like ?amenities=wifi&amenities=parking
+        # can carry MULTIPLE values under the same query param name; .get()
+        # would only ever hand you back the first one, .getlist() hands back
+        # all of them as a real Python list, e.g. ['wifi', 'parking']
+
+        if amenities:
+            queryset = queryset.filter(amenities__slug__in=amenities).distinct()
+            # amenities__slug__in=[...] — reads as "keep listings where at
+            # least one of their linked Amenity rows has a slug matching
+            # something in this list". __in is the same lookup style as
+            # __gte/__iexact you've already used elsewhere, just checking
+            # membership in a list instead of a single value comparison.
+            #
+            # .distinct() is NEW and matters here specifically: filtering
+            # across a many-to-many relationship can return the SAME listing
+            # multiple times in the raw query — once per matching amenity it
+            # has (e.g. a listing with both "wifi" AND "parking" would appear
+            # twice if you filtered on both without .distinct()). None of your
+            # other filters above need this, since none of them cross a M2M
+            # relationship — this is the first one that does.
+
 
         north = self.request.query_params.get('north')
         south = self.request.query_params.get('south')

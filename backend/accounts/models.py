@@ -1,5 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from core.models import Amenity
+from django.contrib.postgres.fields import ArrayField
 # BaseUserManager = Django's base class for building a custom manager
 # (a "manager" is the object behind User.objects — it handles creating new rows)
 
@@ -60,6 +62,8 @@ class UserManager(BaseUserManager):
 class User(AbstractUser):
     username = None
     # Removes the inherited username field — we don't use it
+
+    profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
 
     email = models.EmailField(unique=True)
     # Overrides AbstractUser's default email field to make it required + unique
@@ -141,6 +145,8 @@ class RenterProfile(models.Model):
     preferred_area = models.CharField(max_length=150, blank=True)
     # Plain short text field, optional — a renter may not have set this yet
 
+    school_name = models.CharField(max_length=150, blank=True)
+
     class Occupation(models.TextChoices):
         # A namespaced set of valid role values (our version of a TypeScript union type)
         STUDENT = 'student', 'Student'
@@ -150,6 +156,21 @@ class RenterProfile(models.Model):
 
     occupation = models.CharField(max_length=20, choices=Occupation.choices, default=Occupation.STUDENT)
     about_me = models.TextField(blank=True)
+
+    class PaymentMethod(models.TextChoices):
+        MOMO = 'momo', 'Mobile Money'
+        CASH = 'cash', 'Cash'
+        CARD = 'bank_transfer', 'Bank Transfer'
+
+    preferred_payment_method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.MOMO)
+
+    amenity_preferences = models.ManyToManyField(Amenity, related_name='prefered_by_renters', blank=True)
+    # Postgres-native array field — needs `from django.contrib.postgres.fields
+    # import ArrayField` at the top of the file. default=list (not default=[])
+    # is a real Django gotcha worth knowing: mutable defaults like [] are
+    # dangerous in Python generally (shared across instances if done wrong),
+    # so Django requires a CALLABLE here — list, not [] — which gets invoked
+    # fresh each time a new instance needs a default.
 
     def __str__(self):
         # __str__ = a special Python method every class can define, called
@@ -186,14 +207,23 @@ class LandlordProfile(models.Model):
     # (this is the field is_verified on User does NOT replace — this one is
     # specifically about ID document verification, a staff-driven workflow)
 
-    momo_or_bank_details = models.CharField(max_length=255)
-    # Plain text field — MoMo number or bank account details on file for
-    # this landlord. NOTE: under the current pricing model (landlord
-    # subscription fee, not commission), paddy no longer processes the
-    # lease deposit at all, so this field is no longer used for Paystack
-    # payout splitting — kept as general landlord contact/verification
-    # info for now; revisit whether it's still needed once the
-    # subscription-only payment model is fully built out
+    class PayoutMethod(models.TextChoices):
+        MOMO = 'momo', 'Mobile Money'
+        BANK_TRANSFER = 'bank_transfer', 'Bank Transfer'
+        # Same TextChoices pattern as RenterProfile.PaymentMethod — a
+        # namespaced set of valid values, not free text
+
+    preferred_payout_method = models.CharField(
+        max_length=20, choices=PayoutMethod.choices, default=PayoutMethod.MOMO
+    )
+    # Replaces momo_number entirely. This is a PREFERENCE, not data
+    # collection — same reasoning as RenterProfile.preferred_payment_method:
+    # it just remembers which option the landlord wants to see selected by
+    # default (e.g. on a future payout-setup screen), it doesn't store an
+    # actual MoMo number or bank account number anywhere. Real payout
+    # details, if ever needed, would be collected separately later,
+    # likely at the point Paystack integration actually requires them.
+
 
     def __str__(self):
         return self.full_name or self.user.email

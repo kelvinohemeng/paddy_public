@@ -1,5 +1,8 @@
 from django.db import models
 from django.contrib.gis.db import models as gis_models
+from django.contrib.postgres.fields import ArrayField
+from core.models import Amenity
+
 # A SEPARATE models module, specifically for geospatial fields — GeoDjango's
 # own extension on top of the normal ORM. We import it under a different
 # name (gis_models) so it doesn't collide with the regular `models` import
@@ -39,6 +42,7 @@ class Listing(models.Model):
     class ListingType(models.TextChoices):
         RENT = 'rent', 'Rent'
         BUY = 'buy', 'Buy'
+    
 
     class AdvanceRentPeriod(models.TextChoices):
         NONE = 'none', 'None'
@@ -62,11 +66,10 @@ class Listing(models.Model):
     # sensibly have -2 bedrooms, so this enforces that structurally
     # rather than relying on us remembering to check it in a view
 
-    has_water_storage = models.BooleanField(default=False)
-    has_backup_power = models.BooleanField(default=False)
-    is_walled_gated = models.BooleanField(default=False)
-    # Three plain boolean amenity flags, matching the ERD directly
-
+    amenities= models.ManyToManyField(Amenity, related_name='listings', blank=True)
+    # many-to-many — one listing can have many amenities, and one amenity
+    # can be on many listings
+    
     location = gis_models.PointField(geography=True, null=True, blank=True)
     # THE geospatial field — this is the actual payoff of the whole
     # Postgres+PostGIS setup from the start of this project.

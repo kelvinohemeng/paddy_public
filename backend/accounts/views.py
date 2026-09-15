@@ -1,10 +1,10 @@
 
 import logging
 
+import requests
+from decouple import config
 from django.conf import settings
 from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-from decouple import config
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, RenterProfile, LandlordProfile, StaffProfile
 from rest_framework.permissions import IsAuthenticated
@@ -17,6 +17,7 @@ from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from rest_framework.response import Response
 from rest_framework import status
+from django.core.files.base import ContentFile
 from .serializers import RegisterSerializer, UserSerializer, UserUpdateSerializer
 # UserSerializer and UserUpdateSerializer used to be defined directly in
 # this file — moved into serializers.py to match Django/DRF convention
@@ -196,6 +197,9 @@ def google_login(request):
         # app, garbage input), Google's library raises ValueError
         return Response({'error': 'Invalid Google token'}, status=status.HTTP_400_BAD_REQUEST)
         # Reject the request — never trust an unverifiable token
+        
+    first_name = idinfo.get('given_name', '')
+    last_name = idinfo.get('family_name', '')
     email = idinfo['email']
     # Now safe to trust this — it's been cryptographically verified as
     # genuinely coming from Google, for a real Google account
@@ -206,7 +210,11 @@ def google_login(request):
     # exists and role doesn't matter for a login, only a first-time signup)
     user, created = User.objects.get_or_create(
         email=email,
-        defaults={'role': role}
+        defaults={
+            'role': role,
+            'first_name': first_name,
+            'last_name': last_name,
+            }
     )
     # get_or_create = look for a User with this email; if found, return it
     # (created=False); if NOT found, create a new one using the `defaults`
@@ -224,6 +232,12 @@ def google_login(request):
         user.is_verified = True
         # Google already proved this email is real and owned by this person —
 # no need for our own email verification flow on top of that
+
+        picture_url = idinfo.get('picture')
+        if picture_url:
+            response = requests.get(picture_url)
+            if response.status_code == 200:
+                user.profile_image.save(f"{user.id}_google.jpg", ContentFile(response.content), save=False)
 
         user.save()
         # sign_in_method and oauth_data were set on the Python object above,
