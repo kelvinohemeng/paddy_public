@@ -72,6 +72,10 @@ def me(request: Request) -> Response:
                     RenterProfile.objects.filter(user=user).update(full_name=full_name)
                 elif user.role == User.Role.LANDLORD:
                     LandlordProfile.objects.filter(user=user).update(full_name=full_name)
+                elif user.role == User.Role.STAFF:
+                    StaffProfile.objects.filter(user=user).update(full_name=full_name)
+                elif user.role == User.Role.ADMIN:
+                    AdminProfile.objects.filter(user=user).update(full_name=full_name)
                 # .filter(user=user).update(...) — a direct, one-step
                 # database update, different from the serializer.save()
                 # pattern above but reaches the same result: no need to

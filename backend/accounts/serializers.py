@@ -126,7 +126,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        exclude = ['password']
+        exclude = ['password', 'groups', 'user_permissions']
         # Every real column on User except password, automatically. No
         # manual list to maintain; if a new field is added to the User
         # model later, it shows up here for free, with zero edits needed.

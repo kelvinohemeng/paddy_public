@@ -4,8 +4,50 @@ import type { AuthProvider } from "@refinedev/core";
 import Cookies from "js-cookie";
 
 
+
+// A reusable helper function to process a successful login/OAuth response 
+// and store tokens across cookies and localStorage.
+const handleAuthSuccess = async (response: Response) => {
+  const data = await response.json();
+
+  // Set cookie for middleware/SSR safety, and localStorage for client-side persistence
+  Cookies.set("access_token", data.access, { expires: 1, path: "/" });
+  localStorage.setItem("access_token", data.access);
+  localStorage.setItem("refresh_token", data.refresh);
+
+  return {
+    success: true,
+    redirectTo: "/",
+  };
+};
+
 export const authProviderClient: AuthProvider = {
-  register: async ({ email, username, password, role }) => {
+  register: async (params) => {
+    if (params.providerName === "google") {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/accounts/login/google/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          token: params.token,
+          role: params.role,
+        }),
+      })
+
+      if (res.ok) {
+        return await handleAuthSuccess(res);
+      }
+
+      const errorData = await res.json()
+      return {
+        success: false,
+        error: { name: "RegisterError", message: errorData.error || "Google Sign Up Failed" }
+      }
+
+    }
+
+    const { email, username, password, role } = params;
 
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/accounts/register/`, {
       method: "POST",
@@ -21,12 +63,6 @@ export const authProviderClient: AuthProvider = {
     });
 
     if (res.ok) {
-      // Your backend returns 201 + {id, email, role} — deliberately NO
-      // access/refresh tokens, since RegisterSerializer never logs the
-      // user in, it just creates the account and fires a verification
-      // email (send_verification_email in views.py). That means we
-      // canNOT redirect straight to "/" like a logged-in dashboard —
-      // there's no token yet to prove who they are.
       return {
         success: true,
         redirectTo: "/login",
@@ -35,13 +71,6 @@ export const authProviderClient: AuthProvider = {
           description: "Check your email to verify your account"
         }
       }
-
-      // Your backend's real failure shape, confirmed from views.py:
-      // - email already registered -> {"email": ["user with this email already exists"]}
-      // - role is "admin"/"staff" -> {"role": ["You cannot register with this role."]}
-      // - DRF validation errors are always {field_name: [messages]}, so we
-      //   pull out whichever field actually has an error and surface its
-      //   first message, rather than a generic "Registration failed"
 
     }
     const errorData = await res.json();
@@ -57,7 +86,39 @@ export const authProviderClient: AuthProvider = {
     };
   },
 
-  login: async ({ email, password }) => {
+  login: async (params) => {
+    //handle Google Login
+    if (params.providerName === "google") {
+      // Google-specific path: params.credential is the ID token
+      // handed to us by @react-oauth/google's callback
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/accounts/login/google/`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            token: params.token,
+            role: params.role
+          }),
+        }
+      )
+
+      if (res.ok) {
+        return await handleAuthSuccess(res)
+      }
+
+      return {
+        success: false,
+        error: {
+          name: "LoginError",
+          message: "Social Login failed",
+        },
+      }
+    }
+
+    const { email, password, ...allParams } = params;
 
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/accounts/login/`, {
       method: "POST",
@@ -144,7 +205,8 @@ export const authProviderClient: AuthProvider = {
     if (!res.ok) {
       return null;
     }
-    return await res.json();
+    const user = await res.json()
+    return user;
   },
   onError: async (error) => {
     if (error.response?.status === 401) {

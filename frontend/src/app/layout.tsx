@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import React, { Suspense } from "react";
 import { RefineContext } from "./_refine_context";
+import { GoogleOAuthProvider } from "@react-oauth/google";
 
 export const metadata: Metadata = {
   title: "Refine",
@@ -19,7 +20,11 @@ export default async function RootLayout({
     <html lang="en">
       <body>
         <Suspense>
-          <RefineContext>{children}</RefineContext>
+          <GoogleOAuthProvider
+            clientId={process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!}
+          >
+            <RefineContext>{children}</RefineContext>
+          </GoogleOAuthProvider>
         </Suspense>
       </body>
     </html>
