@@ -352,12 +352,35 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 # NEW — this is the actual filesystem folder collectstatic will copy
 # everything into. BASE_DIR is already defined at the top of settings.py
-# (it's your project root), so this creates a folder called
+
 # "staticfiles" right alongside manage.py
 
 # STATIC_URL = where browsers ask for static files (a URL)
 # STATIC_ROOT = where Django actually stores them on disk (a folder path)
 # Two different things, easy to conflate since they're both "static"-named
+
+STATICFILES_DIRS = [BASE_DIR / 'static']
+# NEW — tells Django's static file FINDER (not STATIC_ROOT, a completely
+# separate concept — this runs at DEV/collectstatic time, scanning for
+# source files, vs STATIC_ROOT which is just the collected OUTPUT
+# folder) to also look inside our own backend/static/ directory, not
+# just each installed app's own static/ folder.
+#
+# The actual reason we need this: Django resolves a static file's
+# namespaced path (e.g. "location_field/js/form.js") by checking every
+# app's bundled static files AND every STATICFILES_DIRS entry, and
+# FIRST MATCH WINS — apps are checked in INSTALLED_APPS order, and
+# STATICFILES_DIRS entries are checked before any app's own static/
+# (this is Django's documented default finder order: FileSystemFinder,
+# which reads STATICFILES_DIRS, runs BEFORE AppDirectoriesFinder).
+# So dropping our own file at backend/static/location_field/js/form.js
+# — matching that exact same namespaced path — makes Django serve OUR
+# version instead of the one bundled inside the location_field PACKAGE,
+# with zero need to fork or vendor the whole library. We're using this
+# to patch ONE hardcoded line (the OSM tile server URL) that has no
+# settings-based override, without touching third-party package code
+# directly (which pipenv would just overwrite on the next install
+# anyway).
 
 
 # Default primary key field type
