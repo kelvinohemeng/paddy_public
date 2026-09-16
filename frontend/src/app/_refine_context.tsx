@@ -59,6 +59,17 @@ export const RefineContext = ({ children }: RefineContextProps) => {
               edit: "/listings/edit/:id",
               show: "/listings/show/:id",
             },
+            {
+              name: "core/amenities",
+              // Matches the real backend URL exactly (/core/amenities/)
+              // — the generic dataProvider builds URLs as
+              // `${API_URL}/${resource}/`, so the resource name itself
+              // carries the "core/" prefix rather than needing any
+              // special-case logic inside the data provider. No list/
+              // create/edit/show routes registered — this resource has
+              // no dedicated PAGES, it's used purely as a data source
+              // (via useSelect/useList) from within the listing form.
+            },
           ]}
           options={{
             syncWithLocation: true,

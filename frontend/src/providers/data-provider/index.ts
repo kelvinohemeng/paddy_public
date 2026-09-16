@@ -2,11 +2,12 @@
 
 import { DataProvider } from "@refinedev/core";
 import dataProviderSimpleRest from "@refinedev/simple-rest";
+import { refreshAccessToken } from "@/lib/auth-refresh";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 
-const customFetch = async (url: string, options: RequestInit = {}) => {
+const customFetch = async (url: string, options: RequestInit = {}, retried = false) => {
     const token = localStorage.getItem("access_token")
     // Reading from the SAME storage key auth-provider.client.ts writes
     // to on login/register — this file doesn't own that token, it just
@@ -19,6 +20,26 @@ const customFetch = async (url: string, options: RequestInit = {}) => {
     }
 
     const response = await fetch(url, { ...options, headers })
+
+    if (response.status === 401 && !retried) {
+        // Access token likely expired mid-session (5-min SimpleJWT
+        // default) — try ONE silent refresh and replay the original
+        // request before surfacing the 401. Without this, any in-app
+        // fetch after a few idle minutes fails even though the session
+        // itself is still refreshable (src/proxy.ts only covers
+        // navigation, not fetches fired from an already-loaded page).
+        const fresh = await refreshAccessToken();
+        if (fresh) {
+            return customFetch(
+                url,
+                {
+                    ...options,
+                    headers: { ...options.headers, Authorization: `Bearer ${fresh}` },
+                },
+                true,
+            );
+        }
+    }
 
     if (!response.ok) {
         const errorData = await response.json().catch(() => ({}))

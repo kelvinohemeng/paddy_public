@@ -1,0 +1,277 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import { useSelect, useCreate } from "@refinedev/core";
+import { Check, ChevronsUpDown, Plus, X } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
+
+type Amenity = { id: number; name: string; slug: string };
+
+type AmenityPickerProps = {
+  value: number[];
+  // The CURRENTLY SELECTED amenity ids — this component is fully
+  // "controlled": it never keeps its own separate copy of the
+  // selection, it always reflects exactly whatever the parent form
+  // hands it, and reports changes back via onChange. Same principle
+  // as every other field in listing-create-form.tsx being driven by
+  // react-hook-form's own state, not a local useState.
+  onChange: (ids: number[]) => void;
+};
+
+// A searchable multi-select for amenities, with an inline "create new"
+// option when the typed search text doesn't match anything existing.
+// Landlords browse the SHARED core.Amenity table (visible to every
+// landlord, per the actual product decision) and can add a brand new
+// amenity on the fly — the backend's own get-or-create logic
+// (AmenityViewSet.create, case-insensitive on name) means even if two
+// landlords independently "create" the same amenity name, they end up
+// pointing at the same underlying row, never a duplicate.
+
+export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // Normalize once — guards against string ids sneaking in (e.g. a
+  // future edit form hydrating from URL params), which would silently
+  // break every .includes() check below via strict-equality mismatch.
+  const selectedIds = useMemo(() => value.map(Number), [value]);
+
+  const { options, query } = useSelect<Amenity>({
+    resource: "core/amenities",
+    // Matches the resource name registered in _refine_context.tsx —
+    // Refine looks this up to know which dataProvider.getList() call
+    // to make, which in turn builds the real /core/amenities/ URL
+    optionLabel: "name",
+    optionValue: "id",
+    searchField: "name",
+    onSearch: (searchValue) => [
+      { field: "name", operator: "contains", value: searchValue },
+    ],
+    // onSearch controls what filter gets sent to the backend as the
+    // user types. NOTE: your AmenityViewSet doesn't currently
+    // implement any search/filter logic in get_queryset — it's a
+    // plain ModelViewSet with `queryset = Amenity.objects.all()`, so
+    // this filter is actually a no-op against your real backend right
+    // now (DRF just ignores unrecognized query params by default).
+    // Filtering therefore happens CLIENT-SIDE below instead, which is
+    // fine at amenity-list scale (dozens, not thousands, of rows).
+  });
+
+  const { mutate: createAmenity, mutation } = useCreate();
+  const isCreating = mutation.isPending;
+  // Refine v5 nests mutation state under `mutation` (same pattern as
+  // useList's `{ query, result }` nesting discovered earlier) rather
+  // than spreading isPending/data/error flat on the hook's own return
+  // value — confirmed directly against the installed type definitions
+  // via a scratch file, not assumed from older docs/examples.
+
+  const selectedAmenities = options.filter((opt) =>
+    selectedIds.includes(Number(opt.value)),
+  );
+
+  const trimmedSearch = search.trim();
+
+  const filteredOptions = options.filter((opt) =>
+    opt.label.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const exactMatchExists = options.some(
+    (opt) => opt.label.toLowerCase() === trimmedSearch.toLowerCase(),
+  );
+
+  // THE bug fix: this used to live inside <CommandEmpty>, which cmdk
+  // only renders when ZERO items match — so typing a partial match
+  // ("pool" when "Swimming Pool" exists) hid the create button with no
+  // way to add the genuinely-new amenity. It now renders as its own
+  // footer row whenever the typed text isn't an exact match, no matter
+  // how many partial matches are listed above it.
+  const showCreateRow = trimmedSearch.length > 0 && !exactMatchExists;
+
+  function toggleAmenity(id: number) {
+    if (selectedIds.includes(id)) {
+      onChange(selectedIds.filter((existingId) => existingId !== id));
+    } else {
+      onChange([...selectedIds, id]);
+    }
+  }
+
+  function handleCreateNew() {
+    const name = trimmedSearch;
+    if (!name || isCreating) return;
+    setCreateError(null);
+
+    createAmenity(
+      {
+        resource: "core/amenities",
+        values: { name },
+        // dataProvider.create() sends this straight to
+        // POST /core/amenities/ — the backend's get-or-create logic
+        // decides whether this becomes a genuinely new row (201) or
+        // returns an existing match (200). Either way, the response
+        // contains a real Amenity id we can immediately select.
+      },
+      {
+        onSuccess: (response) => {
+          const newAmenity = response.data as unknown as Amenity;
+          // Guard against double-adding: the 200 (matched-existing)
+          // path can return an id that's already selected.
+          onChange(
+            selectedIds.includes(newAmenity.id)
+              ? selectedIds
+              : [...selectedIds, newAmenity.id],
+          );
+          // Immediately select the amenity that was just created (or
+          // matched) — the user typed a name expecting it to become
+          // part of this listing, not just added to the shared table
+          // in the abstract
+          setSearch("");
+          query.refetch();
+          // Refetch the list so this new/matched amenity shows up in
+          // `options` on the next render — without this, a TRULY new
+          // amenity would be selected (its id is in `value`) but
+          // wouldn't yet render as a visible badge, since
+          // selectedAmenities is derived by filtering `options`
+        },
+        onError: () => {
+          setCreateError(
+            `Couldn't create "${name}" — check your connection and try again.`,
+          );
+        },
+      },
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between font-normal"
+          >
+            <span className="truncate">
+              {query.isLoading && options.length === 0
+                ? "Loading amenities..."
+                : selectedAmenities.length > 0
+                  ? `${selectedAmenities.length} amenities selected`
+                  : "Select amenities..."}
+            </span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          className="w-[var(--radix-popover-trigger-width)] p-0"
+          align="start"
+        >
+          <Command shouldFilter={false}>
+            {/* shouldFilter={false} — Command's own built-in filtering
+                is disabled deliberately, since filteredOptions above
+                already does this manually. Leaving Command's default
+                filtering on would double-filter against a DIFFERENT
+                matching algorithm than ours, causing confusing
+                mismatches between what's typed and what's shown. */}
+            <CommandInput
+              placeholder="Search or create amenity..."
+              value={search}
+              onValueChange={(v) => {
+                setSearch(v);
+                setCreateError(null);
+              }}
+            />
+            <CommandList>
+              {query.isLoading && (
+                <div className="text-muted-foreground p-4 text-sm">
+                  Loading...
+                </div>
+              )}
+
+              {query.isError && !query.isLoading && (
+                <div className="p-4 text-sm text-red-500">
+                  Couldn&apos;t load amenities — close and reopen to retry.
+                </div>
+              )}
+
+              <CommandEmpty>No exact match found.</CommandEmpty>
+
+              <CommandGroup>
+                {filteredOptions.map((option) => (
+                  <CommandItem
+                    key={option.value}
+                    value={String(option.value)}
+                    onSelect={() => toggleAmenity(Number(option.value))}
+                  >
+                    <Check
+                      className={cn(
+                        "mr-2 h-4 w-4",
+                        selectedIds.includes(Number(option.value))
+                          ? "opacity-100"
+                          : "opacity-0",
+                      )}
+                    />
+                    {option.label}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+
+              {showCreateRow && (
+                <div className="border-t p-1">
+                  <button
+                    type="button"
+                    onClick={handleCreateNew}
+                    disabled={isCreating}
+                    className="hover:bg-accent flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm disabled:opacity-50"
+                  >
+                    <Plus className="h-4 w-4 shrink-0" />
+                    <span className="truncate">
+                      {isCreating
+                        ? `Creating "${trimmedSearch}"...`
+                        : `Create "${trimmedSearch}"`}
+                    </span>
+                  </button>
+                  {createError && (
+                    <p className="px-2 pb-1.5 pt-1 text-xs text-red-500">
+                      {createError}
+                    </p>
+                  )}
+                </div>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      {selectedAmenities.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {selectedAmenities.map((amenity) => (
+            <Badge key={amenity.value} variant="secondary" className="gap-1">
+              {amenity.label}
+              <button
+                type="button"
+                onClick={() => toggleAmenity(Number(amenity.value))}
+                aria-label={`Remove ${amenity.label}`}
+                className="hover:bg-muted-foreground/20 ml-1 rounded-full"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};

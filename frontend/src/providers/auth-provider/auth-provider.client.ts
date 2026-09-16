@@ -10,8 +10,12 @@ import Cookies from "js-cookie";
 const handleAuthSuccess = async (response: Response) => {
   const data = await response.json();
 
-  // Set cookie for middleware/SSR safety, and localStorage for client-side persistence
+  // Set cookies for proxy/SSR safety, and localStorage for client-side persistence.
+  // BOTH tokens go in BOTH stores: src/proxy.ts can only read cookies
+  // (no localStorage on the server), so without the refresh_token
+  // cookie silent refresh on reload would be impossible.
   Cookies.set("access_token", data.access, { expires: 1, path: "/" });
+  Cookies.set("refresh_token", data.refresh, { expires: 1, path: "/" });
   localStorage.setItem("access_token", data.access);
   localStorage.setItem("refresh_token", data.refresh);
 
@@ -156,6 +160,8 @@ export const authProviderClient: AuthProvider = {
       const data = await res.json();
 
       Cookies.set("access_token", data.access, { expires: 1, path: "/" });
+      Cookies.set("refresh_token", data.refresh, { expires: 1, path: "/" });
+      // refresh_token cookie included — see handleAuthSuccess above for why.
 
       // localStorage — decided earlier: simple to start with, browser-only
       // (this is exactly why login/register/everything auth-related has
@@ -187,7 +193,12 @@ export const authProviderClient: AuthProvider = {
     // authenticated: false.
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
-    Cookies.remove("access_token");
+    // path: "/" is REQUIRED here — these cookies were SET with path "/",
+    // and js-cookie's remove() defaults to the CURRENT page path, which
+    // would silently leave the real cookies behind (still "logged in"
+    // server-side after logout — a cousin of the reload-loop bug).
+    Cookies.remove("access_token", { path: "/" });
+    Cookies.remove("refresh_token", { path: "/" });
 
     return {
       success: true,

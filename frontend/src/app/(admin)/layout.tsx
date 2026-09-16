@@ -53,12 +53,12 @@ export default async function AdminLayout({
 
   const user = await response.json();
 
-  if (user.role == "renter") {
+  if (user.role !== "landlord") {
     // Landlords create/manage their own listings; staff verify/manage
     // listings too; admins also need access here (revised — originally
     // scoped to just landlord/staff, with admin routed through Django's
     // own admin panel instead, but that was reconsidered).
-    redirect("/");
+    redirect("/login");
   }
 
   return (

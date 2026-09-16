@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useForm } from "@refinedev/react-hook-form";
+import { Controller } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import { ImagePlus, X } from "lucide-react";
 
@@ -23,6 +24,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { AmenityPicker } from "./amenity-picker";
+import { refreshAccessToken } from "@/lib/auth-refresh";
 
 // Backend's ListingPhoto.image field only accepts these extensions
 // (FileExtensionValidator in listings/models.py) — matching the
@@ -157,19 +160,30 @@ export const ListingCreateForm = () => {
 
           const token = localStorage.getItem("access_token");
 
-          await fetch(
-            `${process.env.NEXT_PUBLIC_API_URL}/listings/${newListingId}/photos/`,
-            {
-              method: "POST",
-              headers: { Authorization: `Bearer ${token}` },
-              // Deliberately NO "Content-Type" header here — the browser
-              // sets multipart/form-data WITH the correct boundary
-              // string itself when the body is a FormData object.
-              // Setting Content-Type manually would actually BREAK
-              // this, since you'd be guessing the boundary wrong.
-              body: formData,
-            },
-          );
+          const uploadPhotos = (accessToken: string | null) =>
+            fetch(
+              `${process.env.NEXT_PUBLIC_API_URL}/listings/${newListingId}/photos/`,
+              {
+                method: "POST",
+                headers: { Authorization: `Bearer ${accessToken}` },
+                // Deliberately NO "Content-Type" header here — the browser
+                // sets multipart/form-data WITH the correct boundary
+                // string itself when the body is a FormData object.
+                // Setting Content-Type manually would actually BREAK
+                // this, since you'd be guessing the boundary wrong.
+                body: formData,
+              },
+            );
+
+          let photoRes = await uploadPhotos(token);
+          if (photoRes.status === 401) {
+            // Same idle-expiry case as dataProvider's retry above — one
+            // silent refresh, then replay. If that fails too, move on:
+            // the listing itself is already created, photos can be
+            // re-added rather than blocking the whole success path.
+            const fresh = await refreshAccessToken();
+            if (fresh) photoRes = await uploadPhotos(fresh);
+          }
           // Not using dataProvider.create() here — this one-off
           // multipart upload to a custom @action endpoint doesn't fit
           // the generic resource CRUD shape dataProvider methods
@@ -409,6 +423,31 @@ export const ListingCreateForm = () => {
                 <FormMessage />
               </FormItem>
             )}
+          />
+        </section>
+
+        <section className="space-y-4">
+          <h3 className="text-sm font-semibold tracking-tight">Amenities</h3>
+          <Controller
+            control={form.control}
+            name="amenities"
+            render={({ field }) => (
+              <AmenityPicker
+                value={field.value ?? []}
+                onChange={field.onChange}
+              />
+            )}
+            // Same Controller pattern used for the role picker in
+            // sign-up-form.tsx — AmenityPicker is a custom component
+            // with its own value/onChange shape (an array of ids), not
+            // a native input, so it can't be spread via {...field}
+            // the way a plain <Input> can. Controller is
+            // react-hook-form's purpose-built bridge for exactly this.
+            //
+            // "amenities" here matches ListingSerializer's real field
+            // name exactly (confirmed earlier via direct introspection:
+            // amenities, required=False) — it expects a list of
+            // Amenity ids, which is precisely what field.value holds.
           />
         </section>
 
