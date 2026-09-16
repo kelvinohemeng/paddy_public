@@ -227,6 +227,65 @@ def _verify_paystack_signature(request):
     # compare secrets/signatures, never plain ==
 
 
+def _plan_code_from_paystack_data(data):
+    # Paystack identifies the plan differently depending on the event:
+    # charge events carry plan_object{plan_code} (object form) and/or
+    # plan (a bare "PLN_..." code string, or occasionally the same
+    # object) — subscription/invoice events nest it under their own
+    # subscription/plan objects instead. Checked in that order; first
+    # hit wins, None if the payload names no plan at all.
+    plan_object = data.get('plan_object') or {}
+    if isinstance(plan_object, dict) and plan_object.get('plan_code'):
+        return plan_object.get('plan_code')
+
+    plan = data.get('plan')
+    if isinstance(plan, str) and plan:
+        return plan
+    if isinstance(plan, dict) and plan.get('plan_code'):
+        return plan.get('plan_code')
+
+    return None
+
+
+def _tier_for_plan_code(plan_code):
+    # The AUTHORITATIVE plan→tier mapping lives here, in exactly one
+    # place — every webhook branch below resolves tiers through this
+    # instead of each carrying its own copy that could drift (e.g. one
+    # branch learning about a new tier while another still rejects it).
+    # Returns None for unknown/missing codes: callers leave `tier`
+    # untouched rather than guessing, per the existing convention.
+    plan_code_to_tier = {
+        settings.PAYSTACK_AGENT_PLAN_CODE: LandlordSubscription.Tier.AGENT,
+        settings.PAYSTACK_LORD_PLAN_CODE: LandlordSubscription.Tier.LORD,
+    }
+    return plan_code_to_tier.get(plan_code)
+
+
+def _period_end_from_paystack_data(data):
+    # next_payment_date is a TOP-LEVEL field on subscription-shaped
+    # payloads (subscription.create) — it is NOT inside plan_object
+    # (which only ever holds id/name/plan_code/amount/interval). An
+    # older revision of the charge.success branch read it from
+    # plan_object, a location Paystack never sends, which is exactly
+    # why paid subscriptions ended up ACTIVE with no period end and
+    # stayed gated. Top-level first, plan_object kept only as a
+    # harmless fallback; None when unparseable/missing so callers can
+    # skip the write instead of storing garbage.
+    top_level = data.get('next_payment_date')
+    if top_level:
+        parsed = parse_datetime(top_level)
+        if parsed:
+            return parsed
+
+    plan_object = data.get('plan_object')
+    if isinstance(plan_object, dict) and plan_object.get('next_payment_date'):
+        parsed = parse_datetime(plan_object.get('next_payment_date'))
+        if parsed:
+            return parsed
+
+    return None
+
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([ScopedRateThrottle])
@@ -264,6 +323,24 @@ def paystack_webhook(request):
         )
         subscription.paystack_customer_code = customer_code
         subscription.paystack_subscription_code = subscription_code
+
+        tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
+        if tier is not None:
+            subscription.tier = tier
+        # Tier recorded now (not at first charge) so the row already
+        # names the right plan while payment is pending. Status is
+        # deliberately NOT touched here — no money has moved yet, and
+        # only charge.success below may mark a subscription ACTIVE.
+
+        period_end = _period_end_from_paystack_data(data)
+        if period_end is not None:
+            subscription.current_period_end = period_end
+        # subscription.create's data IS the Subscription resource, whose
+        # next_payment_date is top-level — this is the reliable source
+        # for the period end. Stored now so that even if a later
+        # charge.success arrives without date info, the row isn't left
+        # dateless (which is_active() would treat as inactive).
+
         subscription.save()
 
     elif event == 'charge.success':
@@ -330,40 +407,91 @@ def paystack_webhook(request):
             landlord_profile=user.landlordprofile
         )
         subscription.status = LandlordSubscription.Status.ACTIVE
+        # ACTIVE here means "money genuinely moved" (charge.success only
+        # fires for successful charges) — this is the ONE place a
+        # subscription becomes active, never subscription.create above.
 
-        plan_object = data.get('plan_object', {}) or {}
+        tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
         # Paystack includes the plan that was charged directly in the
         # webhook payload — this is the AUTHORITATIVE source for which
         # tier to set, rather than us guessing based on amount (which
         # could change) or trusting anything the frontend claimed
         # earlier at initiate-time
-
-        plan_code = plan_object.get('plan_code')
-
-        plan_code_to_tier = {
-            settings.PAYSTACK_AGENT_PLAN_CODE: LandlordSubscription.Tier.AGENT,
-            settings.PAYSTACK_LORD_PLAN_CODE: LandlordSubscription.Tier.LORD,
-        }
-
-        if plan_code in plan_code_to_tier:
-            subscription.tier = plan_code_to_tier[plan_code]
+        if tier is not None:
+            subscription.tier = tier
         # If plan_code doesn't match either known plan (e.g. malformed
         # event, or a plan created outside this flow), we deliberately
         # leave `tier` untouched rather than guessing — status still
         # updates to ACTIVE, but is_active() alone doesn't grant a
         # cap upgrade if tier isn't also correctly set
 
-        next_payment_date = plan_object.get('next_payment_date')
+        period_end = _period_end_from_paystack_data(data)
+        if period_end is not None:
+            subscription.current_period_end = period_end
+        # Only overwrites when a parseable date is actually present —
+        # charge.success payloads (Transaction resource) usually carry
+        # NO date at all, in which case the period stored earlier by
+        # subscription.create is left exactly as-is rather than wiped.
+        # Without this guard, every renewal would null the period out
+        # (or rather, without subscription.create storing it first,
+        # paid rows ended up ACTIVE with no period and stayed gated).
+
+        subscription.save()
+
+    elif event == 'invoice.update':
+        # Fires after EVERY subscription billing attempt with its final
+        # status (per Paystack's lifecycle: invoice.create → charge
+        # attempt → invoice.update). This is the ONLY event that
+        # reliably carries the fresh next_payment_date on every cycle —
+        # renewal charge.success payloads (Transaction resource) don't
+        # include one — so without this branch a renewed subscription
+        # keeps its FIRST period end forever and lapses out of active
+        # status ~30 days after subscribing, despite successful renewals.
+
+        if not (data.get('paid') or data.get('status') == 'success'):
+            return Response(status=status.HTTP_200_OK)
+            # Failed invoices are invoice.payment_failed's job below
+            # (marks PAST_DUE) — a failed charge must NEVER extend
+            # anyone's paid period, so we ignore it here entirely.
+
+        invoice_sub = data.get('subscription')
+        if not isinstance(invoice_sub, dict):
+            return Response(status=status.HTTP_200_OK)
+
+        subscription = None
+        subscription_code = invoice_sub.get('subscription_code')
+        if subscription_code:
+            subscription = LandlordSubscription.objects.filter(
+                paystack_subscription_code=subscription_code
+            ).first()
+
+        if subscription is None:
+            customer = data.get('customer')
+            email = customer.get('email') if isinstance(customer, dict) else None
+            if email:
+                subscription = LandlordSubscription.objects.filter(
+                    landlord_profile__user__email=email
+                ).first()
+                # Double-underscore traversal straight to the email —
+                # avoids fetching the User first and sidesteps
+                # RelatedObjectDoesNotExist entirely when no profile
+                # exists for that email.
+
+        if subscription is None:
+            return Response(status=status.HTTP_200_OK)
+            # Same "acknowledge, don't fail" reasoning as every other
+            # not-found case in this view — retrying won't create the
+            # missing row.
+
+        next_payment_date = invoice_sub.get('next_payment_date')
         if next_payment_date:
             parsed = parse_datetime(next_payment_date)
             if parsed:
                 subscription.current_period_end = parsed
-        # parse_datetime — Django's helper for turning an ISO-format
-        # string (which is what Paystack sends) into a real Python
-        # datetime object DateTimeField can store. Guarded with `if
-        # parsed` since parse_datetime returns None on malformed input
-        # rather than raising, so we don't want to silently overwrite a
-        # valid existing date with an unparseable one
+
+        subscription.status = LandlordSubscription.Status.ACTIVE
+        # A successful invoice means money moved — this also heals a
+        # PAST_DUE row back to ACTIVE when a retry succeeds.
 
         subscription.save()
 

@@ -1,6 +1,9 @@
+from datetime import timedelta
+
 from django.contrib import admin
 # Still need this — admin.site is the actual registry Django admin uses
 # to know which models to display at all
+from django.utils import timezone
 
 from unfold.admin import ModelAdmin
 # Unfold's themed base class — same pattern as accounts/admin.py,
@@ -30,6 +33,23 @@ class LandlordSubscriptionAdmin(ModelAdmin):
     # landlord_profile__user filter) — lets admin's search box find a
     # subscription by the landlord's name OR email, not just this
     # table's own fields
+
+    def save_model(self, request, obj, form, change):
+        # Staff marking a row ACTIVE with no period end almost always
+        # means "grant paid status manually" (comped account, testing)
+        # — but is_active() deliberately treats dateless-ACTIVE as
+        # INACTIVE (fail-safe, pinned by tests), so without this the
+        # grant would silently do nothing and listing creation would
+        # stay gated at the free cap. Defaulting to 30 days makes the
+        # admin action do what staff obviously meant; edit the date
+        # afterwards for any other duration. Model-layer semantics are
+        # untouched — only this admin form fills the blank.
+        if (
+            obj.status == LandlordSubscription.Status.ACTIVE
+            and obj.current_period_end is None
+        ):
+            obj.current_period_end = timezone.now() + timedelta(days=30)
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(ListingUnlock)

@@ -3,6 +3,8 @@ import hmac
 import json
 
 from django.conf import settings
+from django.contrib.admin.sites import AdminSite
+from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from datetime import timedelta
 
@@ -10,6 +12,7 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 
 from accounts.models import User, LandlordProfile
+from .admin import LandlordSubscriptionAdmin
 from .models import LandlordSubscription
 
 
@@ -183,12 +186,87 @@ class WebhookTests(APITestCase):
         # correct signature, is rejected — the actual security guarantee
         # this whole function exists for
 
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+    def test_subscription_create_stores_tier_and_period_without_activating(self):
+        # subscription.create's data IS the Subscription resource:
+        # plan identifies the tier, next_payment_date is TOP-LEVEL.
+        # No money has moved yet, so status must stay INACTIVE — only
+        # charge.success below may activate.
+        payload = {
+            'event': 'subscription.create',
+            'data': {
+                'customer': {'email': self.landlord_user.email, 'customer_code': 'CUS_test123'},
+                'subscription_code': 'SUB_test123',
+                'plan': {'plan_code': 'PLN_agent_test'},
+                'next_payment_date': '2026-11-01T00:00:00.000Z',
+            },
+        }
+        body = json.dumps(payload).encode('utf-8')
+
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.tier, LandlordSubscription.Tier.AGENT)
+        self.assertIsNotNone(subscription.current_period_end)
+        self.assertEqual(subscription.status, LandlordSubscription.Status.INACTIVE)
+        self.assertFalse(subscription.is_active())
+
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+    def test_full_subscription_flow_activates_with_cap(self):
+        # The REAL production sequence for a plan purchase (per
+        # Paystack's subscription lifecycle docs): subscription.create
+        # first (tier + period, still inactive), then charge.success
+        # once money moves (ACTIVE). End state must actually pass
+        # is_active() — this is the exact scenario that was broken
+        # when the period was read from plan_object.next_payment_date,
+        # a location Paystack never sends.
+        create_payload = {
+            'event': 'subscription.create',
+            'data': {
+                'customer': {'email': self.landlord_user.email, 'customer_code': 'CUS_test123'},
+                'subscription_code': 'SUB_test123',
+                'plan': {'plan_code': 'PLN_agent_test'},
+                'next_payment_date': '2026-11-01T00:00:00.000Z',
+            },
+        }
+        charge_payload = {
+            'event': 'charge.success',
+            'data': {
+                'customer': {'email': self.landlord_user.email},
+                'plan_object': {'plan_code': 'PLN_agent_test'},
+            },
+        }
+
+        for payload in (create_payload, charge_payload):
+            body = json.dumps(payload).encode('utf-8')
+            response = self.client.post(
+                '/payments/webhook/', data=body, content_type='application/json',
+                HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+            )
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.status, LandlordSubscription.Status.ACTIVE)
+        self.assertEqual(subscription.tier, LandlordSubscription.Tier.AGENT)
+        self.assertTrue(subscription.is_active())
+        self.assertEqual(subscription.listing_cap(), 10)
+
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
     def test_charge_success_activates_subscription(self):
+        # Real charge.success shape: plan_object carries plan_code but
+        # NO date (Transaction resource has no next_payment_date).
+        # Status must still flip to ACTIVE on money moved; the period
+        # comes from subscription.create (tested above), not from here.
         payload = {
             'event': 'charge.success',
             'data': {
                 'customer': {'email': self.landlord_user.email},
-                'plan_object': {'next_payment_date': '2026-11-01T00:00:00.000Z'},
+                'plan_object': {'plan_code': 'PLN_agent_test'},
             },
         }
         body = json.dumps(payload).encode('utf-8')
@@ -202,7 +280,100 @@ class WebhookTests(APITestCase):
 
         subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
         self.assertEqual(subscription.status, LandlordSubscription.Status.ACTIVE)
+        self.assertEqual(subscription.tier, LandlordSubscription.Tier.AGENT)
+
+    def test_invoice_update_refreshes_period_and_heals_past_due(self):
+        # Renewals pay via the same cycle; invoice.update is the ONLY
+        # event carrying the fresh next_payment_date (nested under
+        # data.subscription). A PAST_DUE row paid on retry must heal.
+        LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.PAST_DUE,
+            current_period_end=timezone.now() - timedelta(days=1),
+            paystack_subscription_code='SUB_test123',
+        )
+
+        payload = {
+            'event': 'invoice.update',
+            'data': {
+                'paid': True,
+                'status': 'success',
+                'customer': {'email': self.landlord_user.email},
+                'subscription': {
+                    'subscription_code': 'SUB_test123',
+                    'next_payment_date': '2026-12-01T00:00:00.000Z',
+                },
+            },
+        }
+        body = json.dumps(payload).encode('utf-8')
+
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.status, LandlordSubscription.Status.ACTIVE)
+        self.assertTrue(subscription.is_active())
+
+    def test_failed_invoice_update_does_not_extend_period(self):
+        # A FAILED charge must never extend anyone's paid period —
+        # that job belongs to invoice.payment_failed (PAST_DUE).
+        old_period_end = timezone.now() + timedelta(days=5)
+        LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.ACTIVE,
+            current_period_end=old_period_end,
+            paystack_subscription_code='SUB_test123',
+        )
+
+        payload = {
+            'event': 'invoice.update',
+            'data': {
+                'paid': False,
+                'status': 'failed',
+                'customer': {'email': self.landlord_user.email},
+                'subscription': {
+                    'subscription_code': 'SUB_test123',
+                    'next_payment_date': '2026-12-01T00:00:00.000Z',
+                },
+            },
+        }
+        body = json.dumps(payload).encode('utf-8')
+
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.current_period_end, old_period_end)
+
+    def test_admin_save_defaults_period_for_manual_grant(self):
+        # Staff granting Active with a blank period in admin gets a
+        # 30-day period auto-filled, so the grant actually takes
+        # effect instead of silently failing is_active(). Model-layer
+        # semantics are untouched (see the is_active tests above).
+        model_admin = LandlordSubscriptionAdmin(LandlordSubscription, AdminSite())
+        request = RequestFactory().get('/')
+
+        subscription = LandlordSubscription(
+            landlord_profile=self.landlord_profile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.ACTIVE,
+            current_period_end=None,
+        )
+        model_admin.save_model(request, subscription, form=None, change=False)
+
+        subscription.refresh_from_db()
         self.assertIsNotNone(subscription.current_period_end)
+        self.assertTrue(subscription.is_active())
 
     def test_invoice_payment_failed_marks_past_due(self):
         LandlordSubscription.objects.create(
