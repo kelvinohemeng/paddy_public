@@ -6,6 +6,33 @@ import { refreshAccessToken } from "@/lib/auth-refresh";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
+// DRF error bodies come in three shapes, none of which is `.message`:
+//   - `{detail: "..."}` for permission/404 errors (PermissionDenied etc.)
+//   - `{detail: [...]}` occasionally (throttling)
+//   - `{field: ["..."]}` for serializer validation errors
+// The old code read only `.message`, so every backend error surfaced as
+// the generic "Something went wrong" — including the listing-limit 403,
+// which left users with no idea what to do. This unwraps whichever
+// shape arrives so the toast shows the backend's actual reason.
+function extractErrorMessage(data: unknown): string | null {
+    if (typeof data === "string") return data;
+    if (Array.isArray(data)) {
+        return data.length > 0 ? extractErrorMessage(data[0]) : null;
+    }
+    if (data && typeof data === "object") {
+        const record = data as Record<string, unknown>;
+        return (
+            extractErrorMessage(record.detail) ??
+            extractErrorMessage(record.message) ??
+            extractErrorMessage(record.error) ??
+            (Object.keys(record).length > 0
+                ? extractErrorMessage(record[Object.keys(record)[0]])
+                : null)
+        );
+    }
+    return null;
+}
+
 
 const customFetch = async (url: string, options: RequestInit = {}, retried = false) => {
     const token = localStorage.getItem("access_token")
@@ -45,7 +72,7 @@ const customFetch = async (url: string, options: RequestInit = {}, retried = fal
         const errorData = await response.json().catch(() => ({}))
 
         throw {
-            message: errorData.message || "Something went wrong",
+            message: extractErrorMessage(errorData) || "Something went wrong",
             statusCode: response.status,
             error: errorData.error || "Unknown error",
         }
