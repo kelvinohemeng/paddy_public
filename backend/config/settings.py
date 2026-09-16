@@ -64,6 +64,14 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=lamb
 
 INSTALLED_APPS = [
     'unfold',
+    'unfold.contrib.location_field',
+    # Unfold's own bridge app for django-location-field — MUST come
+    # after plain 'unfold' but BEFORE 'location_field' itself below.
+    # This is what makes the widget render themed/correctly inside
+    # Unfold's admin UI, instead of using location_field's own default
+    # (unthemed, and the exact "Delete all Features"-but-no-map-loads
+    # bug we just diagnosed) styling.
+
     'anymail',
     'django.contrib.admin',
     'django.contrib.auth',
@@ -78,6 +86,13 @@ INSTALLED_APPS = [
 
     'corsheaders',
 
+    'location_field.apps.DefaultConfig',
+    # The actual third-party package installed via pipenv. Registering
+    # its app here is what makes its static files (JS/CSS for the map
+    # widget) and template tags available — same reason every other
+    # third-party app (anymail, corsheaders, rest_framework) is listed
+    # here rather than just being pip-installed and left unregistered
+
     #apps
     'accounts',
     'listings',
@@ -85,6 +100,23 @@ INSTALLED_APPS = [
     'payments',
     'core',
 ]
+
+LOCATION_FIELD = {
+    'map.provider': 'openstreetmap',
+    # Deliberately OpenStreetMap, not Google — this widget is ONLY ever
+    # seen by staff inside Django admin (never end-users/renters), so
+    # there's no product reason to spend Google Maps quota on it, and
+    # no API key is needed at all for OSM. Keeps this fix fully
+    # decoupled from the separate Google Maps/Places setup needed later
+    # for the renter-facing Discovery Hub and the landlord create-form's
+    # address autocomplete.
+
+    'search.provider': 'nominatim',
+    # Nominatim = OpenStreetMap's own free geocoding/search service —
+    # lets staff type an address into the widget's search box and jump
+    # the map there, same convenience as Google's search bar would give,
+    # still with no API key or billing involved
+}
 
 REST_FRAMEWORK = {
     # Global DRF settings — a dict DRF looks for by this exact name
