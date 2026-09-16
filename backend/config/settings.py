@@ -278,6 +278,37 @@ CORS_ALLOWED_ORIGINS = config(
 # security boundary. An API serving real user data (subscriptions,
 # viewing requests, contact info) should never use it
 
+if DEBUG:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r'^http://localhost:\d+$',
+        r'^http://127\.0\.0\.1:\d+$',
+    ]
+    # NEW — solves the multi-worktree problem: with several Orca
+    # worktrees running `next dev` at once, each auto-picks a different
+    # port (3000, 3001, 3002...) since only one process can bind 3000
+    # at a time. Adding every port to CORS_ALLOWED_ORIGINS by hand
+    # would mean editing this file (and re-deploying/restarting) every
+    # time a new worktree spins up — not sustainable.
+    #
+    # CORS_ALLOWED_ORIGIN_REGEXES is django-cors-headers' own
+    # purpose-built setting for exactly this: PATTERN matching instead
+    # of exact-string matching. \d+ matches any port number, so this
+    # accepts http://localhost:<any port> and http://127.0.0.1:<any
+    # port> — covers every local dev server regardless of which port
+    # it happened to land on.
+    #
+    # Deliberately gated behind `if DEBUG:` — this list is ONLY ever
+    # added when DEBUG=True (local dev, per the setting above), which
+    # is False by default and specifically set False in production
+    # (Render). This keeps the same allow-list security posture in
+    # production (CORS_ALLOWED_ORIGINS' exact-match list, unaffected by
+    # any of this) while giving local dev the convenience of not
+    # needing a fixed port. NEVER remove this DEBUG gate — a regex
+    # matching "any port on localhost" in PRODUCTION would be harmless
+    # (production isn't running on localhost), but the pattern-matching
+    # habit is dangerous to generalize from; production must keep using
+    # the strict allow-list, never a regex.
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
