@@ -7,15 +7,18 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin
 # Same Unfold pattern as accounts/admin.py — themed admin interface
 
-from location_field.widgets import LocationWidget
-# The actual widget class — turns out `unfold.contrib.location_field`
-# (registered in INSTALLED_APPS) is NOT a separate widget class at all,
-# just a template override package: it ships its own themed
-# map_widget.html that Django's template loader picks up automatically
-# ahead of location_field's own default, because Unfold's app is listed
-# first in INSTALLED_APPS. So we still import and use THIS widget
-# directly — Unfold reskins it for free, no special "Unfold widget"
-# class to import
+from location_field.forms.spatial import LocationField as LocationFormField
+# The full FORM FIELD class (not just the widget) — this is the actual
+# fix for the "Invalid geometry value" bug. My earlier version only
+# swapped the WIDGET (LocationWidget, which renders the Leaflet map and
+# writes plain "lat,lng" text into a hidden input) but left Django's
+# default PointField form field in charge of validating/parsing that
+# submitted text — and the default PointField form field expects
+# WKT/GeoJSON, not "lat,lng", so it rejected the widget's own output.
+# Widget and field were mismatched — swapping the WHOLE field (which
+# builds its own matching widget internally, see location_field/forms/
+# plain.py) fixes both halves together: LocationField.clean() parses
+# "lat,lng" into a real Point object correctly.
 
 from .models import Listing, ListingPhoto
 
@@ -40,9 +43,10 @@ class ListingAdminForm(forms.ModelForm):
         # field/widget from the model as usual) — THEN we override just
         # the one we care about, below
 
-        self.fields['location'].widget = LocationWidget(
+        self.fields['location'] = LocationFormField(
             based_fields=[],
-            # Required kwarg — LocationWidget's __init__ does
+            # Required kwarg — LocationWidget's __init__ (built
+            # internally by this form field) does
             # kwargs.pop("based_fields") with no default, so it MUST be
             # passed even when unused. based_fields would let you
             # auto-derive a search query from OTHER form fields (e.g.
@@ -55,6 +59,27 @@ class ListingAdminForm(forms.ModelForm):
             # visible", reasonable default for pinning a single Accra/
             # Kumasi listing without needing to scroll/zoom in manually
             # every time staff open this form
+
+            required=False,
+            # Matches the model's own null=True/blank=True — location
+            # is genuinely optional (a listing might exist before it's
+            # been pinned on a map). Without this, LocationField's
+            # PlainLocationField base defaults required=True, which
+            # would block saving ANY listing with an empty location —
+            # a second, separate bug from the "Invalid geometry value"
+            # one, worth fixing in the same pass since it's the same
+            # field.
+
+            initial=self.instance.location if self.instance.pk else None,
+            # When editing an EXISTING listing, pre-fill the field with
+            # its current Point value so the widget shows the correct
+            # already-saved pin instead of defaulting to 0,0 — ModelForm
+            # normally handles this automatically via the model field,
+            # but since we're REPLACING the form field entirely here
+            # (not just its widget), that automatic wiring is lost and
+            # needs re-doing by hand. self.instance.pk check: a
+            # brand-new "Add listing" form has no pk yet, so there's no
+            # existing value to pre-fill.
         )
 
 
