@@ -20,7 +20,7 @@ class ListingCreateTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Test Landlord',
-            national_id_number='GHA-123', momo_or_bank_details='0551234567'
+            national_id_number='GHA-123', preferred_payout_method='momo'
         )
         # We create the User AND its profile manually here, since these
         # tests aren't testing signup — they need a landlord that
@@ -279,7 +279,7 @@ class ListingOwnershipTests(APITestCase):
         )
         self.owner_profile = LandlordProfile.objects.create(
             user=self.owner, full_name='Owner', national_id_number='GHA-1',
-            momo_or_bank_details='0551111111'
+            preferred_payout_method='momo'
         )
 
         self.other_landlord = User.objects.create_user(
@@ -287,7 +287,7 @@ class ListingOwnershipTests(APITestCase):
         )
         self.other_profile = LandlordProfile.objects.create(
             user=self.other_landlord, full_name='Other', national_id_number='GHA-2',
-            momo_or_bank_details='0552222222'
+            preferred_payout_method='momo'
         )
         # A SECOND, separate landlord — used to prove they can't touch
         # the first landlord's listing
@@ -358,7 +358,7 @@ class ListingFilterTests(APITestCase):
         )
         landlord_profile = LandlordProfile.objects.create(
             user=landlord_user, full_name='Filter Landlord',
-            national_id_number='GHA-999', momo_or_bank_details='0559999999'
+            national_id_number='GHA-999', preferred_payout_method='momo'
         )
 
         # Three listings with deliberately different, testable attributes
@@ -479,7 +479,7 @@ class ListingMapBoundsTests(APITestCase):
         )
         landlord_profile = LandlordProfile.objects.create(
             user=landlord_user, full_name='Map Landlord',
-            national_id_number='GHA-888', momo_or_bank_details='0558888888'
+            national_id_number='GHA-888', preferred_payout_method='momo'
         )
 
         # Real-world-ish coordinates: Accra is roughly (lat 5.6, long -0.2),
@@ -610,7 +610,7 @@ class ListingUnlockGatingTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Unlock Landlord',
-            national_id_number='GHA-777', momo_or_bank_details='0557777777'
+            national_id_number='GHA-777', preferred_payout_method='momo'
         )
         self.landlord_user.phone = '0207654321'
         self.landlord_user.save()
@@ -637,7 +637,7 @@ class ListingUnlockGatingTests(APITestCase):
         )
         LandlordProfile.objects.create(
             user=self.other_landlord_user, full_name='Other Landlord',
-            national_id_number='GHA-666', momo_or_bank_details='0556666666'
+            national_id_number='GHA-666', preferred_payout_method='momo'
         )
         # A SECOND, unrelated landlord — used to prove landlords don't
         # get a blanket free pass on EVERY listing just for having the

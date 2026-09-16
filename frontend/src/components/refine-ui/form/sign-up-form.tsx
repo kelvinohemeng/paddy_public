@@ -33,10 +33,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { SignUpFormValues, signUpSchema } from "@schemas/auth.schema";
 
 export const SignUpForm = () => {
-  const [password, setPassword] = useState("");
-  // New state, alongside email/password/confirmPassword:
-  const [confirmPassword, setConfirmPassword] = useState("");
-
   const { open } = useNotification();
 
   const Link = useLink();
@@ -192,19 +188,18 @@ export const SignUpForm = () => {
             </div>
             <div className={cn("relative flex flex-col gap-2")}>
               <Label htmlFor="password">Password</Label>
-              <InputPassword
-                id="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <InputPassword {...registerField("password")} id="password" />
+              {errors.password && (
+                <p className={cn("text-sm text-red-500")}>
+                  {errors.password.message}
+                </p>
+              )}
             </div>
             <div className={cn("relative flex flex-col gap-2 mt-6")}>
               <Label htmlFor="confirmPassword">Confirm password</Label>
               <InputPassword
                 {...registerField("confirmPassword")}
                 id="confirmPassword"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
               />
               {errors.confirmPassword && (
                 <p className={cn("text-sm text-red-500")}>

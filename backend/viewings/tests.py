@@ -28,7 +28,7 @@ class ViewingCreateTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Test Landlord',
-            national_id_number='GHA-1', momo_or_bank_details='0551111111'
+            national_id_number='GHA-1', preferred_payout_method='momo'
         )
 
         self.listing = Listing.objects.create(
@@ -192,7 +192,7 @@ class ViewingVisibilityTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Landlord Two',
-            national_id_number='GHA-2', momo_or_bank_details='0552222222'
+            national_id_number='GHA-2', preferred_payout_method='momo'
         )
 
         self.other_landlord_user = User.objects.create_user(
@@ -200,7 +200,7 @@ class ViewingVisibilityTests(APITestCase):
         )
         self.other_landlord_profile = LandlordProfile.objects.create(
             user=self.other_landlord_user, full_name='Landlord Three',
-            national_id_number='GHA-3', momo_or_bank_details='0553333333'
+            national_id_number='GHA-3', preferred_payout_method='momo'
         )
         # A SECOND landlord, used to prove landlords only see viewings
         # on THEIR OWN listings, not everyone else's
@@ -301,7 +301,7 @@ class ViewingActionTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Landlord Four',
-            national_id_number='GHA-4', momo_or_bank_details='0554444444'
+            national_id_number='GHA-4', preferred_payout_method='momo'
         )
 
         self.staff_user = User.objects.create_user(

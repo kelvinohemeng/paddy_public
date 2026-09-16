@@ -47,7 +47,22 @@ export const authProviderClient: AuthProvider = {
 
     }
 
-    const { email, username, password, role } = params;
+    const { email, password, role, firstName, lastName } = params;
+    // Destructure whatever the FORM sends (camelCase, matching
+    // SignUpFormValues) — the conversion to snake_case happens below,
+    // at the actual network boundary, since that's specifically where
+    // Django's naming convention needs to be respected.
+    //
+    // FIXED: this previously destructured { email, username, password,
+    // role } — firstName/lastName were never extracted here at all,
+    // and "username" doesn't correspond to any real field on
+    // RegisterSerializer (confirmed via direct introspection: it only
+    // accepts email, password, phone, role, first_name, last_name).
+    // Even though the form correctly passed firstName/lastName into
+    // register(...), this function silently dropped them before ever
+    // building the request body — proven by testing the live backend
+    // directly with curl, which succeeded (201) once first_name/
+    // last_name were actually included in the request.
 
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/accounts/register/`, {
       method: "POST",
@@ -56,9 +71,15 @@ export const authProviderClient: AuthProvider = {
       },
       body: JSON.stringify({
         email,
-        username,
         password,
         role,
+        first_name: firstName,
+        last_name: lastName,
+        // Renamed here, not in the form/schema — the form's own naming
+        // convention (camelCase) is idiomatic React/TS; Django's
+        // (snake_case) is idiomatic Python. This is the correct single
+        // place to translate between the two, rather than forcing one
+        // side to adopt the other's style throughout the app.
       }),
     });
 

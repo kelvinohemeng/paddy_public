@@ -52,6 +52,13 @@ export const RefineContext = ({ children }: RefineContextProps) => {
                 canDelete: true,
               },
             },
+            {
+              name: "listings",
+              list: "/listings",
+              create: "/listings/create",
+              edit: "/listings/edit/:id",
+              show: "/listings/show/:id",
+            },
           ]}
           options={{
             syncWithLocation: true,

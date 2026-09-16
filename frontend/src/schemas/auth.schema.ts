@@ -25,7 +25,15 @@ export type SignUpFormValues = z.input<typeof signUpSchema>
 
 export const signInSchema = z.object({
     email: emailSchema,
-    password: passwordSchema,
+    password: z.string().min(1, { error: "Password is required" }),
+    // Deliberately NOT passwordSchema (the signup complexity rules) —
+    // login should only check "something was typed," never re-enforce
+    // uppercase/number/special-character rules. A real password
+    // created before a rule existed (or a superuser created via
+    // `createsuperuser`, which enforces no complexity at all) must
+    // still be able to log in — this was flagged as a risk when
+    // signInSchema was first written, and it reused passwordSchema
+    // anyway; this is that bug actually surfacing.
     rememberMe: z.boolean().optional()
 })
 

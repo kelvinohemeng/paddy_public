@@ -33,8 +33,6 @@ import { SignInFormValue, signInSchema } from "@schemas/auth.schema";
 
 export const SignInForm = () => {
   const [rememberMe, setRememberMe] = useState(false);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
 
   const Link = useLink();
 
@@ -117,15 +115,7 @@ export const SignInForm = () => {
           <form onSubmit={handleSubmit(handleSignIn)}>
             <div className={cn("flex", "flex-col", "gap-2")}>
               <Label htmlFor="email">Email</Label>
-              <Input
-                {...registerField("email")}
-                id="email"
-                type="email"
-                placeholder=""
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+              <Input {...registerField("email")} id="email" type="email" />
               {errors.email && (
                 <p className="text-sm text-red-500">{errors.email.message}</p>
               )}
@@ -134,12 +124,7 @@ export const SignInForm = () => {
               className={cn("relative", "flex", "flex-col", "gap-2", "mt-6")}
             >
               <Label htmlFor="password">Password</Label>
-              <InputPassword
-                {...registerField("password")}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
+              <InputPassword {...registerField("password")} id="password" />
               {errors.password && (
                 <p className="text-sm text-red-500">
                   {errors.password.message}

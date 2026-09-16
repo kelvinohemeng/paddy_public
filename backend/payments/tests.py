@@ -30,7 +30,7 @@ class LandlordSubscriptionModelTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Sub Landlord',
-            national_id_number='GHA-1', momo_or_bank_details='0551111111'
+            national_id_number='GHA-1', preferred_payout_method='momo'
         )
 
     def test_is_active_false_when_status_inactive(self):
@@ -81,7 +81,7 @@ class InitiateSubscriptionTests(APITestCase):
         )
         LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Init Landlord',
-            national_id_number='GHA-2', momo_or_bank_details='0552222222'
+            national_id_number='GHA-2', preferred_payout_method='momo'
         )
 
         self.renter_user = User.objects.create_user(
@@ -120,7 +120,7 @@ class MySubscriptionTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='My Sub Landlord',
-            national_id_number='GHA-3', momo_or_bank_details='0553333333'
+            national_id_number='GHA-3', preferred_payout_method='momo'
         )
 
     def test_no_subscription_row_returns_inactive(self):
@@ -166,7 +166,7 @@ class WebhookTests(APITestCase):
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Webhook Landlord',
-            national_id_number='GHA-4', momo_or_bank_details='0554444444'
+            national_id_number='GHA-4', preferred_payout_method='momo'
         )
 
     def test_webhook_rejects_invalid_signature(self):

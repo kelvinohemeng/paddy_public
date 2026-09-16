@@ -28,6 +28,12 @@ class RegisterTests(APITestCase):
             'password': 'testpass123',
             'phone': '0551234567',
             'role': 'renter',
+            'first_name': 'Test',
+            'last_name': 'Renter',
+            # first_name/last_name added — RegisterSerializer now marks
+            # these required (extra_kwargs), so a payload without them
+            # correctly gets rejected with 400. This test predates that
+            # change; updated to match current API behavior.
         }
         # The fake request body we'll send — same shape as what you've
         # been typing into the browsable API by hand
@@ -69,6 +75,8 @@ class RegisterTests(APITestCase):
             'password': 'testpass123',
             'phone': '0551234567',
             'role': 'landlord',
+            'first_name': 'Test',
+            'last_name': 'Landlord',
         }
 
         response = self.client.post('/accounts/register/', data, format='json')
@@ -114,6 +122,8 @@ class RegisterTests(APITestCase):
             'password': 'testpass123',
             'phone': '0551234567',
             'role': 'renter',
+            'first_name': 'Test',
+            'last_name': 'Renter',
         }
 
         self.client.post('/accounts/register/', data, format='json')
