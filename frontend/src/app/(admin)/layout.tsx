@@ -30,6 +30,11 @@ export default async function AdminLayout({
   const cookieStore = await cookies();
   const token = cookieStore.get("access_token")?.value;
 
+  if (!process.env.NEXT_PUBLIC_API_URL) {
+    console.error("NEXT_PUBLIC_API_URL is not set. Returning to login.");
+    return null; // Or redirect() if it's guaranteed to work
+  }
+
   const response = await fetch(
     `${process.env.NEXT_PUBLIC_API_URL}/accounts/me/`,
     {

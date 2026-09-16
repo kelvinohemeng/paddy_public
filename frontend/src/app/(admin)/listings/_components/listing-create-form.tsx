@@ -46,7 +46,7 @@ const ACCEPTED_IMAGE_TYPES = [
 // writing the form's actual logic twice, which would risk the two
 // versions silently drifting apart over time as the form grows.
 
-export const ListingCreateForm = () => {
+export const ListingCreateForm = ({ initialListing }: { initialListing?: any }) => {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -129,13 +129,11 @@ export const ListingCreateForm = () => {
   } = useForm({
     refineCoreProps: {
       resource: "listings",
-      action: "create",
-      // Explicit here (unlike blog-posts/create, which inferred the
-      // resource from its URL) — because this component gets rendered
-      // from TWO different routes (the panel's intercepted path and
-      // the real /listings/create path), so relying on "infer from
-      // current URL" would be fragile; being explicit means this
-      // component behaves identically no matter which route rendered it
+      action: initialListing ? "update" : "create",
+      defaultValues: initialListing,
+      // Explicitly set form/field initial values if needed here, 
+      // but using defaultValues: initialListing is generally better.
+      initialValues: initialListing,
       onMutationSuccess: async (data) => {
         // onMutationSuccess receives the actual server response from
         // creating the listing — data.data is the new Listing object,
