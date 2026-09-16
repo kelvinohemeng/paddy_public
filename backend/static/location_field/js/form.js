@@ -384,7 +384,24 @@ var SequentialLoader = function() {
                     // gated tool use (unlike raw OSM). Attribution is
                     // still required and included below per their terms.
                     layer = new L.tileLayer(
-                        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=cb1_3ngx_1_d3caa669e48a94bc2746da5f', {
+                            // ?key=... — CARTO's free Basemaps API key,
+                            // required as of their late-Aug-2026 policy
+                            // change (previously key-free). Safe to
+                            // hardcode directly in this static JS file
+                            // rather than route through .env/decouple:
+                            // this key is inherently client-visible the
+                            // moment any browser loads the admin page
+                            // and issues tile requests (visible in
+                            // Network tab regardless of where the key
+                            // originates server-side), so there's no
+                            // real secrecy to protect here. The actual
+                            // security boundary is the Referer
+                            // restriction configured on CARTO's
+                            // dashboard (dashboard.basemaps.carto.com),
+                            // limiting which domains this specific key
+                            // is even accepted from — not keeping the
+                            // string itself hidden.
                             maxZoom: 19,
                             subdomains: 'abcd',
                             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
