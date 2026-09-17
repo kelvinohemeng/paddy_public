@@ -795,3 +795,121 @@ class ListingUnlockGatingTests(APITestCase):
         self.assertFalse(response.data['is_unlocked'])
         self.assertIsNotNone(response.data['location'])
         # Locked on address/contact, but the map pin is still there
+
+
+class ListingAnonymousAccessTests(APITestCase):
+    # Regression tests for issue #8: "Unblock unauthenticated users
+    # from listing backend" — browsing the marketplace must be free,
+    # per the documented business model (AGENTS.md), while precise
+    # address + landlord contact stay gated behind pay-to-unlock. A
+    # separate class from ListingCreateTests since none of these tests
+    # authenticate at all — that absence of force_authenticate IS the
+    # thing being tested.
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='anon-test-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Test Landlord',
+            national_id_number='GHA-456', preferred_payout_method='momo'
+        )
+
+    def test_anonymous_user_can_list_published_listings(self):
+        # THE regression test for issue #8: an unauthenticated request
+        # (no force_authenticate call at all — self.client is a plain,
+        # logged-out client here) must be able to browse published
+        # listings. Before the get_permissions() override, this
+        # endpoint required IsAuthenticated for every action including
+        # list/retrieve, so this request would have come back 401.
+
+        Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Public listing', description='Test', listing_type='rent',
+            price_monthly='1800.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='5 Public Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        response = self.client.get('/listings/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertGreaterEqual(len(results), 1)
+
+    def test_anonymous_user_can_retrieve_a_published_listing(self):
+        listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Public single listing', description='Test', listing_type='rent',
+            price_monthly='1800.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='6 Public Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        response = self.client.get(f'/listings/{listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_anonymous_user_cannot_see_precise_address_or_contact(self):
+        # Opening list/retrieve to anonymous visitors must NOT leak the
+        # paywalled fields — _has_access() already returns False for a
+        # request with no authenticated user (see serializers.py), this
+        # just confirms that still holds now that the request can
+        # actually reach the endpoint at all.
+
+        listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Gated listing', description='Test', listing_type='rent',
+            price_monthly='1800.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='7 Secret Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        response = self.client.get(f'/listings/{listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['address_precise'])
+        self.assertIsNone(response.data['landlord_contact'])
+        self.assertFalse(response.data['is_unlocked'])
+
+    def test_anonymous_user_cannot_see_draft_listings(self):
+        # Anonymous browsing must still respect the same
+        # published-only visibility rule as a logged-in renter —
+        # get_queryset()'s public branch, not some separate unfiltered
+        # path opened up by mistake alongside the permission change.
+
+        Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Draft listing', description='Test', listing_type='rent',
+            price_monthly='1800.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='8 Draft Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.DRAFT,
+        )
+
+        response = self.client.get('/listings/')
+
+        results = response.data['results'] if 'results' in response.data else response.data
+        titles = [item['title'] for item in results]
+        self.assertNotIn('Draft listing', titles)
+
+    def test_anonymous_user_cannot_create_listing(self):
+        # Only list/retrieve were opened up — create must still require
+        # login, same as before this change.
+
+        data = {
+            'title': 'Should be blocked',
+            'description': 'Test',
+            'listing_type': 'rent',
+            'price_monthly': '1000.00',
+            'advance_rent_period': '1_year',
+            'bedrooms': 1,
+            'bathrooms': 1,
+            'address_precise': '1 Blocked Rd',
+            'neighborhood': 'Osu',
+            'city': 'Accra',
+        }
+
+        response = self.client.post('/listings/', data)
+
+        self.assertIn(response.status_code,
+                       (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))

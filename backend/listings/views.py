@@ -2,7 +2,7 @@ from rest_framework import viewsets, status
 # viewsets = a different module from what we've used before — provides
 # the higher-level class-based building blocks, including ModelViewSet
 
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.request import Request
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -34,8 +34,26 @@ class ListingViewSet(viewsets.ModelViewSet):
     # same ListingSerializer we already wrote, reused as-is
 
     permission_classes = [IsAuthenticated]
-    # Same baseline check as before — must be logged in for ANY of the
-    # 5 operations. We'll add more specific rules below
+    # Default fallback for any action not explicitly listed in
+    # get_permissions() below (e.g. custom @action endpoints like
+    # upload_photos still require login by default). The list/retrieve
+    # override below is what actually opens browsing up to anonymous
+    # visitors — this line alone does NOT unblock them.
+
+    def get_permissions(self):
+        # Per-action permissions — list/retrieve (browsing the
+        # marketplace and viewing one listing) are opened to everyone,
+        # matching the actual product decision: browsing is free,
+        # precise address + landlord contact stay gated behind
+        # pay-to-unlock (ListingSerializer._has_access already returns
+        # False for anonymous requests, so nothing sensitive leaks —
+        # this change only affects WHO can reach the endpoint at all,
+        # not what a given caller sees once they're in it).
+        # Every other action (create/update/destroy/photos) keeps
+        # requiring login, via the class-level permission_classes above.
+        if self.action in ('list', 'retrieve'):
+            return [AllowAny()]
+        return super().get_permissions()
 
     def get_queryset(self):
         user = self.request.user
@@ -43,10 +61,10 @@ class ListingViewSet(viewsets.ModelViewSet):
         # up, depending on who's asking — this is where "only show
         # published listings to the public" logic goes
 
-        if user.role == user.Role.STAFF:
+        if user.is_authenticated and user.role == user.Role.STAFF:
             queryset = Listing.objects.all()
             # Staff can see everything, including drafts/pending listings
-        elif user.role == user.Role.LANDLORD:
+        elif user.is_authenticated and user.role == user.Role.LANDLORD:
             queryset = Listing.objects.filter(landlord_profile__user=user) | Listing.objects.filter(status=Listing.Status.PUBLISHED)
             # A landlord sees: their OWN listings (any status) OR published
             # listings from anyone (browsing the marketplace like anyone else)
@@ -56,8 +74,15 @@ class ListingViewSet(viewsets.ModelViewSet):
             # on the related landlord_profile"
         else:
             queryset = Listing.objects.filter(status=Listing.Status.PUBLISHED)
-            # Everyone else (renters, landlords browsing) only sees
-            # published listings — draft/pending/rejected ones stay hidden
+            # Everyone else (anonymous visitors, renters, landlords
+            # browsing) only sees published listings — draft/pending/
+            # rejected ones stay hidden. user.is_authenticated is
+            # checked FIRST in both branches above — AnonymousUser (the
+            # request.user value on a logged-out request now that
+            # list/retrieve allow it) has no .role attribute at all, so
+            # touching user.role before confirming authentication would
+            # throw an AttributeError instead of just falling through
+            # to this public-listings-only branch.
         # Stored in a variable now instead of returned immediately —
         # we need to keep narrowing it below before the final return
 
