@@ -182,3 +182,30 @@ class ListingPhoto(models.Model):
         # self.listing.title = reaching ACROSS the ForeignKey to grab
         # the parent listing's title — this is the "forward" traversal
         # we discussed earlier, working exactly as described
+
+
+class SavedListing(models.Model):
+    # "Saved Homes" — one row = one renter has bookmarked one listing.
+    # Deliberately a separate lightweight table, not a ManyToManyField
+    # directly on User/RenterProfile — a plain M2M would work for the
+    # "which listings has this renter saved" query just fine, but a real
+    # table gives us created_at (when they saved it, useful for sorting
+    # a "recently saved" list) essentially for free, the same reasoning
+    # ListingUnlock already uses instead of a bare M2M
+
+    renter_profile = models.ForeignKey(
+        'accounts.RenterProfile', on_delete=models.CASCADE, related_name='saved_listings'
+    )
+    listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name='saved_by')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('renter_profile', 'listing')
+        # Same database-level guard as ListingUnlock.Meta — a renter
+        # can't end up with the same listing saved twice, even under a
+        # race (double-click on the save button, etc.)
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.renter_profile} saved {self.listing}"

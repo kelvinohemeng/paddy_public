@@ -195,6 +195,157 @@ initiate_listing_unlock.throttle_scope = 'payments'
 # hammering this endpoint into repeatedly calling Paystack's real API
 
 
+def _handle_successful_charge(data):
+    # THE shared core of "a charge genuinely succeeded" handling —
+    # extracted so both the webhook's charge.success branch AND the new
+    # synchronous verify_transaction endpoint below can run the EXACT
+    # same unlock/subscription-activation logic, instead of two
+    # near-identical copies that could silently drift apart over time.
+    # Returns nothing; every branch already returns early/acknowledges
+    # via the caller, this function's whole job is just the DB writes.
+
+    metadata = data.get('metadata') or {}
+    # metadata is OUR OWN data, round-tripped back to us unchanged —
+    # set by whichever initiate_* view started this specific charge.
+    # subscription charges never set metadata at all (see
+    # initiate_subscription — no metadata= argument passed there),
+    # so metadata.get('purpose') is None for those, which is exactly
+    # what lets us tell the two charge types apart below
+
+    if metadata.get('purpose') == 'listing_unlock':
+        # A one-off listing-unlock charge, NOT a subscription
+        # payment — handled completely separately below, never
+        # falls through to the subscription logic beneath this block
+
+        from listings.models import Listing
+        # Imported here, same circular-import reasoning as the
+        # initiate_listing_unlock view above
+
+        try:
+            user = User.objects.get(id=metadata.get('user_id'))
+            listing = Listing.objects.get(id=metadata.get('listing_id'))
+        except (User.DoesNotExist, Listing.DoesNotExist):
+            return
+            # Nothing sensible to do with a malformed/stale metadata
+            # payload — same "don't fail over it" reasoning as every
+            # other not-found case in this file
+
+        ListingUnlock.objects.get_or_create(
+            user=user,
+            listing=listing,
+            defaults={'paystack_reference': data.get('reference', '')},
+        )
+        # get_or_create rather than a plain .create() — protects
+        # against a genuine edge case: Paystack CAN deliver the same
+        # webhook event more than once (their own docs say webhooks
+        # aren't guaranteed exactly-once), AND this same helper can now
+        # also be called twice for the same charge (once by the
+        # frontend's synchronous verify call, once by the async
+        # webhook) — get_or_create makes either kind of duplicate a
+        # harmless no-op rather than a 500 from the unique_together
+        # constraint on ListingUnlock.Meta
+
+        return
+
+    email = data.get('customer', {}).get('email')
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return
+
+    subscription, _ = LandlordSubscription.objects.get_or_create(
+        landlord_profile=user.landlordprofile
+    )
+    subscription.status = LandlordSubscription.Status.ACTIVE
+    # ACTIVE here means "money genuinely moved" (charge.success only
+    # fires for successful charges, and verify_transaction is only
+    # trusted here when Paystack's own status says success too) — this
+    # is the ONE place a subscription becomes active, never
+    # subscription.create's webhook branch.
+
+    tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
+    # Paystack includes the plan that was charged directly in the
+    # webhook payload — this is the AUTHORITATIVE source for which
+    # tier to set, rather than us guessing based on amount (which
+    # could change) or trusting anything the frontend claimed
+    # earlier at initiate-time
+    if tier is not None:
+        subscription.tier = tier
+    # If plan_code doesn't match either known plan (e.g. malformed
+    # event, or a plan created outside this flow), we deliberately
+    # leave `tier` untouched rather than guessing — status still
+    # updates to ACTIVE, but is_active() alone doesn't grant a
+    # cap upgrade if tier isn't also correctly set
+
+    period_end = _period_end_from_paystack_data(data)
+    if period_end is not None:
+        subscription.current_period_end = period_end
+    # Only overwrites when a parseable date is actually present —
+    # charge.success payloads (Transaction resource) usually carry
+    # NO date at all, in which case the period stored earlier by
+    # subscription.create is left exactly as-is rather than wiped.
+    # Without this guard, every renewal would null the period out
+    # (or rather, without subscription.create storing it first,
+    # paid rows ended up ACTIVE with no period and stayed gated).
+
+    subscription.save()
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
+def verify_payment(request):
+    # THE synchronous half of payment confirmation. Paystack's popup
+    # closing on the frontend only means the CHECKOUT UI finished —
+    # it says nothing about whether the charge actually succeeded, and
+    # the webhook (the authoritative confirmation) can lag by seconds
+    # or, in an outage, much longer. Without this endpoint, a renter/
+    # landlord who just paid would stare at a frontend with no way to
+    # know their unlock/subscription is live yet other than reloading
+    # and hoping the webhook already landed.
+    #
+    # This does NOT replace the webhook as the source of truth — it
+    # calls the exact same Paystack verify-transaction API the webhook
+    # would eventually trust, and on success runs the EXACT same
+    # _handle_successful_charge() write path. If the webhook already
+    # ran first, get_or_create()/the ACTIVE-status overwrite make this
+    # a harmless no-op; if this runs first, the later webhook delivery
+    # becomes the no-op instead. Either order is safe.
+
+    reference = request.query_params.get('reference')
+
+    if not reference:
+        return Response(
+            {'error': 'reference is required'}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    result = paystack.verify_transaction(reference)
+
+    if not result.get('status'):
+        return Response(
+            {'error': result.get('message', 'Could not verify payment')},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    data = result.get('data') or {}
+
+    if data.get('status') != 'success':
+        # Paystack's own per-TRANSACTION status (separate from the
+        # top-level API-call-succeeded status checked above) —
+        # 'abandoned'/'failed'/'pending' all mean no money moved yet,
+        # so nothing should be activated
+        return Response({'verified': False, 'status': data.get('status')})
+
+    _handle_successful_charge(data)
+
+    return Response({'verified': True, 'status': 'success'})
+
+verify_payment.throttle_scope = 'payments'
+# Same scope/reasoning as initiate_subscription/initiate_listing_unlock
+# — this also proxies to Paystack's real API per call
+
+
 def _verify_paystack_signature(request):
     # THE critical security check for the webhook below — confirms this
     # request genuinely came from Paystack's servers, not someone lying
@@ -345,98 +496,13 @@ def paystack_webhook(request):
 
     elif event == 'charge.success':
         # Fires for BOTH the very first charge and every successful
-        # renewal — the moment we actually know money genuinely moved
+        # renewal — the moment we actually know money genuinely moved.
+        # Delegates to _handle_successful_charge, the SAME helper
+        # verify_payment (above) calls — keeps the unlock/subscription
+        # activation logic correct in exactly one place, whichever path
+        # (webhook or synchronous frontend verify) happens to run first
 
-        metadata = data.get('metadata') or {}
-        # metadata is OUR OWN data, round-tripped back to us unchanged —
-        # set by whichever initiate_* view started this specific charge.
-        # subscription charges never set metadata at all (see
-        # initiate_subscription — no metadata= argument passed there),
-        # so metadata.get('purpose') is None for those, which is exactly
-        # what lets us tell the two charge types apart below
-
-        if metadata.get('purpose') == 'listing_unlock':
-            # A one-off listing-unlock charge, NOT a subscription
-            # payment — handled completely separately below, never
-            # falls through to the subscription logic beneath this block
-
-            from listings.models import Listing
-            # Imported here, same circular-import reasoning as the
-            # initiate_listing_unlock view above
-
-            try:
-                user = User.objects.get(id=metadata.get('user_id'))
-                listing = Listing.objects.get(id=metadata.get('listing_id'))
-            except (User.DoesNotExist, Listing.DoesNotExist):
-                return Response(status=status.HTTP_200_OK)
-                # Same "still acknowledge with 200" reasoning as every
-                # other not-found case in this view — a malformed or
-                # stale metadata payload isn't something retrying will
-                # fix, so there's no point telling Paystack to resend it
-
-            ListingUnlock.objects.get_or_create(
-                user=user,
-                listing=listing,
-                defaults={'paystack_reference': data.get('reference', '')},
-            )
-            # get_or_create rather than a plain .create() — protects
-            # against a genuine edge case: Paystack CAN deliver the same
-            # webhook event more than once (their own docs say webhooks
-            # aren't guaranteed exactly-once). Without this, a duplicate
-            # delivery would try to INSERT a second row for the same
-            # user+listing pair, which the unique_together constraint on
-            # ListingUnlock.Meta would then reject with an IntegrityError
-            # — get_or_create instead just finds the existing row and
-            # does nothing further, so a duplicate webhook is a harmless
-            # no-op rather than a 500 error
-
-            return Response(status=status.HTTP_200_OK)
-            # Return here specifically — this charge has nothing to do
-            # with LandlordSubscription at all, so we deliberately don't
-            # let execution continue into the subscription-handling code
-            # directly below
-
-        email = data.get('customer', {}).get('email')
-
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
-            return Response(status=status.HTTP_200_OK)
-
-        subscription, _ = LandlordSubscription.objects.get_or_create(
-            landlord_profile=user.landlordprofile
-        )
-        subscription.status = LandlordSubscription.Status.ACTIVE
-        # ACTIVE here means "money genuinely moved" (charge.success only
-        # fires for successful charges) — this is the ONE place a
-        # subscription becomes active, never subscription.create above.
-
-        tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
-        # Paystack includes the plan that was charged directly in the
-        # webhook payload — this is the AUTHORITATIVE source for which
-        # tier to set, rather than us guessing based on amount (which
-        # could change) or trusting anything the frontend claimed
-        # earlier at initiate-time
-        if tier is not None:
-            subscription.tier = tier
-        # If plan_code doesn't match either known plan (e.g. malformed
-        # event, or a plan created outside this flow), we deliberately
-        # leave `tier` untouched rather than guessing — status still
-        # updates to ACTIVE, but is_active() alone doesn't grant a
-        # cap upgrade if tier isn't also correctly set
-
-        period_end = _period_end_from_paystack_data(data)
-        if period_end is not None:
-            subscription.current_period_end = period_end
-        # Only overwrites when a parseable date is actually present —
-        # charge.success payloads (Transaction resource) usually carry
-        # NO date at all, in which case the period stored earlier by
-        # subscription.create is left exactly as-is rather than wiped.
-        # Without this guard, every renewal would null the period out
-        # (or rather, without subscription.create storing it first,
-        # paid rows ended up ACTIVE with no period and stayed gated).
-
-        subscription.save()
+        _handle_successful_charge(data)
 
     elif event == 'invoice.update':
         # Fires after EVERY subscription billing attempt with its final

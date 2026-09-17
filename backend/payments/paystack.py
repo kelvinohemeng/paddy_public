@@ -1,7 +1,23 @@
+import logging
+
 import requests
 from django.conf import settings
 
 BASE_URL = 'https://api.paystack.co'
+
+# Every real request to Paystack's API MUST have a timeout — without
+# one, requests.post()/requests.get() will hang indefinitely if
+# Paystack's servers are slow or unreachable, tying up a Django worker
+# for the life of that hang. Under load, enough hung requests exhaust
+# the whole worker pool and take the app down for every user, not just
+# whoever triggered the slow call. (connect_timeout, read_timeout) —
+# connect is how long to wait for the TCP handshake, read is how long
+# to wait for Paystack to actually respond once connected; these are
+# deliberately different budgets since a dead network fails fast on
+# connect, while a slow-but-alive Paystack needs more read headroom.
+REQUEST_TIMEOUT = (5, 15)
+
+logger = logging.getLogger(__name__)
 
 
 def _headers():
@@ -12,6 +28,42 @@ def _headers():
         'Authorization': f'Bearer {settings.PAYSTACK_SECRET_KEY}',
         'Content-Type': 'application/json',
     }
+
+
+def _request(method, url, **kwargs):
+    # THE single place every Paystack HTTP call actually goes through —
+    # both initialize_transaction and verify_transaction call this
+    # instead of requests.post()/requests.get() directly, so the
+    # timeout + error handling only needs to be correct in one place,
+    # not duplicated (and risk drifting) across every call site.
+    #
+    # On any network-level failure (timeout, connection refused, DNS
+    # failure, etc.) this returns the SAME shape callers already
+    # check for a rejected request — {'status': False, 'message': ...}
+    # — so initiate_subscription/initiate_listing_unlock's existing
+    # `if not result.get('status')` handling covers this case for
+    # free, with no changes needed at the view layer. The alternative
+    # (letting the exception propagate) would turn a temporary
+    # Paystack outage into a raw 500 for the renter/landlord, with
+    # nothing logged to explain why.
+    try:
+        response = requests.request(method, url, timeout=REQUEST_TIMEOUT, **kwargs)
+    except requests.exceptions.RequestException as exc:
+        logger.error('Paystack request failed: %s %s — %s', method, url, exc)
+        return {'status': False, 'message': 'Could not reach Paystack. Please try again.'}
+
+    try:
+        return response.json()
+    except ValueError:
+        # Paystack is documented to always return JSON, but a
+        # malformed/non-JSON body (e.g. an upstream proxy error page
+        # during an outage) shouldn't raise an unhandled exception
+        # here either — same fail-safe shape as the network-error case
+        logger.error(
+            'Paystack returned a non-JSON response: %s %s — status %s',
+            method, url, response.status_code,
+        )
+        return {'status': False, 'message': 'Paystack returned an unexpected response.'}
 
 
 def initialize_transaction(email, amount_kobo, callback_url, plan_code=None, metadata=None):
@@ -54,12 +106,12 @@ def initialize_transaction(email, amount_kobo, callback_url, plan_code=None, met
     if metadata:
         payload['metadata'] = metadata
 
-    response = requests.post(
+    return _request(
+        'POST',
         f'{BASE_URL}/transaction/initialize',
         headers=_headers(),
         json=payload,
     )
-    return response.json()
 
 
 def verify_transaction(reference):
@@ -69,8 +121,8 @@ def verify_transaction(reference):
     # theoretically fail to arrive, e.g. a network blip on Paystack's
     # side — this endpoint lets our own code re-confirm independently)
 
-    response = requests.get(
+    return _request(
+        'GET',
         f'{BASE_URL}/transaction/verify/{reference}',
         headers=_headers(),
     )
-    return response.json()

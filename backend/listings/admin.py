@@ -20,7 +20,7 @@ from location_field.forms.spatial import LocationField as LocationFormField
 # plain.py) fixes both halves together: LocationField.clean() parses
 # "lat,lng" into a real Point object correctly.
 
-from .models import Listing, ListingPhoto
+from .models import Listing, ListingPhoto, SavedListing
 
 
 class ListingAdminForm(forms.ModelForm):
@@ -105,3 +105,9 @@ class ListingAdmin(ModelAdmin):
 @admin.register(ListingPhoto)
 class ListingPhotoAdmin(ModelAdmin):
     pass
+
+
+@admin.register(SavedListing)
+class SavedListingAdmin(ModelAdmin):
+    list_display = ['renter_profile', 'listing', 'created_at']
+    search_fields = ['renter_profile__full_name', 'listing__title']

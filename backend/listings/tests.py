@@ -6,7 +6,7 @@ from django.contrib.gis.geos import Point
 # views.py, just the "single location" shape instead of "rectangle"
 
 from accounts.models import User, LandlordProfile, RenterProfile
-from .models import Listing
+from .models import Listing, SavedListing
 
 
 class ListingCreateTests(APITestCase):
@@ -913,3 +913,103 @@ class ListingAnonymousAccessTests(APITestCase):
 
         self.assertIn(response.status_code,
                        (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+
+class SavedListingTests(APITestCase):
+    # "Saved Homes" — covers the save/unsave toggle on ListingViewSet and
+    # the read-only SavedListingViewSet list endpoint
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='saved-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Saved Test Landlord',
+            national_id_number='GHA-500', preferred_payout_method='momo'
+        )
+
+        self.renter_user = User.objects.create_user(
+            email='saved-renter@example.com', password='pass123456', role='renter'
+        )
+        self.renter_profile = RenterProfile.objects.create(
+            user=self.renter_user, full_name='Saved Test Renter'
+        )
+
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Saveable listing', description='Test', listing_type='rent',
+            price_monthly='1500.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='9 Save Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    def test_renter_can_save_a_listing(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/save/')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(SavedListing.objects.filter(
+            renter_profile=self.renter_profile, listing=self.listing
+        ).count(), 1)
+
+    def test_saving_twice_is_idempotent(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        self.client.post(f'/listings/{self.listing.id}/save/')
+        response = self.client.post(f'/listings/{self.listing.id}/save/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # 200 the SECOND time (already existed), not another 201 —
+        # and critically, no IntegrityError from unique_together
+        self.assertEqual(SavedListing.objects.filter(
+            renter_profile=self.renter_profile, listing=self.listing
+        ).count(), 1)
+
+    def test_renter_can_unsave_a_listing(self):
+        self.client.force_authenticate(user=self.renter_user)
+        self.client.post(f'/listings/{self.listing.id}/save/')
+
+        response = self.client.delete(f'/listings/{self.listing.id}/save/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SavedListing.objects.filter(
+            renter_profile=self.renter_profile, listing=self.listing
+        ).exists())
+
+    def test_unsaving_something_never_saved_is_a_harmless_noop(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.delete(f'/listings/{self.listing.id}/save/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_landlord_cannot_save_a_listing(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/save/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_saved_listings_endpoint_returns_only_own_saved_listings(self):
+        other_renter_user = User.objects.create_user(
+            email='other-saved-renter@example.com', password='pass123456', role='renter'
+        )
+        other_renter_profile = RenterProfile.objects.create(
+            user=other_renter_user, full_name='Other Renter'
+        )
+        SavedListing.objects.create(renter_profile=other_renter_profile, listing=self.listing)
+
+        self.client.force_authenticate(user=self.renter_user)
+        self.client.post(f'/listings/{self.listing.id}/save/')
+
+        response = self.client.get('/listings/saved/')
+
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['listing'], self.listing.id)
+
+    def test_saved_listings_endpoint_requires_authentication(self):
+        response = self.client.get('/listings/saved/')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

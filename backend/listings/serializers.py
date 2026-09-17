@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Listing, ListingPhoto
+from .models import Listing, ListingPhoto, SavedListing
 
 
 class ListingSerializer(serializers.ModelSerializer):
@@ -133,3 +133,18 @@ class ListingPhotoSerializer(serializers.ModelSerializer):
         fields = ['id', 'image', 'order', 'is_cover']
         # Simple include-list — every field here is safe to both accept
         # and return, no sensitive/staff-only fields on this model at all
+
+
+class SavedListingSerializer(serializers.ModelSerializer):
+    listing_detail = ListingSerializer(source='listing', read_only=True)
+    # Nested, read-only — lets the "Saved Homes" list render straight
+    # from this one endpoint (title/photo/price/etc.) without the
+    # frontend needing a second round trip per saved listing to resolve
+    # what was actually saved
+
+    class Meta:
+        model = SavedListing
+        fields = ['id', 'listing', 'listing_detail', 'created_at']
+        # renter_profile deliberately not exposed — the view always sets
+        # it from whoever's logged in, same non-negotiable pattern as
+        # landlord_profile on ListingSerializer.save()

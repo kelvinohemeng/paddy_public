@@ -2,6 +2,9 @@ import hashlib
 import hmac
 import json
 
+import requests
+from unittest.mock import patch
+
 from django.conf import settings
 from django.contrib.admin.sites import AdminSite
 from django.test import RequestFactory, override_settings
@@ -11,9 +14,10 @@ from datetime import timedelta
 from rest_framework.test import APITestCase
 from rest_framework import status
 
-from accounts.models import User, LandlordProfile
+from accounts.models import User, LandlordProfile, RenterProfile
 from .admin import LandlordSubscriptionAdmin
-from .models import LandlordSubscription
+from .models import LandlordSubscription, ListingUnlock
+from . import paystack
 
 
 def sign(body_bytes):
@@ -407,3 +411,210 @@ class WebhookTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         # Still 200 — proves we don't cause Paystack to endlessly retry
         # over a webhook referencing an email we don't recognize
+
+
+class PaystackClientResilienceTests(APITestCase):
+    # Regression tests for the paystack.py timeout/error-handling fix:
+    # a hung or unreachable Paystack must degrade to a normal
+    # {'status': False, ...} response — exactly what
+    # initiate_subscription/initiate_listing_unlock already check for
+    # — rather than raising an unhandled exception that would surface
+    # as a raw 500 to whoever's trying to pay.
+
+    def test_initialize_transaction_sends_a_timeout(self):
+        # Confirms REQUEST_TIMEOUT is actually passed through to
+        # requests — the whole point of the fix is that Paystack
+        # hanging can never block a worker indefinitely. Mocking here
+        # rather than hitting the real API (same reasoning as the rest
+        # of this file's existing tests).
+        with patch('payments.paystack.requests.request') as mock_request:
+            mock_request.return_value.json.return_value = {'status': True, 'data': {}}
+
+            paystack.initialize_transaction(
+                email='timeout-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+            )
+
+            self.assertTrue(mock_request.called)
+            self.assertEqual(mock_request.call_args.kwargs.get('timeout'), paystack.REQUEST_TIMEOUT)
+
+    def test_initialize_transaction_degrades_gracefully_on_timeout(self):
+        with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
+            result = paystack.initialize_transaction(
+                email='timeout-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+            )
+
+        self.assertFalse(result['status'])
+        # Never raises — callers' existing `if not result.get('status')`
+        # handling (see initiate_subscription/initiate_listing_unlock)
+        # covers this case with zero changes needed at the view layer
+
+    def test_initialize_transaction_degrades_gracefully_on_connection_error(self):
+        with patch(
+            'payments.paystack.requests.request',
+            side_effect=requests.exceptions.ConnectionError,
+        ):
+            result = paystack.initialize_transaction(
+                email='conn-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+            )
+
+        self.assertFalse(result['status'])
+
+    def test_verify_transaction_degrades_gracefully_on_timeout(self):
+        with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
+            result = paystack.verify_transaction('some-reference')
+
+        self.assertFalse(result['status'])
+
+    def test_initiate_subscription_view_returns_400_when_paystack_unreachable(self):
+        # End-to-end through the actual view, not just the paystack.py
+        # module in isolation — confirms a hung Paystack surfaces as a
+        # normal 400 error response to the landlord, not a 500.
+        landlord_user = User.objects.create_user(
+            email='resilience-landlord@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=landlord_user, full_name='Resilience Landlord',
+            national_id_number='GHA-9', preferred_payout_method='momo'
+        )
+        self.client.force_authenticate(user=landlord_user)
+
+        with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
+            response = self.client.post(
+                '/payments/subscribe/',
+                {'tier': 'agent', 'amount_kobo': 25000, 'callback_url': 'http://x.com'},
+                format='json',
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class VerifyPaymentTests(APITestCase):
+    # The synchronous verify endpoint — lets the frontend confirm a
+    # charge succeeded right after the Paystack popup closes, instead
+    # of relying on the webhook alone. Mirrors WebhookTests' style
+    # (mocking paystack.verify_transaction rather than hitting the real
+    # API), but drives the SAME _handle_successful_charge code path
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='verify-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Verify Renter')
+
+        self.landlord_user = User.objects.create_user(
+            email='verify-landlord@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Verify Landlord',
+            national_id_number='GHA-42', preferred_payout_method='momo'
+        )
+
+        from listings.models import Listing
+        self.listing = Listing.objects.create(
+            landlord_profile=LandlordProfile.objects.get(user=self.landlord_user),
+            title='Verify listing', description='Test', listing_type='rent',
+            price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Verify Rd',
+            neighborhood='Osu', city='Accra',
+        )
+
+    def test_verify_requires_reference(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get('/payments/verify/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_verify_requires_authentication(self):
+        response = self.client.get('/payments/verify/?reference=some-ref')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_successful_listing_unlock_verification_creates_unlock(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        mock_data = {
+            'status': 'success',
+            'reference': 'T_UNLOCK_1',
+            'metadata': {
+                'purpose': 'listing_unlock',
+                'listing_id': self.listing.id,
+                'user_id': self.renter_user.id,
+            },
+        }
+
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': mock_data}):
+            response = self.client.get('/payments/verify/?reference=T_UNLOCK_1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['verified'])
+        self.assertTrue(ListingUnlock.objects.filter(
+            user=self.renter_user, listing=self.listing
+        ).exists())
+
+    def test_successful_subscription_verification_activates_subscription(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        mock_data = {
+            'status': 'success',
+            'reference': 'T_SUB_1',
+            'customer': {'email': self.landlord_user.email},
+            'plan': settings.PAYSTACK_AGENT_PLAN_CODE or 'PLN_AGENT_TEST',
+        }
+
+        with override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_AGENT_TEST'):
+            mock_data['plan'] = 'PLN_AGENT_TEST'
+            with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': mock_data}):
+                response = self.client.get('/payments/verify/?reference=T_SUB_1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['verified'])
+        subscription = LandlordSubscription.objects.get(
+            landlord_profile__user=self.landlord_user
+        )
+        self.assertEqual(subscription.status, LandlordSubscription.Status.ACTIVE)
+
+    def test_unsuccessful_transaction_does_not_activate_anything(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        mock_data = {'status': 'abandoned', 'reference': 'T_FAIL_1'}
+
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': mock_data}):
+            response = self.client.get('/payments/verify/?reference=T_FAIL_1')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['verified'])
+        self.assertEqual(ListingUnlock.objects.count(), 0)
+
+    def test_verify_degrades_gracefully_when_paystack_unreachable(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
+            response = self.client.get('/payments/verify/?reference=T_TIMEOUT')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_verifying_the_same_reference_twice_is_idempotent(self):
+        # Simulates the webhook and the synchronous verify call both
+        # eventually processing the SAME successful charge — must not
+        # raise an IntegrityError from ListingUnlock's unique_together
+        self.client.force_authenticate(user=self.renter_user)
+
+        mock_data = {
+            'status': 'success',
+            'reference': 'T_UNLOCK_2',
+            'metadata': {
+                'purpose': 'listing_unlock',
+                'listing_id': self.listing.id,
+                'user_id': self.renter_user.id,
+            },
+        }
+
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': mock_data}):
+            self.client.get('/payments/verify/?reference=T_UNLOCK_2')
+            response = self.client.get('/payments/verify/?reference=T_UNLOCK_2')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(ListingUnlock.objects.filter(
+            user=self.renter_user, listing=self.listing
+        ).count(), 1)

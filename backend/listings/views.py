@@ -14,9 +14,9 @@ from django.contrib.gis.geos import Polygon
 # temporarily, in memory, purely to describe the map's visible rectangle
 # for THIS ONE request — it only exists for the life of this function call
 
-from .models import Listing, ListingPhoto
+from .models import Listing, ListingPhoto, SavedListing
 from core.models import Amenity
-from .serializers import ListingSerializer, ListingPhotoSerializer
+from .serializers import ListingSerializer, ListingPhotoSerializer, SavedListingSerializer
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -307,3 +307,64 @@ class ListingViewSet(viewsets.ModelViewSet):
         # of objects, not just one
 
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post', 'delete'], url_path='save')
+    # One @action handling BOTH methods under the same URL
+    # (/listings/<id>/save/) — DRF requires a single method name/
+    # url_name per URL, so toggling on request.method here is the
+    # correct pattern, rather than two separate @action methods trying
+    # to share one url_path (which DRF's router would reject as a
+    # duplicate URL name)
+
+    def save_listing(self, request, pk=None):
+        listing = self.get_object()
+        # Already respects get_queryset() — a listing a renter can't
+        # even see (e.g. someone else's still-draft listing) 404s here
+        # the same way it would on retrieve, rather than letting it be
+        # saved/unsaved sight-unseen
+
+        if request.user.role != request.user.Role.RENTER:
+            raise PermissionDenied('Only renters can save/unsave listings')
+
+        if request.method == 'DELETE':
+            SavedListing.objects.filter(
+                renter_profile=request.user.renterprofile, listing=listing
+            ).delete()
+            # .filter(...).delete() rather than get+delete — deliberately
+            # a no-op (not a 404) if it was never saved in the first
+            # place; "unsave something not saved" isn't an error worth
+            # surfacing
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        saved, created = SavedListing.objects.get_or_create(
+            renter_profile=request.user.renterprofile, listing=listing
+        )
+        # get_or_create — same idempotency reasoning as ListingUnlock's
+        # webhook handling: a double-click/retry on the save button is a
+        # harmless no-op, not a 500 from the unique_together constraint
+
+        return Response(
+            SavedListingSerializer(saved, context={'request': request}).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class SavedListingViewSet(viewsets.ReadOnlyModelViewSet):
+    # The renter's actual "Saved Homes" list — read-only, since saving/
+    # unsaving happens through ListingViewSet's save/unsave actions
+    # above (scoped to a specific listing), not by posting directly here
+
+    serializer_class = SavedListingSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.role != user.Role.RENTER:
+            return SavedListing.objects.none()
+            # Non-renters (staff/landlords) simply have no saved-homes
+            # list — empty, not an error, same "nothing sensible, don't
+            # fail the request over it" spirit as elsewhere in this
+            # codebase
+
+        return SavedListing.objects.filter(renter_profile=user.renterprofile)

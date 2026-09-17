@@ -99,6 +99,7 @@ INSTALLED_APPS = [
     'viewings',
     'payments',
     'core',
+    'leases',
 ]
 
 LOCATION_FIELD = {
