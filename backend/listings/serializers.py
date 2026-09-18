@@ -1,5 +1,14 @@
 from rest_framework import serializers
 from .models import Listing, ListingPhoto, SavedListing
+from core.serializers import AmenitySerializer
+
+
+class ListingPhotoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ListingPhoto
+        fields = ['id', 'image', 'order', 'is_cover']
+        # Simple include-list — every field here is safe to both accept
+        # and return, no sensitive/staff-only fields on this model at all
 
 
 class ListingSerializer(serializers.ModelSerializer):
@@ -16,6 +25,45 @@ class ListingSerializer(serializers.ModelSerializer):
     # from the landlord's User (phone, email) at serialization time,
     # and only included at all when access is actually earned
 
+    landlord_public = serializers.SerializerMethodField()
+    # Deliberately the OPPOSITE of landlord_contact: a small, always-
+    # visible, non-sensitive snippet (display name + verified badge) —
+    # a renter browsing a still-locked listing currently sees NOTHING
+    # about who's renting it out at all, which reads as untrustworthy/
+    # broken on the frontend. Never includes phone/email — that stays
+    # behind landlord_contact's real access gate
+
+    is_staff_verified = serializers.SerializerMethodField()
+    # Whether staff have verified this specific listing — safe to
+    # expose unconditionally (it's a badge, not contact info), but
+    # verified_at itself stays excluded below since the exact
+    # TIMESTAMP isn't something the frontend needs and verified_by_staff
+    # (WHICH staff member) definitely shouldn't be exposed at all
+
+    is_saved = serializers.SerializerMethodField()
+    # Lets a renter's listing card/detail page show a filled-in vs.
+    # outline "save" icon immediately, without a second round trip to
+    # /listings/saved/ just to check. Always False for non-renters/
+    # anonymous visitors — saving isn't something they can do anyway
+
+    photos = ListingPhotoSerializer(many=True, read_only=True)
+    # Nested read-only gallery — related_name='photos' on ListingPhoto
+    # already matches this field name, so no explicit source= needed.
+    # read_only=True because photos are attached through the dedicated
+    # upload_photos action (multipart file upload), never through this
+    # serializer's own create/update — same reasoning landlord_profile
+    # is excluded from Meta below, just via a different mechanism since
+    # this field doesn't exist as a plain model column at all
+
+    amenities_detail = AmenitySerializer(source='amenities', many=True, read_only=True)
+    # `amenities` (below, via Meta's default M2M handling) stays a
+    # plain list of PKs — that's what listing CREATE/UPDATE needs to
+    # accept from the frontend's amenity picker, and changing that
+    # would break existing writes. This is a SEPARATE, read-only,
+    # nested view of the exact same relationship, purely for display —
+    # same "write shape stays simple, read shape gets richer" pattern
+    # as SavedListingSerializer's listing/listing_detail pair
+
     class Meta:
         model = Listing
         exclude = ['landlord_profile', 'status', 'verified_at', 'published_at', 'verified_by_staff']
@@ -30,7 +78,9 @@ class ListingSerializer(serializers.ModelSerializer):
         # these are staff-controlled fields. A landlord submitting a new
         # listing has no business setting these directly; the model's
         # own defaults handle it (status defaults to 'draft', the others
-        # default to empty) until staff review happens
+        # default to empty) until staff review happens. is_staff_verified
+        # above gives the frontend a safe yes/no without exposing the
+        # real verified_at timestamp or verified_by_staff identity
 
     def _has_access(self, listing):
         # THE actual security boundary for this whole feature — every
@@ -104,6 +154,47 @@ class ListingSerializer(serializers.ModelSerializer):
             'email': landlord_user.email,
         }
 
+    def get_landlord_public(self, listing):
+        # Always visible, regardless of unlock status — deliberately
+        # NEVER includes phone/email, only what's safe for anyone
+        # browsing to see. This is what fills the trust gap a locked
+        # listing currently has: a renter sees WHO is renting it out
+        # and whether they're verified, before ever paying to unlock
+        # the direct contact details
+
+        landlord_profile = listing.landlord_profile
+        return {
+            'full_name': landlord_profile.full_name,
+            'id_verified': landlord_profile.id_verified,
+        }
+
+    def get_is_staff_verified(self, listing):
+        return listing.verified_by_staff_id is not None
+        # verified_by_staff_id (the raw FK column) rather than touching
+        # .verified_by_staff itself — avoids an extra query just to
+        # check existence, and avoids ever accidentally serializing the
+        # related StaffProfile object by mistake later if this method
+        # were refactored carelessly
+
+    def get_is_saved(self, listing):
+        request = self.context.get('request')
+        if request is None or not request.user or not request.user.is_authenticated:
+            return False
+            # Same fail-closed defaulting as _has_access — anonymous
+            # visitors can't have saved anything
+
+        user = request.user
+        if user.role != user.Role.RENTER:
+            return False
+            # Only renters can save listings at all (see
+            # ListingViewSet.save_listing) — staff/landlords always
+            # get False here rather than hitting RenterProfile.DoesNotExist
+
+        return listing.saved_by.filter(renter_profile__user=user).exists()
+        # listing.saved_by — the related_name SavedListing.listing
+        # declares — .exists() since, same as _has_access, we only need
+        # yes/no, not the actual SavedListing row
+
     def to_representation(self, instance):
         # Runs AFTER all the normal field serialization above — this is
         # our chance to REMOVE something that's already been included,
@@ -125,14 +216,6 @@ class ListingSerializer(serializers.ModelSerializer):
             # consistent shape for the frontend regardless of lock state
 
         return data
-
-
-class ListingPhotoSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ListingPhoto
-        fields = ['id', 'image', 'order', 'is_cover']
-        # Simple include-list — every field here is safe to both accept
-        # and return, no sensitive/staff-only fields on this model at all
 
 
 class SavedListingSerializer(serializers.ModelSerializer):

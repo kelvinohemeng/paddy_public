@@ -6,6 +6,7 @@ from django.contrib.gis.geos import Point
 # views.py, just the "single location" shape instead of "rectangle"
 
 from accounts.models import User, LandlordProfile, RenterProfile
+from core.models import Amenity
 from .models import Listing, SavedListing
 
 
@@ -1013,3 +1014,145 @@ class SavedListingTests(APITestCase):
         response = self.client.get('/listings/saved/')
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class ListingSerializerExpandedFieldsTests(APITestCase):
+    # Covers the newer read-only fields on ListingSerializer:
+    # landlord_public, is_staff_verified, is_saved, photos,
+    # amenities_detail — none of these gate on _has_access (unlike
+    # address_precise/landlord_contact), they're either always safe to
+    # show or scoped to the CURRENT requester's own state
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='expanded-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Expanded Landlord',
+            national_id_number='GHA-900', id_verified=True,
+            preferred_payout_method='momo',
+        )
+
+        self.staff_user = User.objects.create_user(
+            email='expanded-staff@example.com', password='pass123456', role='staff'
+        )
+        from accounts.models import StaffProfile
+        self.staff_profile = StaffProfile.objects.create(
+            user=self.staff_user, full_name='Expanded Staff', can_approve_listings=True,
+        )
+
+        self.renter_user = User.objects.create_user(
+            email='expanded-renter@example.com', password='pass123456', role='renter'
+        )
+        self.renter_profile = RenterProfile.objects.create(
+            user=self.renter_user, full_name='Expanded Renter'
+        )
+
+        from django.utils import timezone
+        self.verified_listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Verified expanded listing', description='Test', listing_type='rent',
+            price_monthly='1700.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='20 Expanded Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+            verified_by_staff=self.staff_profile, verified_at=timezone.now(),
+        )
+
+        self.unverified_listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Unverified expanded listing', description='Test', listing_type='rent',
+            price_monthly='1600.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='21 Expanded Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        amenity_1 = Amenity.objects.create(name='Wifi Demo', slug='wifi-demo')
+        amenity_2 = Amenity.objects.create(name='Parking Demo', slug='parking-demo')
+        self.verified_listing.amenities.set([amenity_1, amenity_2])
+
+    def test_landlord_public_is_always_visible_and_has_no_contact_info(self):
+        # Anonymous request — landlord_contact stays locked, but
+        # landlord_public should still be there with a name + verified flag
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+
+        self.assertIsNone(response.data['landlord_contact'])
+        self.assertEqual(response.data['landlord_public']['full_name'], 'Expanded Landlord')
+        self.assertTrue(response.data['landlord_public']['id_verified'])
+        self.assertNotIn('phone', response.data['landlord_public'])
+        self.assertNotIn('email', response.data['landlord_public'])
+
+    def test_is_staff_verified_reflects_verification_state(self):
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+        self.assertTrue(response.data['is_staff_verified'])
+
+        response = self.client.get(f'/listings/{self.unverified_listing.id}/')
+        self.assertFalse(response.data['is_staff_verified'])
+
+    def test_is_saved_reflects_current_renters_own_saved_state(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+        self.assertFalse(response.data['is_saved'])
+
+        self.client.post(f'/listings/{self.verified_listing.id}/save/')
+
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+        self.assertTrue(response.data['is_saved'])
+
+    def test_is_saved_is_false_for_anonymous_and_non_renter_roles(self):
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+        self.assertFalse(response.data['is_saved'])
+
+        self.client.force_authenticate(user=self.landlord_user)
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+        self.assertFalse(response.data['is_saved'])
+
+    def test_amenities_detail_returns_nested_objects_while_amenities_stays_ids(self):
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+
+        self.assertEqual(set(response.data['amenities']), set(
+            self.verified_listing.amenities.values_list('id', flat=True)
+        ))
+        # amenities stays a plain list of PKs — write shape unchanged
+
+        detail_names = {a['name'] for a in response.data['amenities_detail']}
+        self.assertEqual(detail_names, {'Wifi Demo', 'Parking Demo'})
+
+    def test_photos_field_is_present_and_empty_when_no_photos_uploaded(self):
+        response = self.client.get(f'/listings/{self.verified_listing.id}/')
+
+        self.assertIn('photos', response.data)
+        self.assertEqual(response.data['photos'], [])
+
+    def test_photos_field_reflects_uploaded_photos(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+
+        self.client.force_authenticate(user=self.landlord_user)
+
+        image = SimpleUploadedFile(
+            'test.jpg', b'fake-image-bytes', content_type='image/jpeg'
+        )
+
+        # Force an in-memory storage backend for JUST this test —
+        # without this, ImageField.save() goes through whatever
+        # STORAGES['default'] settings.py configures, which is real
+        # Cloudflare R2 (django-storages/boto3). That's correct for the
+        # real app, but CI deliberately supplies dummy R2 credentials
+        # (see backend-ci.yml) on the assumption no test ever performs
+        # a genuine upload — this is the first test that does, so it
+        # needs its own isolated, network-free storage to match that
+        # assumption rather than breaking it
+        with override_settings(STORAGES={
+            'default': {'BACKEND': 'django.core.files.storage.memory.InMemoryStorage'},
+            'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+        }):
+            self.client.post(
+                f'/listings/{self.verified_listing.id}/photos/',
+                {'images': [image]}, format='multipart',
+            )
+
+            response = self.client.get(f'/listings/{self.verified_listing.id}/')
+
+        self.assertEqual(len(response.data['photos']), 1)
+        self.assertTrue(response.data['photos'][0]['is_cover'])
