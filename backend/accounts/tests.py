@@ -6,7 +6,13 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 # Same status constants we use in views.py — readable HTTP codes
 
-from .models import User, RenterProfile, LandlordProfile
+from .models import User, RenterProfile, LandlordProfile, StaffProfile
+# StaffProfile imported for the staff self-service tests below — the
+# existing imports only covered renter/landlord because /me/ previously
+# only wrote to those two tables.
+from core.models import Amenity
+# Amenity rows back amenity_preferences (an M2M), so tests need real
+# ones to reference by ID.
 # We'll check the database directly after hitting an endpoint, to confirm
 # the right rows actually got created
 
@@ -298,3 +304,224 @@ class MeEndpointTests(APITestCase):
         response = self.client.patch('/accounts/me/', {'phone': '0200000000'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class MeProfileWriteTests(APITestCase):
+    # Covers the self-service profile writes on PATCH /accounts/me/:
+    # each role may update exactly its own allowlisted fields, and
+    # everything else (role, email, verification flags, other roles'
+    # fields) is silently ignored. Also pins the AdminProfile 500 fix.
+
+    def setUp(self):
+        self.renter = User.objects.create_user(
+            email='writer-renter@example.com', password='testpass123', role='renter'
+        )
+        self.renter_profile = RenterProfile.objects.create(
+            user=self.renter, full_name='Writer Renter'
+        )
+
+        self.landlord = User.objects.create_user(
+            email='writer-landlord@example.com', password='testpass123', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord, full_name='Writer Landlord',
+            national_id_number='GHA-W1', preferred_payout_method='momo'
+        )
+
+        self.staff = User.objects.create_user(
+            email='writer-staff@example.com', password='testpass123', role='staff'
+        )
+        self.staff_profile = StaffProfile.objects.create(
+            user=self.staff, full_name='Writer Staff'
+        )
+
+        self.admin = User.objects.create_user(
+            email='writer-admin@example.com', password='testpass123', role='admin'
+        )
+        # No profile row for admin — role 'admin' has no profile table
+        # at all, which is exactly the shape that used to 500.
+
+        self.wifi = Amenity.objects.create(name='Wifi W', slug='wifi-w')
+        self.parking = Amenity.objects.create(name='Parking W', slug='parking-w')
+
+    def test_renter_updates_all_allowed_fields(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch('/accounts/me/', {
+            'preferred_area': 'East Legon',
+            'school_name': 'UG Legon',
+            'occupation': 'student',
+            'about_me': 'Quiet tenant, final year.',
+            'preferred_payment_method': 'momo',
+            'amenity_preferences': [self.wifi.id, self.parking.id],
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.renter_profile.refresh_from_db()
+        self.assertEqual(self.renter_profile.preferred_area, 'East Legon')
+        self.assertEqual(self.renter_profile.school_name, 'UG Legon')
+        self.assertEqual(self.renter_profile.occupation, 'student')
+        self.assertEqual(self.renter_profile.about_me, 'Quiet tenant, final year.')
+        self.assertEqual(self.renter_profile.preferred_payment_method, 'momo')
+        self.assertEqual(
+            set(self.renter_profile.amenity_preferences.values_list('id', flat=True)),
+            {self.wifi.id, self.parking.id},
+        )
+        # Response carries the full user (existing contract), so the
+        # frontend gets fresh state without a refetch — confirm the
+        # nested profile reflects the writes too.
+        self.assertEqual(response.data['profile']['preferred_area'], 'East Legon')
+        self.assertEqual(
+            set(response.data['profile']['amenity_preferences']),
+            {self.wifi.id, self.parking.id},
+        )
+        # amenity_preferences serializes as a plain PK list (default M2M
+        # representation — RenterProfileSerializer excludes only 'user').
+
+    def test_renter_can_clear_amenity_preferences_with_empty_list(self):
+        self.renter_profile.amenity_preferences.set([self.wifi])
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch(
+            '/accounts/me/', {'amenity_preferences': []}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.renter_profile.refresh_from_db()
+        # Re-read the row before asserting — same refresh discipline as
+        # the phone test in MeEndpointTests (in-memory state goes stale
+        # the moment the request writes underneath it).
+        self.assertEqual(self.renter_profile.amenity_preferences.count(), 0)
+
+    def test_landlord_updates_payout_method(self):
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.patch(
+            '/accounts/me/', {'preferred_payout_method': 'bank_transfer'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.landlord_profile.refresh_from_db()
+        self.assertEqual(self.landlord_profile.preferred_payout_method, 'bank_transfer')
+        self.assertEqual(
+            response.data['profile']['preferred_payout_method'], 'bank_transfer'
+        )
+
+    def test_staff_updates_full_name_only(self):
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.patch(
+            '/accounts/me/', {'full_name': 'New Staff Name'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.staff_profile.refresh_from_db()
+        self.assertEqual(self.staff_profile.full_name, 'New Staff Name')
+
+    def test_staff_cannot_grant_self_permissions(self):
+        # can_approve_listings / can_host_viewings are permission flags
+        # — no branch of the view reads them, so they must be ignored
+        # exactly like role/email.
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.patch('/accounts/me/', {
+            'can_approve_listings': True,
+            'can_host_viewings': True,
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.staff_profile.refresh_from_db()
+        self.assertFalse(self.staff_profile.can_approve_listings)
+        self.assertFalse(self.staff_profile.can_host_viewings)
+
+    def test_disallowed_user_fields_are_ignored(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch('/accounts/me/', {
+            'role': 'admin',
+            'email': 'hacked@example.com',
+            'is_verified': True,
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.renter.refresh_from_db()
+        self.assertEqual(self.renter.role, 'renter')
+        self.assertEqual(self.renter.email, 'writer-renter@example.com')
+        self.assertFalse(self.renter.is_verified)
+
+    def test_landlord_verification_fields_are_ignored(self):
+        # national_id_number + id_verified are staff-only (ID document
+        # verification workflow) — never writable via self-service.
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.patch('/accounts/me/', {
+            'national_id_number': 'GHA-FAKE',
+            'id_verified': True,
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.landlord_profile.refresh_from_db()
+        self.assertEqual(self.landlord_profile.national_id_number, 'GHA-W1')
+        self.assertFalse(self.landlord_profile.id_verified)
+
+    def test_admin_patch_with_full_name_no_longer_500s(self):
+        # Regression test: the old `elif role == ADMIN` branch
+        # referenced an AdminProfile name that was never defined, so any
+        # admin PATCH containing full_name raised NameError → raw 500.
+        # Admins have no profile table, so the key is ignored and the
+        # request still returns the full user with 200.
+        self.client.force_authenticate(user=self.admin)
+
+        response = self.client.patch(
+            '/accounts/me/', {'full_name': 'Should Be Ignored'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['profile'])
+
+    def test_invalid_choice_returns_error_shape_and_writes_nothing(self):
+        # A 400 must leave the database untouched — phone is valid here
+        # but occupation is not, so NEITHER may be written (no
+        # half-writes). Also pins the {'error': ...} shape the frontend
+        # unwraps, rather than a serializer.errors dict.
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch('/accounts/me/', {
+            'phone': '0201112222',
+            'occupation': 'astronaut',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+        self.renter.refresh_from_db()
+        self.renter_profile.refresh_from_db()
+        self.assertNotEqual(self.renter.phone, '0201112222')
+        self.assertNotEqual(self.renter_profile.occupation, 'astronaut')
+
+    def test_unknown_amenity_id_returns_error_shape(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch(
+            '/accounts/me/', {'amenity_preferences': [999999]}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+        self.assertEqual(self.renter_profile.amenity_preferences.count(), 0)
+
+    def test_non_list_amenity_preferences_returns_error_shape(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch(
+            '/accounts/me/', {'amenity_preferences': self.wifi.id}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)

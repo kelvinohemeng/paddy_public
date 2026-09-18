@@ -7,6 +7,12 @@ from django.conf import settings
 from google.oauth2 import id_token
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, RenterProfile, LandlordProfile, StaffProfile
+from core.models import Amenity
+from django.core.exceptions import ValidationError
+# Amenity — needed to resolve amenity_preferences IDs below.
+# ValidationError — a malformed amenity_preferences payload (e.g.
+# non-integer IDs) makes the id__in lookup itself raise instead of
+# returning empty; caught and turned into a clean 400, never a 500.
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.throttling import ScopedRateThrottle
@@ -54,40 +60,197 @@ def me(request: Request) -> Response:
         # not require every field in `fields` to be present every time
         # (e.g. sending only {"phone": "..."} without needing anything else)
 
-        if serializer.is_valid():
-            serializer.save()
-            # Since we passed an existing `user` instance above, .save()
-            # here UPDATES that row rather than creating a new one —
-            # same method name as RegisterSerializer, different behavior,
-            # because DRF checks whether an instance was provided
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-            full_name = request.data.get('full_name')
-            # full_name isn't on the User model at all — it lives on
-            # RenterProfile or LandlordProfile instead, so it can't be
-            # handled by UserUpdateSerializer above. We check for it
-            # separately here and update the correct profile table
-            # directly, depending on this user's role
+        # Profile inputs are validated BEFORE anything is written (user
+        # row and profile rows alike) — a 400 below must leave the
+        # database untouched. Writing phone first and validating
+        # occupation second would produce half-writes ("phone saved but
+        # occupation rejected"), the exact class of surprise this
+        # codebase avoids with boring, explicit code. So this whole
+        # section only READS request.data and returns early on invalid
+        # input; the actual writes happen further down, after every
+        # check has passed.
 
-            if full_name is not None:
-                if user.role == User.Role.RENTER:
-                    RenterProfile.objects.filter(user=user).update(full_name=full_name)
-                elif user.role == User.Role.LANDLORD:
-                    LandlordProfile.objects.filter(user=user).update(full_name=full_name)
-                elif user.role == User.Role.STAFF:
-                    StaffProfile.objects.filter(user=user).update(full_name=full_name)
-                elif user.role == User.Role.ADMIN:
-                    AdminProfile.objects.filter(user=user).update(full_name=full_name)
-                # .filter(user=user).update(...) — a direct, one-step
-                # database update, different from the serializer.save()
-                # pattern above but reaches the same result: no need to
-                # fetch the profile object first just to change one field
+        renter_updates = {}
+        # Renter scalar writes, collected here during validation and
+        # applied in one .update() later — one query, not one per field.
+        amenities_to_set = None
+        # Validated Amenity list for the M2M write (None = key absent,
+        # no M2M change; [] = explicitly cleared — both valid).
 
-            return Response(UserSerializer(user).data)
-            # Return the FULL updated user (via UserSerializer, the
-            # existing read-only one) so the frontend immediately has
-            # the fresh state, without needing a separate GET afterward
+        if user.role == User.Role.RENTER:
+            # Self-service renter CV fields — each one read with .get()
+            # and collected ONLY when present, so a PATCH with just
+            # {"phone": ...} changes nothing here (partial update, same
+            # spirit as UserUpdateSerializer's partial=True above).
+            # Unknown/disallowed keys (role, email, verification flags,
+            # ...) are never read at all — this allowlist IS the
+            # security boundary, same "silently ignore what isn't
+            # listed" reasoning as UserUpdateSerializer's fields list
+            # in serializers.py.
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            preferred_area = request.data.get('preferred_area')
+            if preferred_area is not None:
+                renter_updates['preferred_area'] = preferred_area
+
+            school_name = request.data.get('school_name')
+            if school_name is not None:
+                renter_updates['school_name'] = school_name
+
+            occupation = request.data.get('occupation')
+            if occupation is not None:
+                if occupation not in RenterProfile.Occupation.values:
+                    return Response(
+                        {'error': 'Invalid occupation.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                    # {'error': '...'} — the shape the frontend unwraps
+                    # everywhere, not serializer.errors.
+                renter_updates['occupation'] = occupation
+
+            about_me = request.data.get('about_me')
+            if about_me is not None:
+                renter_updates['about_me'] = about_me
+
+            preferred_payment_method = request.data.get('preferred_payment_method')
+            if preferred_payment_method is not None:
+                if preferred_payment_method not in RenterProfile.PaymentMethod.values:
+                    return Response(
+                        {'error': 'Invalid preferred_payment_method.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                renter_updates['preferred_payment_method'] = preferred_payment_method
+
+            if request.data.get('amenity_preferences') is not None:
+                # M2M — needs the real instance + .set() at write time
+                # (plain .update() only writes columns). Accepts a list
+                # of Amenity PKs — the same "write shape stays simple
+                # IDs" convention Listing.amenities uses (nested detail
+                # lives on the read serializer instead, never on the
+                # write path).
+                amenity_ids = request.data.get('amenity_preferences')
+                if not isinstance(amenity_ids, list):
+                    return Response(
+                        {'error': 'amenity_preferences must be a list of amenity IDs.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                try:
+                    amenities_to_set = list(Amenity.objects.filter(id__in=amenity_ids))
+                except (ValueError, TypeError, ValidationError):
+                    return Response(
+                        {'error': 'Invalid amenity_preferences.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                    # Non-integer IDs make the id__in lookup itself
+                    # raise (rather than returning empty) — caught and
+                    # turned into a clean 400, never a 500.
+                if len(amenities_to_set) != len(set(amenity_ids)):
+                    return Response(
+                        {'error': 'One or more amenities not found.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                    # Length mismatch means at least one ID names no
+                    # real Amenity — the write must never run on a
+                    # partial match, or the caller's typo would silently
+                    # drop preferences they thought they saved. An empty
+                    # list passes (0 == 0) and clears preferences below,
+                    # which is valid.
+
+        elif user.role == User.Role.LANDLORD:
+            preferred_payout_method = request.data.get('preferred_payout_method')
+            if preferred_payout_method is not None:
+                if preferred_payout_method not in LandlordProfile.PayoutMethod.values:
+                    return Response(
+                        {'error': 'Invalid preferred_payout_method.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            # national_id_number and id_verified are deliberately NEVER
+            # read here — both are staff-only (the ID document
+            # verification workflow). national_id_number is excluded
+            # from LandlordProfileSerializer responses too, and
+            # id_verified flips only via staff review. A client sending
+            # either key gets it silently ignored, exactly like
+            # role/email on the User side.
+        # Staff gets full_name only (handled at write time below) —
+        # can_approve_listings / can_host_viewings are permission flags
+        # no user may grant themselves, so no branch reads them here.
+
+        serializer.save()
+        # Since we passed an existing `user` instance above, .save()
+        # here UPDATES that row rather than creating a new one —
+        # same method name as RegisterSerializer, different behavior,
+        # because DRF checks whether an instance was provided.
+        # Reached only after EVERY validation above passed, so no
+        # half-write is possible from this point on.
+
+        full_name = request.data.get('full_name')
+        # full_name isn't on the User model at all — it lives on
+        # RenterProfile or LandlordProfile instead, so it can't be
+        # handled by UserUpdateSerializer above. We check for it
+        # separately here and update the correct profile table
+        # directly, depending on this user's role
+
+        if full_name is not None:
+            if user.role == User.Role.RENTER:
+                RenterProfile.objects.filter(user=user).update(full_name=full_name)
+            elif user.role == User.Role.LANDLORD:
+                LandlordProfile.objects.filter(user=user).update(full_name=full_name)
+            elif user.role == User.Role.STAFF:
+                StaffProfile.objects.filter(user=user).update(full_name=full_name)
+            # No ADMIN branch — there is deliberately no AdminProfile
+            # model anywhere (role 'admin' is Django's own superuser
+            # account, which has no profile table — UserSerializer.
+            # get_profile returns None for it for the same reason).
+            # The previous code referenced a bare `AdminProfile`
+            # name that was never imported or defined, so ANY admin
+            # PATCH containing full_name raised NameError → raw 500.
+            # An admin's full_name is now simply ignored (same as
+            # every other field with no table behind it), and the
+            # request still returns 200 with the full user below.
+            # .filter(user=user).update(...) — a direct, one-step
+            # database update, different from the serializer.save()
+            # pattern above but reaches the same result: no need to
+            # fetch the profile object first just to change one field.
+            # A no-op when no profile row exists yet (a User created
+            # directly via the manager, rather than through
+            # register(), has none) — that must not 500 either.
+            # Deliberately no get-or-create: profile full_name columns
+            # are required with no default, so inventing a row would
+            # mean guessing required data. The row genuinely has to
+            # exist first (register() always creates it).
+
+        if user.role == User.Role.RENTER:
+            if renter_updates:
+                RenterProfile.objects.filter(user=user).update(**renter_updates)
+                # Same no-op-if-missing reasoning as full_name above.
+
+            if amenities_to_set is not None:
+                profile = RenterProfile.objects.filter(user=user).first()
+                # .first() (not .get()) — returns None instead of
+                # raising when the row is missing, keeping the
+                # missing-profile no-op behavior. .get() would 500
+                # here for a profile-less user.
+                if profile is not None:
+                    profile.amenity_preferences.set(amenities_to_set)
+
+        elif user.role == User.Role.LANDLORD:
+            preferred_payout_method = request.data.get('preferred_payout_method')
+            if preferred_payout_method is not None:
+                LandlordProfile.objects.filter(user=user).update(
+                    preferred_payout_method=preferred_payout_method
+                )
+                # Already choice-validated above; same no-op-if-missing
+                # reasoning as the renter branch.
+
+        return Response(UserSerializer(user).data)
+        # Return the FULL updated user (via UserSerializer, the
+        # existing read-only one) so the frontend immediately has
+        # the fresh state, without needing a separate GET afterward.
+        # UserSerializer.get_profile re-queries the profile tables, so
+        # the .filter().update() writes above are reflected here even
+        # though they bypassed the in-memory instances.
 
     serializer = UserSerializer(user)
     # request.user — this is new: DRF's JWTAuthentication (which we
