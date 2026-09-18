@@ -6,7 +6,9 @@ export default async function ForgotPassword() {
   const data = await getData();
 
   if (data.authenticated) {
-    redirect(data?.redirectTo || "/");
+    redirect(data?.redirectTo || "/dashboard");
+    // Same reasoning as login/register/page.tsx — "/" is now the
+    // public hub, not a session-aware landing spot.
   }
 
   return <ForgotPasswordForm />;

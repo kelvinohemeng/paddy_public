@@ -33,12 +33,18 @@ type DeleteButtonProps = {
    * `meta` property is used when creating the URL for the related action and path.
    */
   meta?: Record<string, unknown>;
+  /**
+   * Called after a successful delete mutation — e.g. to navigate away
+   * from a page/panel that was showing the now-deleted record, since
+   * it would otherwise stay mounted and refetch into an error state.
+   */
+  onSuccess?: () => void;
 } & React.ComponentProps<typeof Button>;
 
 export const DeleteButton = React.forwardRef<
   React.ComponentRef<typeof Button>,
   DeleteButtonProps
->(({ resource, recordItemId, accessControl, meta, children, ...rest }, ref) => {
+>(({ resource, recordItemId, accessControl, meta, onSuccess, children, ...rest }, ref) => {
   const {
     hidden,
     disabled,
@@ -53,6 +59,7 @@ export const DeleteButton = React.forwardRef<
     id: recordItemId,
     accessControl,
     meta,
+    onSuccess,
   });
   const [open, setOpen] = React.useState(false);
 

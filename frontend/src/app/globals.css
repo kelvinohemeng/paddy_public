@@ -121,3 +121,63 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Container Box: Control background color, padding, border radius, and shadow */
+.custom-map-info-window.gm-style-iw-a .gm-style-iw-c {
+  padding: 0 !important;
+  border-radius: 16px !important;
+  background-color: #ffffff !important; /* Or dark theme e.g., #111827 */
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+  max-width: 280px !important;
+  border: 1px solid #e5e7eb;
+}
+
+/* Content Area: Prevent accidental scrollbars and remove extra inner padding */
+.custom-map-info-window .gm-style-iw-d {
+  overflow: hidden !important;
+  max-height: none !important;
+  padding: 0 !important;
+}
+
+/* Arrow/Tip: Color matches the card background */
+.custom-map-info-window .gm-style-iw-tc::after {
+  background-color: #ffffff !important;
+}
+
+/* Hide default close button if headerDisabled isn't active */
+.custom-map-info-window button.gm-ui-hover-or-active {
+  display: none !important;
+}
+
+.gm-style-iw{
+    padding: 0 !important;
+    border-radius: 16px !important;
+    background-color: #ffffff !important; /* Or dark theme e.g., #111827 */
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+    max-width: 280px !important;
+    border: 1px solid #e5e7eb;
+}
+.gm-style-iw-d{
+    padding: 0 !important;
+    border-radius: 16px !important;
+    background-color: #ffffff !important; /* Or dark theme e.g., #111827 */
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+    max-width: 280px !important;
+    border: 1px solid #e5e7eb;
+    overflow: hidden !important;
+    border: none;
+}
+.gm-style-iw-tc::after {
+    display: none;
+
+  /*for now nothing will show for this pin graphic*/
+    /*content: "";
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid #ffffff;
+  -webkit-clip-path: polygon(0 0, 50% 100%, 100% 0);
+  clip-path: polygon(0 0, 50% 100%, 100% 0);*/
+}

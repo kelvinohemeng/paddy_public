@@ -21,7 +21,13 @@ const handleAuthSuccess = async (response: Response) => {
 
   return {
     success: true,
-    redirectTo: "/",
+    redirectTo: "/dashboard",
+    // Was "/" — now that "/" is the PUBLIC discovery hub (no session
+    // concept at all), landing there post-login would be a step
+    // backward for a landlord who just authenticated specifically to
+    // reach their own listings. "/dashboard" is the server-redirect
+    // entry point (see (admin)/dashboard/page.tsx) that resolves the
+    // session's user id and forwards to /dashboard/[user]/listings.
   };
 };
 
@@ -171,7 +177,11 @@ export const authProviderClient: AuthProvider = {
 
       return {
         success: true,
-        redirectTo: "/",
+        redirectTo: "/dashboard",
+        // Same reasoning as handleAuthSuccess above — this branch
+        // duplicates that logic rather than calling it (pre-existing
+        // structure, not touched here), so the redirect target needed
+        // updating in both places to stay consistent.
       };
     }
 

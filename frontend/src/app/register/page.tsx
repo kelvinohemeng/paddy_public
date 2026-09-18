@@ -6,7 +6,8 @@ export default async function Register() {
   const data = await getData();
 
   if (data.authenticated) {
-    redirect(data?.redirectTo || "/");
+    redirect(data?.redirectTo || "/dashboard");
+    // Same reasoning as login/page.tsx — "/" is now the public hub.
   }
 
   return <SignUpForm />;

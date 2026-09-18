@@ -53,11 +53,39 @@ export const RefineContext = ({ children }: RefineContextProps) => {
               },
             },
             {
+              name: "dashboard",
+              list: "/dashboard",
+              meta: {
+                label: "My Listings",
+              },
+              // Purely a NAVIGATION resource — gives the sidebar a
+              // stable, always-resolvable link (Refine's menu can't
+              // auto-fill a raw ":user" route param the way it fills
+              // ":id" for a specific record, so a generic "listings"
+              // menu link would render literally as
+              // "/dashboard/:user/listings", which 404s). "/dashboard"
+              // itself is a server-redirect (see dashboard/page.tsx)
+              // that resolves the CURRENT session's user id and sends
+              // the browser on to the real
+              // /dashboard/[user]/listings destination.
+            },
+            {
               name: "listings",
-              list: "/listings",
-              create: "/listings/create",
-              edit: "/listings/edit/:id",
-              show: "/listings/show/:id",
+              list: "/dashboard/:user/listings",
+              create: "/dashboard/:user/listings/create",
+              edit: "/dashboard/:user/listings/:id/edit",
+              show: "/dashboard/:user/listings/:id",
+              meta: {
+                // Hidden from the auto-generated sidebar for the same
+                // ":user"-can't-auto-resolve reason as above — the
+                // "dashboard" resource above is what actually appears
+                // in the sidebar; this entry exists so useForm/
+                // useList/useOne/etc. (which key off resource NAME,
+                // not these route strings) keep working, and so
+                // redirect()/composeRoute() calls elsewhere produce
+                // the correct URL shape when they do need it.
+                hide: true,
+              },
             },
             {
               name: "core/amenities",

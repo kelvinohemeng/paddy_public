@@ -116,5 +116,5 @@ export const config = {
   // Scoped to the gated section only. Public pages never carry a
   // session requirement, so running refresh logic there would just add
   // latency — and if new gated sections appear later, add them here.
-  matcher: ["/listings/:path*"],
+  matcher: ["/dashboard/:path*"],
 };
