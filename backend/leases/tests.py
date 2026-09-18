@@ -224,3 +224,76 @@ class LeaseRecordTests(APITestCase):
 
         results = response.data['results'] if 'results' in response.data else response.data
         self.assertEqual(len(results), 1)
+
+
+class LeaseAdminVisibilityTests(APITestCase):
+    # Pins the admin (superuser) oversight contract on leases: sees
+    # every lease/record and can record from the console — previously
+    # admins fell into the renter branch (empty) on reads and 403d on
+    # writes.
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(
+            email='lease-admin@example.com', password='pass123456', role='admin'
+        )
+
+        self.landlord_user = User.objects.create_user(
+            email='adminvis-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Adminvis Landlord',
+            national_id_number='GHA-900', preferred_payout_method='momo'
+        )
+
+        self.renter_user = User.objects.create_user(
+            email='adminvis-renter@example.com', password='pass123456', role='renter'
+        )
+        self.renter_profile = RenterProfile.objects.create(
+            user=self.renter_user, full_name='Adminvis Renter'
+        )
+
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Adminvis listing', description='Test', listing_type='rent',
+            price_monthly='2000.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='12 Adminvis Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+        self.lease = Lease.objects.create(
+            listing=self.listing, renter_profile=self.renter_profile,
+            landlord_profile=self.landlord_profile, rent_amount_monthly='2000.00',
+            deposit_amount='24000.00', advance_rent_period='1_year',
+            start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+        )
+
+    def test_admin_sees_all_leases_and_records(self):
+        LeaseRecord.objects.create(
+            lease=self.lease, record_type='receipt', method='momo',
+            amount='2000.00', occurred_at=date(2026, 1, 1),
+        )
+        self.client.force_authenticate(user=self.admin_user)
+
+        lease_response = self.client.get('/leases/')
+        record_response = self.client.get('/leases/records/')
+
+        for response in (lease_response, record_response):
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            results = response.data['results'] if 'results' in response.data else response.data
+            self.assertEqual(len(results), 1)
+
+    def test_admin_can_record_a_lease(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.post('/leases/', {
+            'listing': self.listing.id,
+            'renter_profile': self.renter_profile.id,
+            'landlord_profile': self.landlord_profile.id,
+            'rent_amount_monthly': '2000.00',
+            'deposit_amount': '24000.00',
+            'advance_rent_period': '1_year',
+            'start_date': '2026-01-01',
+            'end_date': '2026-12-31',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)

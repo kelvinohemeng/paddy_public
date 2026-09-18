@@ -158,10 +158,16 @@ class ViewingViewSet(viewsets.ModelViewSet):
         # but the actual filters are different, since visibility here
         # depends on a DIFFERENT relationship for each role
 
-        if user.role == User.Role.STAFF:
+        if user.role in (User.Role.STAFF, User.Role.ADMIN):
             return Viewing.objects.all()
             # Staff see every viewing in the system — matches what you
-            # decided: no per-staff assignment restriction on visibility
+            # decided: no per-staff assignment restriction on visibility.
+            # Admin (superuser) sees everything too, for the "all
+            # activities" oversight console. Deliberately visibility
+            # ONLY — the assign/complete/cancel role rules below are
+            # untouched (their redesign is a separate brief now that
+            # viewings are landlord-renter agreements with no staff
+            # present).
 
         if user.role == User.Role.LANDLORD:
             return Viewing.objects.filter(listing__landlord_profile__user=user)

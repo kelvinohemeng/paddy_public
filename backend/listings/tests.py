@@ -5,7 +5,9 @@ from django.contrib.gis.geos import Point
 # REAL coordinates to filter against. Same toolbox as Polygon in
 # views.py, just the "single location" shape instead of "rectangle"
 
-from accounts.models import User, LandlordProfile, RenterProfile
+from accounts.models import User, LandlordProfile, RenterProfile, StaffProfile
+# StaffProfile — the review action stamps verified_by_staff, so review
+# tests need a real staff reviewer row behind the staff user.
 from core.models import Amenity
 from .models import Listing, ListingPhoto, SavedListing
 
@@ -1629,3 +1631,249 @@ class ListingPhotoManagementTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.data['results'] if 'results' in response.data else response.data
         self.assertEqual(len(data), 1)
+
+
+class ListingReviewTests(APITestCase):
+    # Covers POST /listings/<id>/review/ — the reviewer-side half of
+    # verification (landlords submit via submit-for-review, staff/admin
+    # decide here). Pins both outcomes, every rejection path, and the
+    # audit stamping (verified_by_staff/verified_at/published_at).
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email='reviewer-owner@example.com', password='pass123456', role='landlord'
+        )
+        self.owner_profile = LandlordProfile.objects.create(
+            user=self.owner, full_name='Reviewer Owner', national_id_number='GHA-V1',
+            preferred_payout_method='momo'
+        )
+
+        self.staff_user = User.objects.create_user(
+            email='reviewer-staff@example.com', password='pass123456', role='staff'
+        )
+        self.staff_profile = StaffProfile.objects.create(
+            user=self.staff_user, full_name='Reviewer Staff', can_approve_listings=True,
+        )
+
+        self.admin_user = User.objects.create_user(
+            email='reviewer-admin@example.com', password='pass123456', role='admin'
+        )
+        # No StaffProfile for admin — by design (admins have no profile
+        # table), and exactly the shape the review action must handle
+        # without 500ing.
+
+        self.renter_user = User.objects.create_user(
+            email='reviewer-renter@example.com', password='pass123456', role='renter'
+        )
+
+        base = {
+            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+            'address_precise': '1 Review Rd', 'neighborhood': 'Osu', 'city': 'Accra',
+        }
+
+        self.pending = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Pending review',
+            status=Listing.Status.PENDING_REVIEW, **base
+        )
+        self.draft = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Draft review',
+            status=Listing.Status.DRAFT, **base
+        )
+        self.published = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Published review',
+            status=Listing.Status.PUBLISHED, **base
+        )
+
+    def test_staff_can_publish_pending_listing(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.PUBLISHED)
+        self.assertTrue(response.data['is_staff_verified'])
+        # Full re-serialization comes back for cache updates — and the
+        # badge is already True on it, no refetch needed.
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PUBLISHED)
+        self.assertEqual(self.pending.verified_by_staff, self.staff_profile)
+        self.assertIsNotNone(self.pending.verified_at)
+        self.assertIsNotNone(self.pending.published_at)
+
+    def test_staff_can_reject_pending_listing(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'rejected'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.REJECTED)
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.REJECTED)
+        self.assertEqual(self.pending.verified_by_staff, self.staff_profile)
+        self.assertIsNotNone(self.pending.verified_at)
+        self.assertIsNone(self.pending.published_at)
+        # Rejection records WHEN (verified_at) but never fabricates a
+        # "first went live" timestamp — published_at stays None so a
+        # later approval of the resubmission stamps the real go-live.
+
+    def test_landlord_cannot_review_own_listing(self):
+        # The role check runs before any status logic: this is the
+        # owner's OWN pending row, so a 403 here proves "not your
+        # action", not a visibility accident.
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PENDING_REVIEW)
+
+    def test_renter_cannot_review(self):
+        # Uses the PUBLISHED row deliberately: renters can SEE published
+        # listings, so get_object() succeeds and the 403 below proves
+        # the role check itself — on the pending row a renter would 404
+        # on visibility before ever reaching it (same not-403
+        # convention as every other action). Also proves role runs
+        # before status: published would otherwise be a 400.
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(
+            f'/listings/{self.published.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_cannot_review(self):
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_draft_cannot_be_reviewed_directly(self):
+        # Drafts must travel draft → submit-for-review → pending_review
+        # first — reviewers can't pull a draft straight to published.
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.draft.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+        self.draft.refresh_from_db()
+        self.assertEqual(self.draft.status, Listing.Status.DRAFT)
+
+    def test_published_listing_cannot_be_re_reviewed(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.published.id}/review/', {'decision': 'rejected'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_invalid_decision_is_rejected(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'archived'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PENDING_REVIEW)
+
+    def test_admin_can_review_without_staff_profile(self):
+        # Admin approvals are a first-class path (oversight console),
+        # and admins have no StaffProfile table — verified_by_staff
+        # stays None while status + timestamps still land, and the
+        # badge still shows (it keys off verified_at, deliberately).
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'published'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.PUBLISHED)
+        self.assertTrue(response.data['is_staff_verified'])
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PUBLISHED)
+        self.assertIsNone(self.pending.verified_by_staff)
+        self.assertIsNotNone(self.pending.verified_at)
+        self.assertIsNotNone(self.pending.published_at)
+
+
+class AdminVisibilityTests(APITestCase):
+    # Pins the admin (superuser) oversight contract: sees every listing
+    # regardless of status, with contact/address unlocked — the read
+    # foundation the admin console builds on.
+
+    def setUp(self):
+        self.admin_user = User.objects.create_user(
+            email='oversight-admin@example.com', password='pass123456', role='admin'
+        )
+
+        landlord_user = User.objects.create_user(
+            email='oversight-landlord@example.com', password='pass123456', role='landlord'
+        )
+        landlord_profile = LandlordProfile.objects.create(
+            user=landlord_user, full_name='Oversight Landlord',
+            national_id_number='GHA-O1', preferred_payout_method='momo'
+        )
+        landlord_user.phone = '0201112222'
+        landlord_user.save()
+
+        base = {
+            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+            'address_precise': '7 Oversight Rd', 'neighborhood': 'Osu', 'city': 'Accra',
+        }
+
+        self.draft = Listing.objects.create(
+            landlord_profile=landlord_profile, title='Oversight draft',
+            status=Listing.Status.DRAFT, **base
+        )
+        self.published = Listing.objects.create(
+            landlord_profile=landlord_profile, title='Oversight published',
+            status=Listing.Status.PUBLISHED, **base
+        )
+
+    def test_admin_list_sees_all_statuses(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.get('/listings/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = _titles_from_list_response(response)
+
+        self.assertIn('Oversight draft', titles)
+        self.assertIn('Oversight published', titles)
+        # Previously admins fell into the renter branch (published
+        # only) — the draft row proves full oversight visibility.
+
+    def test_admin_detail_sees_unlocked_contact_and_address(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.get(f'/listings/{self.published.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['address_precise'], '7 Oversight Rd')
+        self.assertEqual(response.data['landlord_contact']['phone'], '0201112222')
+        self.assertTrue(response.data['is_unlocked'])

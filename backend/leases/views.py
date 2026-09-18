@@ -26,8 +26,11 @@ class LeaseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if user.role == User.Role.STAFF:
+        if user.role in (User.Role.STAFF, User.Role.ADMIN):
             return Lease.objects.all()
+            # Staff see every lease; admin (superuser) sees everything
+            # too, for the "all activities" oversight console. Renter/
+            # landlord branches below are unchanged.
 
         if user.role == User.Role.LANDLORD:
             return Lease.objects.filter(landlord_profile__user=user)
@@ -41,8 +44,12 @@ class LeaseViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
 
-        if user.role not in (User.Role.STAFF, User.Role.LANDLORD):
-            raise PermissionDenied('Only staff or landlords can record a lease')
+        if user.role not in (User.Role.STAFF, User.Role.ADMIN, User.Role.LANDLORD):
+            raise PermissionDenied('Only staff, admins, or landlords can record a lease')
+            # Admin added alongside staff: the oversight console records
+            # leases the same way a reviewer would. Renters still
+            # blocked — a tenant must never conjure their own tenancy
+            # record.
 
         listing = serializer.validated_data.get('listing')
         landlord_profile = serializer.validated_data.get('landlord_profile')
@@ -56,9 +63,11 @@ class LeaseViewSet(viewsets.ModelViewSet):
             serializer.save(landlord_profile=user.landlordprofile)
             return
 
-        # Staff: trust the submitted landlord_profile, but it must
-        # actually match the listing's real landlord — otherwise the
-        # record would misrepresent who the landlord on this lease is
+        # Staff AND admin: trust the submitted landlord_profile, but it
+        # must actually match the listing's real landlord — otherwise the
+        # record would misrepresent who the landlord on this lease is.
+        # Same guard for both roles; the console gets no free pass on
+        # data integrity just for being internal.
         if listing is not None and landlord_profile is not None and listing.landlord_profile_id != landlord_profile.id:
             raise PermissionDenied("landlord_profile must match the listing's landlord")
 
@@ -75,6 +84,10 @@ class LeaseViewSet(viewsets.ModelViewSet):
             raise PermissionDenied('You can only edit leases on your own listings')
 
         serializer.save()
+        # Staff and admin both fall through to the save — staff keeps
+        # its existing record-keeping access (narrowing staff out of
+        # leases entirely rides with the viewing-redesign brief, not
+        # this change), admin gains console edit access.
 
 
 class LeaseRecordViewSet(viewsets.ModelViewSet):
@@ -92,8 +105,9 @@ class LeaseRecordViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if user.role == User.Role.STAFF:
+        if user.role in (User.Role.STAFF, User.Role.ADMIN):
             return LeaseRecord.objects.all()
+            # Same staff+admin reasoning as LeaseViewSet above.
 
         if user.role == User.Role.LANDLORD:
             return LeaseRecord.objects.filter(lease__landlord_profile__user=user)
@@ -106,8 +120,8 @@ class LeaseRecordViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
 
-        if user.role not in (User.Role.STAFF, User.Role.LANDLORD):
-            raise PermissionDenied('Only staff or landlords can log a lease record')
+        if user.role not in (User.Role.STAFF, User.Role.ADMIN, User.Role.LANDLORD):
+            raise PermissionDenied('Only staff, admins, or landlords can log a lease record')
 
         lease = serializer.validated_data.get('lease')
 

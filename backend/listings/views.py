@@ -21,6 +21,17 @@ from django.contrib.gis.geos import Polygon
 # for THIS ONE request — it only exists for the life of this function call
 
 from .models import Listing, ListingPhoto, SavedListing
+from accounts.models import User, StaffProfile
+# User — for the Role enum in the review action + admin-visibility
+# branches below. Safe as a top-level import: accounts/models.py
+# depends only on core (Amenity), never back on listings, so no
+# circular-import loop (unlike payments, which IS imported lazily
+# inside methods for exactly that reason).
+# StaffProfile — to stamp verified_by_staff on review. Fetched via
+# .filter().first(), never request.user.staffprofile directly: an
+# admin reviewer (and a profile-less staff user) HAS no StaffProfile
+# row, and the direct reverse-OneToOne would raise
+# RelatedObjectDoesNotExist → 500 instead of recording the review.
 from core.models import Amenity
 from .serializers import ListingSerializer, ListingPhotoSerializer, SavedListingSerializer
 
@@ -67,9 +78,16 @@ class ListingViewSet(viewsets.ModelViewSet):
         # up, depending on who's asking — this is where "only show
         # published listings to the public" logic goes
 
-        if user.is_authenticated and user.role == user.Role.STAFF:
+        if user.is_authenticated and user.role in (user.Role.STAFF, user.Role.ADMIN):
             queryset = Listing.objects.all()
-            # Staff can see everything, including drafts/pending listings
+            # Staff can see everything — the review console's whole job
+            # is triaging drafts/pending listings, which no other base
+            # includes. Admin (superuser) sees everything too, for the
+            # "all activities on the platform" oversight console. Both
+            # roles share this branch deliberately: review scope and
+            # oversight scope coincide on listings (unlike viewings/
+            # leases, where staff visibility is intentionally left alone
+            # for the separate viewing-redesign brief).
         elif user.is_authenticated and user.role == user.Role.LANDLORD:
             queryset = Listing.objects.filter(landlord_profile__user=user) | Listing.objects.filter(status=Listing.Status.PUBLISHED)
             # A landlord sees: their OWN listings (any status) OR published
@@ -364,6 +382,104 @@ class ListingViewSet(viewsets.ModelViewSet):
         # view of their own listing right after submitting it; using
         # get_serializer lets the frontend update its cache from this
         # response with no refetch and no gating surprise.
+
+    @action(detail=True, methods=['post'], url_path='review')
+    # THE staff-side half of the verification workflow: submit-for-review
+    # (above) moves draft/rejected → pending_review from the landlord
+    # side; this moves pending_review → published/rejected from the
+    # reviewer side. Together they are the complete lifecycle —
+    # landlords can never publish themselves (status is read_only on
+    # the serializer AND no landlord path sets published), reviewers
+    # can never be bypassed. Resulting URL:
+    # POST /listings/<id>/review/ with {"decision": "published"} or
+    # {"decision": "rejected"}.
+
+    def review_listing(self, request, pk=None):
+        listing = self.get_object()
+        # Already respects get_queryset() — a landlord/renter reaching
+        # this URL for a row outside their visibility (e.g. someone
+        # else's draft) 404s here before any role logic runs, same
+        # not-403 convention as every other action in this file.
+
+        if request.user.role not in (User.Role.STAFF, User.Role.ADMIN):
+            raise PermissionDenied('Only staff or admins can review listings')
+            # Runs FIRST, before decision/status validation: a landlord
+            # hitting this on their OWN pending listing must hear "not
+            # your action" (403), not a misleading "bad decision" (400).
+            # No ownership exception — reviewers act on other people's
+            # listings by definition, so the owner-check pattern used by
+            # upload_photos/submit-for-review deliberately does NOT
+            # apply here. Staff here means the (currently single, later
+            # multiple) listing-reviewer account(s); per-user checks
+            # throughout (verified_by_staff below) mean extra reviewers
+            # work normally with zero changes when added.
+
+        decision = request.data.get('decision')
+        if decision not in (Listing.Status.PUBLISHED, Listing.Status.REJECTED):
+            return Response(
+                {'error': 'decision must be "published" or "rejected"'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # The ONLY two reviewer outcomes — same {'error': '...'}
+            # shape the rest of this codebase uses. Validated before
+            # the status precondition so a malformed body reports the
+            # malformed body, not the row's state.
+
+        if listing.status != Listing.Status.PENDING_REVIEW:
+            return Response(
+                {'error': 'Only listings pending review can be reviewed'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # Review consumes pending_review exactly once: drafts must
+            # go through submit-for-review first, and published/archived
+            # rows can't be re-decided here (no silent re-publish of an
+            # archived listing past its review).
+
+        from django.utils import timezone
+        # Imported here, not at module top — same deliberate scoping as
+        # the payments imports in perform_create: timezone is only ever
+        # needed by this one action, and the file's top already carries
+        # the import it must (accounts) without growing further.
+
+        now = timezone.now()
+        listing.status = decision
+        listing.verified_at = now
+        # verified_at = "a review happened", whoever performed it. The
+        # is_staff_verified badge keys off this (not verified_by_staff
+        # — see serializers.py), precisely so an ADMIN approval shows
+        # the badge too even though no StaffProfile exists behind it.
+
+        if decision == Listing.Status.PUBLISHED:
+            listing.published_at = now
+        # published_at set only on approval — a rejection leaves it
+        # None, so "first went live at" stays meaningful if a later
+        # resubmission is approved instead of being overwritten by a
+        # rejection timestamp.
+
+        listing.verified_by_staff = StaffProfile.objects.filter(
+            user=request.user
+        ).first()
+        # .filter().first() (never request.user.staffprofile): a staff
+        # reviewer normally HAS a StaffProfile row and gets stamped (the
+        # audit trail for "which reviewer approved this"); an admin
+        # reviewer has NO StaffProfile table at all, and .first()
+        # returns None instead of raising RelatedObjectDoesNotExist →
+        # 500. Verified_by_staff is therefore "which staff reviewer",
+        # nullable by design — never the gate for the badge.
+
+        listing.save(
+            update_fields=['status', 'verified_at', 'published_at', 'verified_by_staff']
+        )
+        # Scoped write — same update_fields discipline as
+        # submit-for-review: only the review columns change, a
+        # concurrent edit elsewhere can't be clobbered by a stale
+        # full-row save.
+
+        return Response(self.get_serializer(listing).data)
+        # Full re-serialization with request context (same reasoning as
+        # submit-for-review) so the console updates its cache with no
+        # refetch — staff/admin _has_access is unconditional, so the
+        # reviewer always sees the unlocked view back.
 
     @action(detail=True, methods=['post'], url_path='photos')
     # @action = DRF's way of adding a custom endpoint to a ViewSet,

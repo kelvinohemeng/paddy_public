@@ -117,6 +117,16 @@ class ListingSerializer(serializers.ModelSerializer):
             # Staff always see everything — matches every other
             # visibility rule in this codebase (get_queryset, etc.)
 
+        if user.role == user.Role.ADMIN:
+            return True
+            # Admin (superuser) sees everything too — the "all
+            # activities on the platform" oversight console needs the
+            # same unlocked read staff gets for review. Separate branch
+            # (not merged into the staff one above) deliberately: staff
+            # access is review-scoped, admin access is oversight-scoped,
+            # and the two roles must stay distinguishable if either
+            # scope ever narrows again.
+
         if listing.landlord_profile.user == user:
             return True
             # A landlord always sees their OWN listing's full details —
@@ -184,12 +194,17 @@ class ListingSerializer(serializers.ModelSerializer):
         }
 
     def get_is_staff_verified(self, listing):
-        return listing.verified_by_staff_id is not None
-        # verified_by_staff_id (the raw FK column) rather than touching
-        # .verified_by_staff itself — avoids an extra query just to
-        # check existence, and avoids ever accidentally serializing the
-        # related StaffProfile object by mistake later if this method
-        # were refactored carelessly
+        return listing.verified_at is not None
+        # verified_at (the timestamp), NOT verified_by_staff_id (the
+        # reviewer FK) — "a review happened" rather than "a STAFF row
+        # is attached". The distinction matters now that admins approve
+        # too: an admin reviewer has no StaffProfile table at all, so a
+        # reviewer-FK check would show admin-approved listings as
+        # unverified (a trust-badge lie on live rows). verified_at is
+        # set by the review action on every approval AND rejection, and
+        # stays None on rows that never passed review — including rows
+        # created directly as published in tests/seed data, which
+        # correctly keep showing False.
 
     def get_is_saved(self, listing):
         request = self.context.get('request')
