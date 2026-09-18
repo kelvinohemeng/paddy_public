@@ -7,7 +7,7 @@ from django.contrib.gis.geos import Point
 
 from accounts.models import User, LandlordProfile, RenterProfile
 from core.models import Amenity
-from .models import Listing, SavedListing
+from .models import Listing, ListingPhoto, SavedListing
 
 
 class ListingCreateTests(APITestCase):
@@ -1156,3 +1156,476 @@ class ListingSerializerExpandedFieldsTests(APITestCase):
 
         self.assertEqual(len(response.data['photos']), 1)
         self.assertTrue(response.data['photos'][0]['is_cover'])
+
+
+def _titles_from_list_response(response):
+    # The list endpoint returns a plain list locally but a paginated
+    # {'results': [...]} shape once pagination is enabled — every other
+    # list test in this file already handles both, so new tests reuse
+    # the same helper instead of each re-implementing the branch.
+    data = response.data['results'] if 'results' in response.data else response.data
+    return [item['title'] for item in data]
+
+
+class ListingMineFilterTests(APITestCase):
+    # Covers ?mine=true on GET /listings/ — the landlord dashboard's
+    # "my listings" list and the subscription-cap count behind it.
+    # Each test asserts the FULL matrix row from the task contract,
+    # not just the happy path, since the failure modes (leaking other
+    # landlords' rows, breaking anonymous Discovery Hub) are the actual
+    # product risks here.
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email='mine-owner@example.com', password='pass123456', role='landlord'
+        )
+        self.owner_profile = LandlordProfile.objects.create(
+            user=self.owner, full_name='Mine Owner', national_id_number='GHA-M1',
+            preferred_payout_method='momo'
+        )
+
+        self.other_landlord = User.objects.create_user(
+            email='mine-other@example.com', password='pass123456', role='landlord'
+        )
+        self.other_profile = LandlordProfile.objects.create(
+            user=self.other_landlord, full_name='Mine Other', national_id_number='GHA-M2',
+            preferred_payout_method='momo'
+        )
+
+        self.renter = User.objects.create_user(
+            email='mine-renter@example.com', password='pass123456', role='renter'
+        )
+
+        self.staff = User.objects.create_user(
+            email='mine-staff@example.com', password='pass123456', role='staff'
+        )
+
+        base = {
+            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 2, 'bathrooms': 1,
+            'address_precise': '1 Mine Rd', 'neighborhood': 'Osu',
+        }
+
+        self.owner_draft = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='My draft', city='Accra',
+            status=Listing.Status.DRAFT, **base
+        )
+        self.owner_published = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='My published', city='Accra',
+            status=Listing.Status.PUBLISHED, **base
+        )
+        self.other_published = Listing.objects.create(
+            landlord_profile=self.other_profile, title='Other published', city='Accra',
+            status=Listing.Status.PUBLISHED, **base
+        )
+
+    def test_landlord_mine_true_returns_only_own_including_drafts(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get('/listings/?mine=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = _titles_from_list_response(response)
+
+        self.assertIn('My draft', titles)
+        # Drafts included — the dashboard must count/list them for the
+        # subscription cap, which counts ALL statuses, not just live ones.
+        self.assertIn('My published', titles)
+        self.assertNotIn('Other published', titles)
+        # THE point of the param: without it, the default landlord base
+        # (own UNION all-published) would include this row.
+
+    def test_renter_mine_true_returns_empty(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.get('/listings/?mine=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = _titles_from_list_response(response)
+
+        self.assertEqual(titles, [])
+        # Renters own no listings — empty, not an error, and definitely
+        # not a fallback to "all published".
+
+    def test_staff_mine_true_returns_only_own_not_all(self):
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.get('/listings/?mine=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        titles = _titles_from_list_response(response)
+
+        self.assertEqual(titles, [])
+        # Staff own nothing here — must NOT fall back to "all listings"
+        # (their default base without the param), or the dashboard
+        # count would be meaningless for any staff-owned row.
+
+    def test_anonymous_mine_true_ignores_param_returns_published_only(self):
+        # No force_authenticate at all — the public Discovery Hub
+        # fetches this endpoint anonymously and must be unaffected.
+        response = self.client.get('/listings/?mine=true')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Never a 500 (AnonymousUser has no .role / no landlordprofile
+        # — the view must not touch either before the auth guard).
+        titles = _titles_from_list_response(response)
+
+        self.assertIn('My published', titles)
+        self.assertIn('Other published', titles)
+        self.assertNotIn('My draft', titles)
+        # Same published-only set as a plain anonymous GET /listings/.
+
+    def test_mine_true_composes_with_city_filter(self):
+        self.client.force_authenticate(user=self.owner)
+
+        # Move the owner's published row to Kumasi so the city filter
+        # has something to exclude while mine=true stays active.
+        self.owner_published.city = 'Kumasi'
+        self.owner_published.save(update_fields=['city'])
+
+        response = self.client.get('/listings/?mine=true&city=Accra')
+
+        titles = _titles_from_list_response(response)
+
+        self.assertIn('My draft', titles)
+        # Own + in Accra — matches both filters (AND logic).
+        self.assertNotIn('My published', titles)
+        # Own but in Kumasi — correctly excluded by the city filter.
+        self.assertNotIn('Other published', titles)
+        # Would already be excluded by mine=true alone; confirms the
+        # two filters stack rather than one overriding the other.
+
+
+class ListingSubmitForReviewTests(APITestCase):
+    # Covers POST /listings/<id>/submit-for-review/ — the ONLY
+    # landlord-driven status transition. Tests pin both allowed
+    # transitions, every forbidden one, the cross-owner 403, and that
+    # status is actually readable by the owner afterwards.
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email='review-owner@example.com', password='pass123456', role='landlord'
+        )
+        self.owner_profile = LandlordProfile.objects.create(
+            user=self.owner, full_name='Review Owner', national_id_number='GHA-R1',
+            preferred_payout_method='momo'
+        )
+
+        self.other_landlord = User.objects.create_user(
+            email='review-other@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=self.other_landlord, full_name='Review Other', national_id_number='GHA-R2',
+            preferred_payout_method='momo'
+        )
+
+        base = {
+            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+            'address_precise': '1 Review Rd', 'neighborhood': 'Osu', 'city': 'Accra',
+        }
+
+        self.draft = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Draft listing',
+            status=Listing.Status.DRAFT, **base
+        )
+        self.rejected = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Rejected listing',
+            status=Listing.Status.REJECTED, **base
+        )
+        self.published = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Published listing',
+            status=Listing.Status.PUBLISHED, **base
+        )
+        self.pending = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Pending listing',
+            status=Listing.Status.PENDING_REVIEW, **base
+        )
+        self.archived = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Archived listing',
+            status=Listing.Status.ARCHIVED, **base
+        )
+
+    def test_draft_to_pending_review_succeeds(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.draft.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.PENDING_REVIEW)
+        # Full re-serialized listing comes back so the frontend can
+        # update its cache without a refetch.
+
+        self.draft.refresh_from_db()
+        self.assertEqual(self.draft.status, Listing.Status.PENDING_REVIEW)
+
+    def test_rejected_to_pending_review_succeeds(self):
+        # Resubmission after fixing — the second (and only other)
+        # allowed transition.
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.rejected.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.PENDING_REVIEW)
+
+        self.rejected.refresh_from_db()
+        self.assertEqual(self.rejected.status, Listing.Status.PENDING_REVIEW)
+
+    def test_published_cannot_be_submitted(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.published.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+        # {'error': '...'} shape — the contract the frontend unwraps.
+
+        self.published.refresh_from_db()
+        self.assertEqual(self.published.status, Listing.Status.PUBLISHED)
+
+    def test_pending_review_cannot_be_resubmitted(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.pending.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_archived_cannot_be_submitted(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.archived.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_cross_landlord_submit_is_forbidden(self):
+        # The ownership trap: get_queryset for a landlord is
+        # own-UNION-all-published, so get_object() SUCCEEDS on another
+        # landlord's published listing — only the explicit check inside
+        # the action stops the transition. Uses the published row
+        # deliberately: its status would otherwise be a 400, so a 403
+        # here proves the ownership check runs FIRST.
+        self.client.force_authenticate(user=self.other_landlord)
+
+        response = self.client.post(f'/listings/{self.published.id}/submit-for-review/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.published.refresh_from_db()
+        self.assertEqual(self.published.status, Listing.Status.PUBLISHED)
+
+    def test_status_is_exposed_to_owner_on_read(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get(f'/listings/{self.draft.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.DRAFT)
+
+    def test_status_is_visible_but_harmless_on_public_published_row(self):
+        # Anonymous callers only ever receive published rows, so the
+        # exposed value ('published') leaks nothing new — this just pins
+        # that contract so a future visibility change can't silently
+        # start leaking draft rows WITH their status attached.
+        response = self.client.get(f'/listings/{self.published.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['status'], Listing.Status.PUBLISHED)
+
+    def test_landlord_still_cannot_set_status_directly_on_create_or_update(self):
+        # Removing status from Meta.exclude must NOT reopen the
+        # self-publish bypass — status is read_only, so client-supplied
+        # values are silently ignored on both write paths and the only
+        # transition stays the submit-for-review action. Uses a FRESH
+        # landlord for the create half: setUp already gave self.owner
+        # five rows, so its free-tier cap (1 listing) is long spent and
+        # any further POST would 403 on the cap, not on status handling.
+        fresh = User.objects.create_user(
+            email='review-fresh@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=fresh, full_name='Review Fresh', national_id_number='GHA-R9',
+            preferred_payout_method='momo'
+        )
+        self.client.force_authenticate(user=fresh)
+
+        data = {
+            'title': 'Sneaky published', 'description': 'Test', 'listing_type': 'rent',
+            'price_monthly': '2000.00', 'advance_rent_period': '1_year',
+            'bedrooms': 1, 'bathrooms': 1, 'address_precise': '9 Sneaky Rd',
+            'neighborhood': 'Osu', 'city': 'Accra', 'status': 'published',
+        }
+        create_response = self.client.post('/listings/', data, format='json')
+
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        sneaky = Listing.objects.get(title='Sneaky published')
+        self.assertEqual(sneaky.status, Listing.Status.DRAFT)
+
+        self.client.force_authenticate(user=self.owner)
+        patch_response = self.client.patch(
+            f'/listings/{self.draft.id}/', {'status': 'published'}, format='json'
+        )
+
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.draft.refresh_from_db()
+        self.assertEqual(self.draft.status, Listing.Status.DRAFT)
+
+
+class ListingPhotoManagementTests(APITestCase):
+    # Covers the /listings/photos/<id>/ management endpoint (PATCH
+    # order/is_cover, DELETE with cover promotion). Photos are created
+    # directly as DB rows with stub image names — no storage backend
+    # involved, since management never touches file bytes at all.
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email='photo-owner@example.com', password='pass123456', role='landlord'
+        )
+        self.owner_profile = LandlordProfile.objects.create(
+            user=self.owner, full_name='Photo Owner', national_id_number='GHA-P1',
+            preferred_payout_method='momo'
+        )
+
+        self.other_landlord = User.objects.create_user(
+            email='photo-other@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=self.other_landlord, full_name='Photo Other', national_id_number='GHA-P2',
+            preferred_payout_method='momo'
+        )
+
+        self.listing = Listing.objects.create(
+            landlord_profile=self.owner_profile, title='Photo listing',
+            description='Test', listing_type='rent', price_monthly='2000.00',
+            advance_rent_period='1_year', bedrooms=2, bathrooms=1,
+            address_precise='1 Photo Rd', neighborhood='Osu', city='Accra',
+            status=Listing.Status.DRAFT,
+        )
+
+    def _make_photo(self, order, is_cover=False):
+        return ListingPhoto.objects.create(
+            listing=self.listing, image=f'listing_photos/test-{order}.jpg',
+            order=order, is_cover=is_cover,
+        )
+
+    def test_owner_can_update_order(self):
+        photo = self._make_photo(order=0, is_cover=True)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            f'/listings/photos/{photo.id}/', {'order': 5}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        photo.refresh_from_db()
+        self.assertEqual(photo.order, 5)
+
+    def test_setting_cover_clears_siblings_so_only_one_cover_remains(self):
+        first = self._make_photo(order=0, is_cover=True)
+        second = self._make_photo(order=1, is_cover=False)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            f'/listings/photos/{second.id}/', {'is_cover': True}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertFalse(first.is_cover)
+        self.assertTrue(second.is_cover)
+        self.assertEqual(
+            ListingPhoto.objects.filter(listing=self.listing, is_cover=True).count(), 1
+        )
+        # At most one cover — the invariant the atomic clear-then-set
+        # exists to hold, even under concurrent set-cover requests.
+
+    def test_deleting_cover_promotes_first_remaining_by_order(self):
+        cover = self._make_photo(order=0, is_cover=True)
+        nxt = self._make_photo(order=1, is_cover=False)
+        later = self._make_photo(order=2, is_cover=False)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(f'/listings/photos/{cover.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        nxt.refresh_from_db()
+        later.refresh_from_db()
+        self.assertTrue(nxt.is_cover)
+        # Lowest remaining order wins promotion.
+        self.assertFalse(later.is_cover)
+
+    def test_deleting_last_photo_leaves_listing_with_none(self):
+        only = self._make_photo(order=0, is_cover=True)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.delete(f'/listings/photos/{only.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(ListingPhoto.objects.filter(listing=self.listing).count(), 0)
+        # Same state as a freshly created listing — the next upload's
+        # first-ever auto-cover logic re-establishes a cover from here.
+
+    def test_non_owner_patch_and_delete_404(self):
+        photo = self._make_photo(order=0, is_cover=True)
+        self.client.force_authenticate(user=self.other_landlord)
+
+        patch_response = self.client.patch(
+            f'/listings/photos/{photo.id}/', {'order': 9}, format='json'
+        )
+        delete_response = self.client.delete(f'/listings/photos/{photo.id}/')
+
+        self.assertEqual(patch_response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(delete_response.status_code, status.HTTP_404_NOT_FOUND)
+        # 404 (not 403) — the owner-scoped get_queryset makes a
+        # stranger's photo behave like "doesn't exist", never
+        # confirming "exists but not yours".
+        self.assertTrue(ListingPhoto.objects.filter(id=photo.id).exists())
+
+    def test_patch_image_is_rejected(self):
+        photo = self._make_photo(order=0, is_cover=True)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            f'/listings/photos/{photo.id}/', {'image': 'listing_photos/sneaky.jpg'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+        # image is immutable here — changing the visual means delete +
+        # re-upload, never a PATCH of the file field.
+
+    def test_photo_endpoints_require_authentication(self):
+        photo = self._make_photo(order=0, is_cover=True)
+
+        list_response = self.client.get('/listings/photos/')
+        patch_response = self.client.patch(
+            f'/listings/photos/{photo.id}/', {'order': 3}, format='json'
+        )
+
+        self.assertEqual(list_response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(patch_response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_owner_list_returns_only_own_photos(self):
+        self._make_photo(order=0, is_cover=True)
+        other_listing = Listing.objects.create(
+            landlord_profile=LandlordProfile.objects.get(user=self.other_landlord),
+            title='Other photo listing', description='Test', listing_type='rent',
+            price_monthly='2000.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='2 Photo Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.DRAFT,
+        )
+        ListingPhoto.objects.create(
+            listing=other_listing, image='listing_photos/other.jpg',
+            order=0, is_cover=True,
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get('/listings/photos/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(data), 1)

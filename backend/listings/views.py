@@ -8,6 +8,12 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 
+from django.db import transaction
+# transaction.atomic — used by the photo-cover management below (and only
+# there) to make "clear siblings + set this cover" a single all-or-nothing
+# write. Without it, two near-simultaneous set-cover requests could each
+# clear-then-set in an interleaved order and leave two covers behind.
+
 from django.contrib.gis.geos import Polygon
 # Polygon — GeoDjango's shape class, same toolbox that gave us PointField
 # on the model. We're not storing a Polygon anywhere; we're building one
@@ -85,6 +91,46 @@ class ListingViewSet(viewsets.ModelViewSet):
             # to this public-listings-only branch.
         # Stored in a variable now instead of returned immediately —
         # we need to keep narrowing it below before the final return
+
+        if self.request.query_params.get('mine') == 'true' and user.is_authenticated:
+            queryset = Listing.objects.filter(landlord_profile__user=user)
+            # ?mine=true — the landlord dashboard's "my listings" list
+            # (and the subscription-cap count behind it) needs ONLY the
+            # requesting user's own rows, any status, instead of the
+            # default own-UNION-published mix above. Overriding the base
+            # here — rather than adding another .filter() on top — is
+            # deliberate: for a landlord the default base already
+            # includes everyone else's published listings, and no
+            # additional filter could remove those without also
+            # restructuring the UNION itself.
+            #
+            # Three traps this shape deliberately avoids:
+            # - Staff + mine=true returns their OWN (usually empty), NOT
+            #   "all listings" — falling back to all would make the
+            #   dashboard count meaningless for any staff-owned row.
+            # - Renter + mine=true is simply empty (renters own no
+            #   listings) — still scoped by the same filter, not a
+            #   special-cased .none(), so a future role that CAN own
+            #   listings composes without a new branch here.
+            # - Anonymous + mine=true is deliberately NOT handled here:
+            #   user.is_authenticated is False, so this block is skipped
+            #   and the public published-only base stands unchanged.
+            #   Filtering by landlord_profile__user=AnonymousUser would
+            #   return empty (breaking the public Discovery Hub's
+            #   anonymous fetch), and touching user.role would throw
+            #   AttributeError — same AnonymousUser-has-no-role trap the
+            #   base branches above already guard against.
+            # .filter(landlord_profile__user=user) — never touching
+            # user.landlordprofile directly — a renter/staff user HAS no
+            # LandlordProfile row, and touching the reverse OneToOne
+            # would raise RelatedObjectDoesNotExist instead of just
+            # returning empty. Filtering across the FK is safe for every
+            # role, which is exactly why this one line needs no
+            # role branching at all.
+            #
+            # Placed BEFORE every optional filter below so mine composes
+            # with all of them via normal chaining (city/max_price/
+            # bbox/etc. just keep narrowing this own-only base).
 
         city = self.request.query_params.get('city')
         # self.request.query_params — DRF's parsed version of the URL's
@@ -253,6 +299,72 @@ class ListingViewSet(viewsets.ModelViewSet):
 
         instance.delete()
 
+    @action(detail=True, methods=['post'], url_path='submit-for-review')
+    # @action = same tool as upload_photos below — detail=True means one
+    # specific listing, so the URL becomes
+    # POST /listings/<id>/submit-for-review/. This is the ONLY
+    # landlord-driven status transition in the whole API: draft (or a
+    # rejected listing, fixed and resubmitted) → pending_review.
+    # Publishing/rejecting/archiving deliberately have NO endpoint here
+    # at all — those stay staff-only in Django admin, per the brand's
+    # staff-verification promise. A free-form PATCH on status is blocked
+    # separately (status is read_only on the serializer), so this action
+    # is the single, auditable gate landlords pass through.
+
+    def submit_for_review(self, request, pk=None):
+        listing = self.get_object()
+        # self.get_object() ALREADY respects get_queryset() — but for a
+        # landlord that queryset is own-listings UNION all-published, so
+        # it SUCCEEDS on another landlord's published listing (same trap
+        # upload_photos guards against). The explicit ownership check
+        # below is therefore mandatory, not redundant — without it,
+        # anyone authenticated could push someone else's published
+        # listing back into pending_review.
+
+        if listing.landlord_profile.user != request.user:
+            raise PermissionDenied("You can only submit your own listings for review")
+            # Same 403-explicit convention as perform_update/
+            # perform_destroy/upload_photos — deliberately a 403
+            # (PermissionDenied), NOT a 404, once the row is actually
+            # visible: the caller found something real and is being told
+            # "not yours", rather than "doesn't exist". Runs BEFORE the
+            # status check below so a cross-owner attempt on a published
+            # listing reports 403 (wrong owner), not a misleading 400
+            # (wrong status).
+
+        if listing.status not in (Listing.Status.DRAFT, Listing.Status.REJECTED):
+            return Response(
+                {'error': 'Only draft or rejected listings can be submitted for review'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # Allowed transitions ONLY: draft → pending_review (first
+            # submission) and rejected → pending_review (resubmission
+            # after fixing). Every other current status (pending_review
+            # itself, published, archived) is a 400 — same
+            # {'error': '...'} shape the rest of this codebase uses
+            # (and the frontend unwraps), never a bare string or a
+            # different key. Deliberately no minimum-content validation
+            # here (photos required? address complete?) — model clean()
+            # already enforces the price/listing_type XOR, and anything
+            # more is a product decision for Kelvin first.
+
+        listing.status = Listing.Status.PENDING_REVIEW
+        listing.save(update_fields=['status'])
+        # update_fields=['status'] — only this column is meant to change
+        # here; scoping the write means a concurrent edit to some other
+        # field (title, price) in the same moment can't be silently
+        # clobbered by a full-row save carrying stale values.
+
+        return Response(self.get_serializer(listing).data)
+        # self.get_serializer (not a bare ListingSerializer(...)) —
+        # the ViewSet's helper injects context={'request': ...}
+        # automatically, which ListingSerializer._has_access NEEDS to
+        # decide address/contact gating. A bare re-serialization without
+        # context would fail closed and hand the owner back a LOCKED
+        # view of their own listing right after submitting it; using
+        # get_serializer lets the frontend update its cache from this
+        # response with no refetch and no gating surprise.
+
     @action(detail=True, methods=['post'], url_path='photos')
     # @action = DRF's way of adding a custom endpoint to a ViewSet,
     # beyond the standard 5. detail=True means this operates on ONE
@@ -368,3 +480,126 @@ class SavedListingViewSet(viewsets.ReadOnlyModelViewSet):
             # codebase
 
         return SavedListing.objects.filter(renter_profile=user.renterprofile)
+
+
+class ListingPhotoViewSet(viewsets.ModelViewSet):
+    # Manages ONE listing's gallery after upload: reorder, change cover,
+    # delete. Creation itself deliberately lives elsewhere
+    # (ListingViewSet.upload_photos, multipart batch upload with
+    # auto-incrementing order + first-ever auto-cover) — this ViewSet
+    # never creates rows, which is exactly why POST/PUT are switched
+    # off below rather than left to fail confusingly.
+
+    serializer_class = ListingPhotoSerializer
+    permission_classes = [IsAuthenticated]
+    # Class-level IsAuthenticated with NO AllowAny branch — photos are
+    # never public CRUD. Listing bodies are publicly readable (with
+    # address/contact gated inside the serializer), but reordering or
+    # deleting someone's gallery is an owner-only write, full stop.
+
+    http_method_names = ['get', 'patch', 'delete', 'head', 'options']
+    # By default ModelViewSet would also wire up POST (create) and PUT
+    # (full replace). Both are wrong here on purpose:
+    # - POST would need a listing + image file in one JSON body, but
+    #   creation already has its dedicated multipart endpoint
+    #   (upload_photos) — a second creation path would split the
+    #   order/cover bookkeeping across two places that could drift.
+    # - PUT (full-object replace) makes no sense without re-assignable
+    #   images: the full representation INCLUDES the image, yet image
+    #   is deliberately not re-assignable here (re-upload exists for
+    #   that). PATCH-only keeps updates to order/is_cover, the only
+    #   two fields this endpoint owns. Same http_method_names technique
+    #   ViewingViewSet uses to block PUT/PATCH/DELETE there — here the
+    #   blocked set is just different (POST/PUT instead of all writes).
+
+    def get_queryset(self):
+        return ListingPhoto.objects.filter(listing__landlord_profile__user=self.request.user)
+        # Owner-scoped — get_object() then 404s (not 403s) for
+        # non-owners automatically, matching this codebase's existing
+        # convention (a stranger's photo URL behaves like "doesn't
+        # exist" rather than confirming "exists but not yours").
+        # listing__landlord_profile__user — the same double-hop lookup
+        # ViewingViewSet uses (Viewing -> listing -> landlord_profile
+        # -> user), just starting from ListingPhoto instead of Viewing.
+        # .filter (not user.landlordprofile) so renters/staff without a
+        # LandlordProfile simply match nothing instead of raising
+        # RelatedObjectDoesNotExist.
+
+    def update(self, request, *args, **kwargs):
+        if 'image' in request.data:
+            return Response(
+                {'error': 'Image cannot be changed through this endpoint. Delete and re-upload instead.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # image is NOT re-assignable here — the file itself is
+            # immutable once uploaded; changing the visual means a new
+            # upload (which carries its own order/cover bookkeeping).
+            # Explicit 400 with the codebase's {'error': '...'} shape
+            # (which the frontend unwraps) rather than silently ignoring
+            # the key — silently dropping a field the caller thought
+            # they set is the exact class of surprise this codebase
+            # avoids with boring, explicit code. Only order/is_cover
+            # may change via PATCH.
+        return super().update(request, *args, **kwargs)
+        # super().update handles partial=True for PATCH (DRF's
+        # partial_update calls update(partial=True)) — order and
+        # is_cover validate through the normal serializer path.
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        # serializer.instance — the photo being patched, already fetched
+        # through the owner-scoped get_queryset above, so by this point
+        # ownership is settled and we only handle the cover invariant.
+
+        with transaction.atomic():
+            if serializer.validated_data.get('is_cover') is True:
+                ListingPhoto.objects.filter(
+                    listing=instance.listing
+                ).exclude(pk=instance.pk).update(is_cover=False)
+                # A listing has AT MOST one cover — clearing every
+                # sibling BEFORE setting this one, inside one atomic
+                # block, is what makes that invariant hold under
+                # concurrency too: without the transaction, two
+                # near-simultaneous set-cover requests could interleave
+                # (both clear, both set) and leave two covers behind.
+                # .update() (not per-row save) — one query, no signals,
+                # deliberately blunt for a pure flag-clear.
+            serializer.save()
+            # Only reached inside the same atomic block, so a failure
+            # in save() rolls the sibling-clear back too — never a
+            # state where the old cover was cleared but the new one
+            # never landed.
+
+    def perform_destroy(self, instance):
+        listing = instance.listing
+        # Captured BEFORE delete — after instance.delete() the in-memory
+        # object's FK is stale for further queries, so the listing
+        # reference must be held now to find siblings afterwards.
+
+        was_cover = instance.is_cover
+        # Whether promotion is even needed — deleting a non-cover photo
+        # changes nothing about which photo fronts the listing.
+
+        with transaction.atomic():
+            instance.delete()
+
+            if was_cover:
+                replacement = ListingPhoto.objects.filter(
+                    listing=listing
+                ).order_by('order', 'id').first()
+                # First REMAINING photo by gallery order (id as the
+                # deterministic tiebreak when two rows share an order
+                # value) becomes the new cover — same "first photo fronts
+                # the listing" rule upload_photos uses for a brand-new
+                # gallery (existing_count == 0 and index == 0).
+
+                if replacement is not None:
+                    replacement.is_cover = True
+                    replacement.save(update_fields=['is_cover'])
+                    # Scoped write — only the flag changes, same
+                    # update_fields discipline as submit-for-review.
+                # If replacement is None the listing simply has no
+                # photos left — the same state as a freshly created
+                # listing, and upload_photos' first-ever auto-cover
+                # logic re-establishes a cover on the next upload
+                # without any special-casing here.

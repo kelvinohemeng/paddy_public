@@ -66,21 +66,36 @@ class ListingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Listing
-        exclude = ['landlord_profile', 'status', 'verified_at', 'published_at', 'verified_by_staff']
-        # exclude = "every field on the model EXCEPT these" — the
-        # opposite of listing fields one by one, useful here since
-        # Listing has many fields and we only need to block a few
+        exclude = ['landlord_profile', 'verified_at', 'published_at', 'verified_by_staff']
+        # exclude = "every field on the model EXCEPT these" — status is
+        # deliberately NOT in this list anymore (it used to be): the
+        # owner and staff genuinely need to READ it (dashboard lifecycle
+        # UI, "what state is my listing in"), and public callers can
+        # only ever receive published rows via get_queryset anyway, so
+        # exposing the value leaks nothing to them.
         #
-        # landlord_profile excluded because the VIEW sets it explicitly
-        # (from request.user) — never trust the client to say who owns this
+        # landlord_profile still excluded because the VIEW sets it
+        # explicitly (from request.user) — never trust the client to say
+        # who owns this.
         #
-        # status/verified_at/published_at/verified_by_staff excluded —
-        # these are staff-controlled fields. A landlord submitting a new
-        # listing has no business setting these directly; the model's
-        # own defaults handle it (status defaults to 'draft', the others
-        # default to empty) until staff review happens. is_staff_verified
-        # above gives the frontend a safe yes/no without exposing the
-        # real verified_at timestamp or verified_by_staff identity
+        # verified_at/published_at/verified_by_staff stay excluded —
+        # these are staff-controlled fields. verified_by_staff identity
+        # must stay private in particular; is_staff_verified above gives
+        # the frontend a safe yes/no without exposing WHO verified it.
+        extra_kwargs = {
+            'status': {'read_only': True},
+        }
+        # read_only (not writable) — THE load-bearing half of exposing
+        # status safely. Without this, removing status from exclude
+        # would make it writable too, and a landlord could POST
+        # {'status': 'published'} and self-publish past staff review —
+        # the exact bypass test_landlord_cannot_set_status_on_create
+        # guards against. read_only keeps the read (dashboard needs it)
+        # while create/update silently ignore any client-supplied value
+        # and the model's own default (draft) stands. The ONLY
+        # landlord-driven transition is the dedicated submit-for-review
+        # action on the ViewSet; publishing itself stays staff-only in
+        # Django admin.
 
     def _has_access(self, listing):
         # THE actual security boundary for this whole feature — every
