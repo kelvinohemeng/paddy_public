@@ -94,8 +94,13 @@ class Command(BaseCommand):
         amenities = []
         for name in AMENITIES:
             from django.utils.text import slugify
+            # .replace('-', '_') — same canonical underscore form as
+            # AmenityViewSet.create(): slugify() alone yields hyphens
+            # ("Walled & Gated" → "walled-gated"), but the frontend
+            # filter + ListingViewSet match on underscore slugs
+            # (see core/choices.py). Keep seed and API in agreement.
             amenity, _ = Amenity.objects.get_or_create(
-                name=name, defaults={'slug': slugify(name)}
+                name=name, defaults={'slug': slugify(name).replace('-', '_')}
             )
             amenities.append(amenity)
         return amenities
