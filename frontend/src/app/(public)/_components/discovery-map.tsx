@@ -6,12 +6,19 @@ import { loadGoogleMapsScript, parseWktPoint } from "@/lib/google-maps";
 import {
   DISCOVERY_MAP_SCOPE,
   DISCOVERY_MAP_SCOPE_OPTIONS,
-  isWithinGhana,
 } from "@/lib/discovery-map-config";
 import { useConsent } from "@/providers/consent-provider";
 import { MapPreviewCard } from "./map-preview-card";
 
 const USER_LOCATION_ZOOM = 12;
+const SEARCH_FOCUS_ZOOM = 11;
+// How much wider than the searched place's own viewport to frame —
+// ~1.5 zoom levels out, so listings around the area stay in view
+// instead of a pin-tight crop.
+const SEARCH_VIEWPORT_PAD_FACTOR = 2.5;
+// Minimum frame (~25km) so street-level results still land on an
+// area view, not a rooftop close-up.
+const SEARCH_MIN_LAT_SPAN = 0.25;
 
 export type MapListing = {
   id: number | string;
@@ -35,6 +42,11 @@ type DiscoveryMapProps = {
   selectedListing: MapListing | null;
   selectedPoi: MapPlacePreview | null;
   onClosePreview: () => void;
+  // Free-text / city query from the search pill (server-read `city`
+  // param, threaded through DiscoverySplitView). When present the map
+  // looks it up and pans/zooms there — a submitted search literally
+  // moves the map to that location.
+  searchFocus?: string | null;
 };
 
 export type MapPlacePreview = {
@@ -95,7 +107,10 @@ export function DiscoveryMap({
   selectedListing,
   selectedPoi,
   onClosePreview,
+  searchFocus,
 }: DiscoveryMapProps) {
+  const [isCentering, setIsCentering] = useState(true);
+
   const mapDivRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
   const infoWindowRef = useRef<any>(null);
@@ -122,7 +137,7 @@ export function DiscoveryMap({
   const [loadError, setLoadError] = useState<string | null>(() =>
     process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
       ? null
-      : "Map unavailable — Google Maps API key is not configured."
+      : "Map unavailable — Google Maps API key is not configured.",
   );
   const [mapReady, setMapReady] = useState(false);
   const [markersReadyCount, setMarkersReadyCount] = useState(0);
@@ -162,7 +177,7 @@ export function DiscoveryMap({
         infoWindowRootRef.current = createRoot(infoWindowContentRef.current);
 
         infoWindowRef.current.addListener("closeclick", () =>
-          onClosePreviewRef.current()
+          onClosePreviewRef.current(),
         );
 
         setMapReady(true);
@@ -173,28 +188,152 @@ export function DiscoveryMap({
 
     return () => {
       cancelled = true;
-      infoWindowRootRef.current?.unmount();
+      // Deferred, not synchronous: unmounting this root inline can
+      // collide with an in-progress render of the surrounding tree
+      // (React: "attempted to synchronously unmount a root while React
+      // was already rendering"). A microtask runs after the current
+      // render/commit completes, so the teardown never re-enters a
+      // render. The ref is cleared immediately so no new render() can
+      // target the dying root in between.
+      const root = infoWindowRootRef.current;
       infoWindowRootRef.current = null;
+      if (root) {
+        queueMicrotask(() => root.unmount());
+      }
     };
   }, []);
 
   // --- 2. User Location ---
+  // Yields to an explicit search: if the visitor submitted a Where
+  // query, the search-focus effect below owns the camera — centering
+  // on the user here would immediately fight (and lose to) it.
   useEffect(() => {
     const map = mapRef.current;
-    if (!mapReady || consent !== "accepted" || !navigator.geolocation) return;
+    if (!mapReady || !map) return;
+    if (searchFocus?.trim()) {
+      // Deferred so the skeleton clears without a synchronous
+      // setState-in-effect cascade; the search-focus effect owns the
+      // camera from here.
+      const t = setTimeout(() => setIsCentering(false), 0);
+      return () => clearTimeout(t);
+    }
+    if (typeof window === "undefined" || !navigator.geolocation) {
+      const t = setTimeout(() => setIsCentering(false), 0);
+      return () => clearTimeout(t);
+    }
+
+    console.log("DiscoveryMap: Requesting user location...");
 
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         const location = { lat: coords.latitude, lng: coords.longitude };
-        if (DISCOVERY_MAP_SCOPE === "world" || isWithinGhana(location)) {
-          map.setCenter(location);
-          map.setZoom(USER_LOCATION_ZOOM);
-        }
+        console.log("DiscoveryMap: Found user location:", location);
+
+        // Force an immediate layout projection update
+        map.panTo(location);
+        map.setCenter(location);
+        map.setZoom(USER_LOCATION_ZOOM);
+
+        // Turn off the skeleton screen now that the map is exactly where it needs to be
+        setIsCentering(false);
       },
-      () => {},
-      { enableHighAccuracy: false, maximumAge: 300_000, timeout: 10_000 }
+      (error) => {
+        console.error("DiscoveryMap: Geolocation error:", error.message);
+        // Turn off the skeleton on error so the user can still use the fallback map view
+        setIsCentering(false);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 8000,
+      },
     );
-  }, [consent, mapReady]);
+  }, [mapReady, searchFocus]);
+
+  // --- 2b. Search focus — pan/zoom to the submitted Where query ---
+  // Resolved via Places Text Search, deliberately NOT Geocoder: the
+  // Geocoding API is a separately-enabled SKU and keys without it get
+  // "This API key is not authorized to use this service" — while the
+  // Places API is guaranteed present wherever autocomplete already
+  // works. Same camera behavior: viewport fit when available (zooms
+  // to the place's natural scale — country vs. city vs. street),
+  // pin-drop fallback otherwise.
+  useEffect(() => {
+    const map = mapRef.current;
+    const query = searchFocus?.trim();
+    if (!mapReady || !map || !query) return;
+
+    let cancelled = false;
+    void (async () => {
+      const google = (window as any).google;
+      if (!google?.maps) return;
+      try {
+        const placesLib = google.maps.importLibrary
+          ? await google.maps.importLibrary("places")
+          : google.maps.places;
+        const PlaceCtor = placesLib?.Place ?? google.maps.places?.Place;
+        if (!PlaceCtor?.searchByText) return;
+
+        const { places } = await PlaceCtor.searchByText({
+          textQuery: query,
+          fields: ["location", "viewport"],
+          maxResultCount: 1,
+        });
+        if (cancelled) return;
+        const top = places?.[0];
+        if (!top) return;
+        if (top.viewport) {
+          // Padded fit: the raw viewport hugs the place itself, so
+          // frame a wider area around it — nearby listings stay
+          // visible in the grid instead of cropping to one pin.
+          const LatLngBoundsCtor = google.maps.LatLngBounds;
+          const vp = top.viewport;
+          if (LatLngBoundsCtor && vp?.getCenter) {
+            const center = vp.getCenter();
+            const ne = vp.getNorthEast();
+            const sw = vp.getSouthWest();
+            const latSpan = Math.max(
+              (ne.lat() - sw.lat()) * SEARCH_VIEWPORT_PAD_FACTOR,
+              SEARCH_MIN_LAT_SPAN,
+            );
+            const lngSpan = Math.max(
+              (ne.lng() - sw.lng()) * SEARCH_VIEWPORT_PAD_FACTOR,
+              SEARCH_MIN_LAT_SPAN,
+            );
+            const clampLat = (v: number) => Math.min(85, Math.max(-85, v));
+            const wrapLng = (v: number) => ((v + 540) % 360) - 180;
+            map.fitBounds(
+              new LatLngBoundsCtor(
+                {
+                  lat: clampLat(center.lat() - latSpan / 2),
+                  lng: wrapLng(center.lng() - lngSpan / 2),
+                },
+                {
+                  lat: clampLat(center.lat() + latSpan / 2),
+                  lng: wrapLng(center.lng() + lngSpan / 2),
+                },
+              ),
+            );
+          } else {
+            map.fitBounds(vp);
+          }
+        } else if (top.location) {
+          map.panTo(top.location);
+          map.setCenter(top.location);
+          map.setZoom(SEARCH_FOCUS_ZOOM);
+        }
+        setIsCentering(false);
+      } catch {
+        // Lookup failures (quota, network blip, no match) stay silent
+        // — the visitor keeps the current viewport and the grid they
+        // already had instead of an error state.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [mapReady, searchFocus]);
 
   // --- 3. Click Listeners (POIs & Blank Map Space) ---
   useEffect(() => {
@@ -239,19 +378,19 @@ export function DiscoveryMap({
     return () => clickListener.remove();
   }, [mapReady]);
 
-  // --- 4. Render Listing Markers ---
+  // --- 4. Marker Creation Effect ---
   useEffect(() => {
     const google = (window as any).google;
     const map = mapRef.current;
-    if (!google || !map) return;
+    if (!google || !map || !mapReady) return;
 
+    // 1. Clear old markers safely
     listingMarkersRef.current.forEach((marker) => {
       marker.map = null;
     });
     listingMarkersRef.current.clear();
 
-    const listingPoints = new Map<number | string, any>();
-
+    // 2. Loop over and paint new markers
     listings.forEach((listing) => {
       const point = parseWktPoint(listing.location);
       if (!point) return;
@@ -265,34 +404,60 @@ export function DiscoveryMap({
       });
 
       marker.addEventListener("gmp-click", (e: any) => {
-        if (e.domEvent) {
-          e.domEvent.stopPropagation();
-        }
+        if (e.domEvent) e.domEvent.stopPropagation();
         onMarkerClickRef.current(listing.id);
       });
 
       marker.content.addEventListener("mouseenter", () =>
-        onMarkerHoverRef.current(listing.id)
+        onMarkerHoverRef.current(listing.id),
       );
       marker.content.addEventListener("mouseleave", () =>
-        onMarkerHoverRef.current(null)
+        onMarkerHoverRef.current(null),
       );
 
       listingMarkersRef.current.set(listing.id, marker);
-      listingPoints.set(listing.id, point);
     });
+
+    // Recompute visibility immediately — redrawn markers with no
+    // camera move fire no `idle`, so without this the grid keeps the
+    // previous search's ids: stuck on a stale subset, or stuck empty
+    // after clearing a search that returned nothing. Same dedupe as
+    // the idle listener so redundant notifies are free.
+    const bounds = map.getBounds();
+    if (bounds) {
+      const visibleIds: Array<number | string> = [];
+      listingMarkersRef.current.forEach((marker, id) => {
+        if (marker.position && bounds.contains(marker.position)) {
+          visibleIds.push(id);
+        }
+      });
+      const serialized = visibleIds.join(",");
+      if (serialized !== prevVisibleIdsRef.current) {
+        prevVisibleIdsRef.current = serialized;
+        onVisibleListingsChangeRef.current(visibleIds);
+      }
+    }
 
     // Notify InfoWindow effect that markers are ready
     setMarkersReadyCount((prev) => prev + 1);
+  }, [listings, mapReady]); // Only handles drawing markers when listings update
 
-    // FIX 4: Prevent duplicate triggers on map idle
+  // --- 5. Permanent Map Bounds / Viewport Listener ---
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+
     const updateVisibleListings = () => {
       const bounds = map.getBounds();
       if (!bounds) return;
 
-      const visibleIds = Array.from(listingPoints.entries())
-        .filter(([, point]) => bounds.contains(point))
-        .map(([id]) => id);
+      // Scan all drawn markers instead of relying on a closed-over listings sub-map
+      const visibleIds: Array<number | string> = [];
+      listingMarkersRef.current.forEach((marker, id) => {
+        if (marker.position && bounds.contains(marker.position)) {
+          visibleIds.push(id);
+        }
+      });
 
       const serialized = visibleIds.join(",");
       if (serialized !== prevVisibleIdsRef.current) {
@@ -301,11 +466,15 @@ export function DiscoveryMap({
       }
     };
 
+    // Attach listener once; it stays alive across listing state updates
     const idleListener = map.addListener("idle", updateVisibleListings);
-    return () => idleListener.remove();
-  }, [listings, mapReady]);
 
-  // --- 5. Manage InfoWindow Position & Content ---
+    return () => {
+      idleListener.remove();
+    };
+  }, [mapReady]); // Run ONCE on map ready
+
+  // --- 6. Manage InfoWindow Position & Content ---
   useEffect(() => {
     const infoWindow = infoWindowRef.current;
     const map = mapRef.current;
@@ -327,7 +496,7 @@ export function DiscoveryMap({
         listing={selectedListing}
         poi={selectedPoi}
         onClose={() => onClosePreviewRef.current()}
-      />
+      />,
     );
 
     // Check POI first (or active selection) to avoid stale listing state collisions
@@ -357,7 +526,7 @@ export function DiscoveryMap({
     }
   }, [mapReady, selectedListing, selectedPoi, markersReadyCount]);
 
-  // --- 6. Hover & Selected Pin Highlight ---
+  // --- 7. Hover & Selected Pin Highlight ---
   useEffect(() => {
     const google = (window as any).google;
     if (!google) return;
@@ -388,5 +557,40 @@ export function DiscoveryMap({
       </div>
     );
 
-  return <div ref={mapDivRef} className="h-full w-full" />;
+  return (
+    <div className="relative w-full h-full">
+      {/*The Map Container*/}
+      <div ref={mapDivRef} className="h-full w-full"></div>
+      {/* 2. The Loading Skeleton Overlay */}
+      {isCentering && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-100 dark:bg-zinc-900 animate-pulse">
+          <div className="flex flex-col items-center space-y-3">
+            {/* Compass/Map Pin Loading Visual Anchor */}
+            <svg
+              className="w-8 h-8 text-gray-400 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            <span className="text-sm font-medium text-gray-500">
+              Finding properties near you...
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

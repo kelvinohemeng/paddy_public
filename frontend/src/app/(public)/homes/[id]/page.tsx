@@ -18,15 +18,42 @@ import { Bed, Bath, MapPin, BadgeCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { PropertyMap } from "./_components/property-map";
 import { UnlockCta } from "./_components/unlock-cta";
+import { SaveToggle } from "@/components/save-toggle";
+
+// UNLOCK GATING + AUTH: the fetch below forwards the browser's access_token
+// cookie to the backend when one exists. This is what makes the pay-to-unlock
+// flow actually VISIBLE: ListingSerializer._has_access reads the request's
+// user — an anonymous server fetch can never see is_unlocked=true or the
+// gated address_precise/landlord_contact, even for a user who just paid.
+// Crawlers/anonymous visitors still get the identical anonymous response
+// (no header sent), so SEO semantics are unchanged — this only upgrades
+// the response for sessions that carry a real token.
+//
+// Trade-off, accepted deliberately: this page currently uses
+// { next: { revalidate: 60 } } caching. A logged-in fetch must NOT be
+// shared with anonymous visitors, so the cache is dropped in favor of
+// dynamic rendering whenever a token is present. Listing pages are
+// per-URL anyway (no shared listing cache across users at MVP scale),
+// and correctness-of-gating beats edge-caching here; the 60s revalidate
+// only ever bought the anonymous/crawler case, which re-renders cheaply.
 
 function getPhotoUrl(photo: any): string | null {
   return photo?.image ?? photo?.image_url ?? photo?.url ?? null;
 }
 
-async function fetchListing(id: string) {
+async function fetchListing(id: string, token: string | undefined) {
   const res = await fetch(
     `${process.env.NEXT_PUBLIC_API_URL}/listings/${id}/`,
-    { next: { revalidate: 60 } },
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      // No revalidate when a token is attached (per-user gated response,
+      // must never be cached/shared); anonymous crawls still hit the
+      // same URL fresh — at MVP traffic levels this is fine, and the
+      // previous 60s revalidate can be reintroduced for the anonymous
+      // branch later if backend load ever warrants it.
+      cache: token ? "no-store" : "force-cache",
+      next: token ? undefined : { revalidate: 60 },
+    },
   );
   if (!res.ok) return null;
   return res.json();
@@ -38,10 +65,9 @@ export default async function PropertyDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [listing, cookieStore] = await Promise.all([
-    fetchListing(id),
-    cookies(),
-  ]);
+  const cookieStore = await cookies();
+  const token = cookieStore.get("access_token")?.value;
+  const listing = await fetchListing(id, token);
 
   // Same lightweight "is there an access_token cookie at all" check
   // (admin)/layout.tsx and dashboard/page.tsx already use server-side
@@ -114,24 +140,37 @@ export default async function PropertyDetailPage({
       <div className="space-y-2">
         <div className="flex items-start justify-between gap-3">
           <h1 className="text-2xl font-bold leading-tight">{listing.title}</h1>
-          {listing.is_unlocked && (
-            <Badge className="shrink-0 gap-1">
-              <BadgeCheck className="size-3.5" />
-              Unlocked
-            </Badge>
-          )}
-          {/* A real "staff-verified" badge (per AGENTS.md's brand
-              promise — every listing is staff-visited/verified before
-              going live) needs a public verification signal from the
-              backend first: ListingSerializer currently excludes
-              verified_by_staff entirely, and status is excluded too
-              (both intentionally — see the Meta.exclude comment in
-              serializers.py). Every listing reachable by this public
-              page is already implicitly published/verified per
-              get_queryset()'s public branch (only Status.PUBLISHED is
-              visible to non-staff/non-owner requests), so omitting a
-              separate "Verified" badge here isn't hiding anything —
-              there's no public field yet to badge WITH. */}
+          <div className="flex shrink-0 items-center gap-2">
+            {/* Renter-only action: the backend 403s non-renters, and
+                anonymous visitors get no toggle at all (saving requires
+                a session). is_saved arrives correctly gated — this page
+                forwards the access_token cookie, so a renter sees their
+                real saved state, unlike the anonymous Discovery Hub
+                fetch (see SaveToggle's usage note there). */}
+            {isAuthenticated && (
+              <SaveToggle
+                listingId={listing.id}
+                initialSaved={Boolean(listing.is_saved)}
+              />
+            )}
+            {/* Staff-verified badge — the brand promise. is_staff_verified
+                is a public computed field (PR #18: true once reviewed,
+                for staff AND admin approvals alike) and every listing
+                reachable here is published, so a true value always
+                means "physically visited and verified". */}
+            {listing.is_staff_verified && (
+              <Badge variant="secondary" className="shrink-0 gap-1">
+                <BadgeCheck className="size-3.5" />
+                Verified
+              </Badge>
+            )}
+            {listing.is_unlocked && (
+              <Badge className="shrink-0 gap-1">
+                <BadgeCheck className="size-3.5" />
+                Unlocked
+              </Badge>
+            )}
+          </div>
         </div>
 
         <p className="text-muted-foreground flex items-center gap-1 text-sm">
@@ -170,6 +209,7 @@ export default async function PropertyDetailPage({
       )}
 
       <UnlockCta
+        listingId={listing.id}
         isUnlocked={Boolean(listing.is_unlocked)}
         isAuthenticated={isAuthenticated}
       />

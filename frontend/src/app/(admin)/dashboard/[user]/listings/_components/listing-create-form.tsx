@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useForm } from "@refinedev/react-hook-form";
-import { Controller } from "react-hook-form";
+import { Controller, useForm } from "react-hook-form";
 import { useParams, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { ImagePlus, X } from "lucide-react";
+import { useApiCreate, useApiOne, useApiUpdate } from "@/hooks/use-api";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +29,7 @@ import { AmenityPicker } from "./amenity-picker";
 import { refreshAccessToken } from "@/lib/auth-refresh";
 import { loadGoogleMapsScript } from "@/lib/google-maps";
 import { PlaceAutocompleteInput, type PlaceDetails } from "@/components/maps/place-autocomplete-input";
+import { PhotoManager, type ManagedPhoto } from "./photo-manager";
 
 // Backend's ListingPhoto.image field only accepts these extensions
 // (FileExtensionValidator in listings/models.py) — matching the
@@ -53,9 +55,8 @@ const ACCEPTED_IMAGE_TYPES = [
 // would risk versions silently drifting apart over time as the form
 // grows.
 //
-// The landlord's own numeric id (the ":user" URL segment — see
-// _refine_context.tsx's "listings" resource routes) is read here via
-// useParams() rather than threaded down as a prop: every route that
+// The landlord's own numeric id (the ":user" URL segment) is read here
+// via useParams() rather than threaded down as a prop: every route that
 // renders this component already sits under /dashboard/[user]/..., so
 // the param is always present in the URL regardless of which of the
 // four wrapper routes is active, and reading it locally means the
@@ -71,13 +72,26 @@ const PICKED_MAP_ZOOM = 16;
 
 type ListingCreateFormProps = {
   // When supplied, the form switches into edit mode: prefills from the
-  // existing listing (via refine's own query, action="edit") instead of
-  // starting blank, and submits via update PUT rather than create POST.
-  // Undefined/omitted = original create behavior, unchanged.
+  // existing listing (plain GET + reset, see the hydrate effect)
+  // instead of starting blank, and submits via update PUT rather than
+  // create POST. Undefined/omitted = original create behavior.
   listingId?: string | number;
+  // Called INSTEAD of the internal router navigation after a successful
+  // save. Lets an inline (non-routed) edit toggle — e.g. the full-page
+  // listing view at listings/[id]/page.tsx — flip straight back to view
+  // mode without navigating, since the URL never changed in the first
+  // place. Omitted = original router.push behavior, unchanged.
+  onSuccess?: (listingId?: string | number) => void;
+  // Called INSTEAD of router.back() when Cancel is clicked — the same
+  // inline-toggle use case as onSuccess above.
+  onCancel?: () => void;
 };
 
-export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) => {
+export const ListingCreateForm = ({
+  listingId,
+  onSuccess,
+  onCancel,
+}: ListingCreateFormProps = {}) => {
   const router = useRouter();
   const params = useParams<{ user: string }>();
   const userId = params.user;
@@ -173,32 +187,59 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
     setUploadError(null);
   }
 
-  const {
-    refineCore: { onFinish, formLoading, query: recordQuery },
-    ...form
-  } = useForm({
-    refineCoreProps: {
-      resource: "listings",
-      action: isEditMode ? "edit" : "create",
-      id: isEditMode ? listingId : undefined,
-      // Explicit here (unlike blog-posts/create, which inferred the
-      // resource from its URL) — because this component gets rendered
-      // from TWO different routes (the panel's intercepted path and
-      // the real .../listings/create path), so relying on "infer from
-      // current URL" would be fragile; being explicit means this
-      // component behaves identically no matter which route rendered it.
-      // Same reasoning extends to edit mode: listingId is passed in as a
-      // prop from whichever route rendered this component (panel or
-      // full page), rather than inferred from the URL.
-      onMutationSuccess: async (data) => {
-        // onMutationSuccess receives the actual server response from
-        // creating/updating the listing — data.data is the Listing
-        // object, INCLUDING its real database id, which is the one
-        // thing we need before the photo upload request can even be
-        // built. In edit mode this is the SAME id as `listingId`, but
-        // reading it from the response keeps this branch identical to
-        // the create path rather than needing an isEditMode check here.
-        const newListingId = data?.data?.id;
+  // Plain react-hook-form (no resolver — parity with before; the
+  // backend validates). Edit-mode prefill comes from recordData below,
+  // applied once per listing by the hydrate effect.
+  const form = useForm<Record<string, any>>();
+
+  // Edit-mode record: plain GET /listings/<id>/. Replaces refine
+  // useForm's action="edit" auto-apply (which also silently applied
+  // values onto registered fields — the hydrate effect below is the
+  // explicit equivalent).
+  const { data: recordData } = useApiOne(
+    "listings",
+    isEditMode ? listingId : undefined,
+  );
+
+  // Apply the fetched record onto the form ONCE per listing. Guarded
+  // by listingId (not by data identity) so a background refetch never
+  // clobbers in-progress edits — after a successful save this
+  // component navigates away (or the wrapper flips back to view mode)
+  // anyway, so no re-hydration path is needed.
+  const hydratedFor = useRef<string | number | null>(null);
+  useEffect(() => {
+    if (!isEditMode || !recordData || hydratedFor.current === listingId)
+      return;
+    hydratedFor.current = listingId ?? null;
+    form.reset(recordData as Record<string, any>);
+    // form.reset is stable (react-hook-form); recordData in deps so
+    // the effect fires when the fetch lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditMode, listingId, recordData]);
+
+  const createMutation = useApiCreate("listings");
+  const updateMutation = useApiUpdate("listings");
+  const formLoading = createMutation.isPending || updateMutation.isPending;
+
+  // Shared post-save path for create AND update (replaces refine's
+  // onMutationSuccess). Receives the saved listing DIRECTLY (no
+  // {data} wrapper — apiPost/apiPut return the parsed body as-is),
+  // INCLUDING its real database id, which the photo upload below
+  // needs. In edit mode this is the SAME id as `listingId`, but
+  // reading it from the response keeps this branch identical to the
+  // create path.
+  //
+  // Navigation note: the old code needed redirect:false because
+  // refine performed its OWN post-mutation navigation in addition to
+  // this handler. Plain mutations navigate nowhere by themselves, so
+  // the push below (or the wrapper's onSuccess) is now trivially the
+  // ONLY navigation that happens — the race the old flag guarded
+  // against cannot exist.
+  async function handleSaveSuccess(saved: any) {
+    // `saved` is the Listing object, INCLUDING its real database id —
+    // the one thing needed before the photo upload request below can
+    // even be built.
+    const newListingId = saved?.id;
 
         if (newListingId && selectedFiles.length > 0) {
           const formData = new FormData();
@@ -234,19 +275,26 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
 
           let photoRes = await uploadPhotos(token);
           if (photoRes.status === 401) {
-            // Same idle-expiry case as dataProvider's retry above — one
-            // silent refresh, then replay. If that fails too, move on:
-            // the listing itself is already created, photos can be
-            // re-added rather than blocking the whole success path.
+            // Same idle-expiry case as api-client's retry — one silent
+            // refresh, then replay. If that fails too, move on: the
+            // listing itself is already created, photos can be re-added
+            // rather than blocking the whole success path.
             const fresh = await refreshAccessToken();
             if (fresh) photoRes = await uploadPhotos(fresh);
           }
-          // Not using dataProvider.create() here — this one-off
-          // multipart upload to a custom @action endpoint doesn't fit
-          // the generic resource CRUD shape dataProvider methods
-          // assume (create/getList/etc. all assume JSON bodies against
-          // standard REST paths). A direct fetch is the right tool for
-          // this one genuinely special-shaped request.
+          // Not using apiPost() here — this one-off multipart upload to
+          // a custom @action endpoint doesn't fit the generic JSON
+          // CRUD shape the api helpers assume. A direct fetch is the
+          // right tool for this one genuinely special-shaped request.
+        }
+
+        if (onSuccess) {
+          // Inline-toggle wrappers (see the onSuccess prop note) manage
+          // their own "what happens now" — typically flipping back to
+          // view mode. Nothing is navigated here; the wrapped page
+          // decides, which keeps this shared form ignorant of chrome.
+          onSuccess(newListingId);
+          return;
         }
 
         router.push(
@@ -260,9 +308,7 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
         // navigating away makes it disappear. Edit mode lands back on
         // the listing's preview rather than the bare list, since
         // that's the more useful place to confirm the update landed.
-      },
-    },
-  });
+  }
 
   // --- Google Places Autocomplete + visual map picker on Location ---
   // Attaches Autocomplete directly to the real address_precise <Input>'s
@@ -389,17 +435,16 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
 
   // --- Edit-mode prefill: sync map pin + coords display from the
   // fetched record ---
-  // @refinedev/react-hook-form's useForm already auto-applies the
-  // fetched record's values onto every REGISTERED field (title,
-  // address_precise, city, etc.) — that part needs no code here. But
-  // the map pin/marker and the coordsInput text are local useState,
-  // not react-hook-form fields, so they don't get that free ride; this
-  // effect is the one place that reads the fetched `location` WKT and
-  // pushes it into the map + coords display once both the record and
-  // the map are ready.
+  // The hydrate effect above applies the fetched record's values onto
+  // every REGISTERED field (title, address_precise, city, etc.) — that
+  // part needs no code here. But the map pin/marker and the
+  // coordsInput text are local useState, not react-hook-form fields,
+  // so they don't get that free ride; this effect is the one place
+  // that reads the fetched `location` WKT and pushes it into the map +
+  // coords display once both the record and the map are ready.
   useEffect(() => {
     if (!isEditMode) return;
-    const wkt: string | undefined = recordQuery?.data?.data?.location;
+    const wkt: string | undefined = (recordData as any)?.location;
     if (!wkt) return;
 
     // Parses the exact format commitLocation produces:
@@ -423,7 +468,7 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
     // Marker instances are created) — covers whichever of the two
     // loads second, since the pin can only actually be placed once
     // both the coordinates and the Google Map instance exist.
-  }, [isEditMode, recordQuery?.data?.data?.location, mapReady]);
+  }, [isEditMode, (recordData as any)?.location, mapReady]);
 
   // Manual "paste coordinates" fallback — accepts "lat, lng" (also lat/lng
   // separated by just whitespace, or a Google Maps-style "lat,lng" copy).
@@ -501,21 +546,42 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
   }
 
   function onSubmit(values: Record<string, any>) {
-    onFinish(values);
-    // onFinish is Refine's own function — internally calls
-    // dataProvider.create({ resource: "listings", variables: values }),
-    // which is the generic create() function you already wrote in
-    // data-provider/index.ts. Nothing listing-specific lives in that
-    // file; this call site is where "these values belong to a listing"
-    // actually gets decided. Note selectedFiles is NOT part of
-    // `values` — it's handled entirely separately in onMutationSuccess
-    // above, once we have a real listing id to attach photos to.
+    // Listing.clean() keeps exactly ONE price field meaningful per
+    // type (rent -> price_monthly + advance_rent_period, buy ->
+    // price_one_time), but the DRF serializer accepts whatever the
+    // client sends — full_clean() isn't run by ModelViewSet. So the
+    // form normalizes BEFORE submit: the field that doesn't apply is
+    // nulled-out here rather than trusting the disabled section alone
+    // (the hidden field would otherwise still ride along in values).
+    const payload: Record<string, any> = { ...values };
+    const listingType = payload.listing_type || "rent";
+    if (listingType === "buy") {
+      payload.price_monthly = null;
+      payload.advance_rent_period = "none";
+    } else {
+      payload.price_one_time = null;
+    }
+
+    // NOTE: selectedFiles is NOT part of `values` — it's handled
+    // entirely separately in handleSaveSuccess above, once we have a
+    // real listing id to attach photos to.
     //
     // `location` rides along inside `values` the same way as any other
     // registered field — set via form.setValue above from the Places
     // autocomplete callback, or left undefined if the landlord never
     // picked a suggestion (matches the model's location field being
     // null=True/blank=True — genuinely optional).
+    const saveOptions = {
+      onSuccess: handleSaveSuccess,
+      // Refine used to toast mutation errors automatically via its
+      // notification provider — explicit here instead.
+      onError: (err: Error) => toast.error(err.message),
+    };
+    if (isEditMode) {
+      updateMutation.mutate({ id: listingId!, ...payload }, saveOptions);
+    } else {
+      createMutation.mutate(payload, saveOptions);
+    }
   }
 
   return (
@@ -631,11 +697,8 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
                       handlePlaceSelect(place);
                     }}
                     placeholder="Start typing an address…"
-                    includedRegionCodes={["gh"]}
-                    // Bias results toward Ghana, matching paddy's
-                    // actual market — same restriction the old
-                    // Autocomplete's componentRestrictions applied,
-                    // just under the new API's property name.
+                    // Worldwide — no region restriction, anyone from
+                    // anywhere can list.
                   />
                 )}
               />
@@ -764,10 +827,28 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Listing Type</FormLabel>
-                <Select onValueChange={field.onChange} defaultValue="rent">
+                <Select
+                  value={field.value || "rent"}
+                  onValueChange={(value) => {
+                    field.onChange(value);
+                    // Swap which price section shows, and clear the field
+                    // that no longer applies (matches Listing.clean()'s
+                    // rent/buy split) so a stale value can't ride along in
+                    // the submitted payload. onSubmit below re-normalizes
+                    // as a final safety net regardless.
+                    if (value === "buy") {
+                      form.setValue("price_monthly", null);
+                      form.setValue("advance_rent_period", "none");
+                    } else {
+                      form.setValue("price_one_time", null);
+                    }
+                  }}
+                >
                   {/* Matches Listing.ListingType choices exactly (rent/buy)
                       — the VALUE sent must match the backend's stored
-                      choice string, not the human label */}
+                      choice string, not the human label. Controlled via
+                      `value` (not defaultValue) so the edit-mode prefill
+                      actually surfaces the record's real type. */}
                   <FormControl>
                     <SelectTrigger>
                       <SelectValue placeholder="Select type" />
@@ -783,25 +864,103 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
             )}
           />
 
+          {(form.watch("listing_type") || "rent") === "rent" ? (
+            <>
+              <FormField
+                control={form.control}
+                name="price_monthly"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Monthly Price (GHS)</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        type="number"
+                        min={0}
+                        value={field.value || ""}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        // Left as a string here deliberately — Listing.price_monthly
+                        // is a DecimalField on the backend, and DRF's
+                        // DecimalField happily accepts a numeric string like
+                        // "2500.00" without needing JS-side float conversion,
+                        // which risks floating-point rounding on money values
+                        placeholder="e.g. 2500"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="advance_rent_period"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Advance Rent Period</FormLabel>
+                    <Select
+                      value={field.value || "none"}
+                      onValueChange={field.onChange}
+                    >
+                      {/* Matches Listing.AdvanceRentPeriod choices exactly —
+                          a rent listing commonly demands 6 or 12 months paid
+                          upfront in this market, which is one of paddy's core
+                          filters ("6 months vs 1 year"). */}
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select advance period" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="none">None / no advance</SelectItem>
+                        <SelectItem value="6_months">6 Months</SelectItem>
+                        <SelectItem value="1_year">1 Year</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </>
+          ) : (
+            <FormField
+              control={form.control}
+              name="price_one_time"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>One-Time Price (GHS)</FormLabel>
+                  <FormControl>
+                    <Input
+                      {...field}
+                      type="number"
+                      min={0}
+                      value={field.value || ""}
+                      onChange={(e) => field.onChange(e.target.value)}
+                      // Same string-not-float reasoning as price_monthly —
+                      // DRF's DecimalField accepts the string directly.
+                      placeholder="e.g. 450000"
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
           <FormField
             control={form.control}
-            name="price_monthly"
+            name="virtual_tour_url"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Monthly Price (GHS)</FormLabel>
+                <FormLabel>360° Tour URL (optional)</FormLabel>
                 <FormControl>
+                  {/* URLField on the backend — optional, the photosphere
+                      may not be ready when a listing is first created. */}
                   <Input
                     {...field}
-                    type="number"
-                    min={0}
                     value={field.value || ""}
-                    onChange={(e) => field.onChange(e.target.value)}
-                    // Left as a string here deliberately — Listing.price_monthly
-                    // is a DecimalField on the backend, and DRF's
-                    // DecimalField happily accepts a numeric string like
-                    // "2500.00" without needing JS-side float conversion,
-                    // which risks floating-point rounding on money values
-                    placeholder="e.g. 2500"
+                    type="url"
+                    placeholder="https://…"
                   />
                 </FormControl>
                 <FormMessage />
@@ -844,6 +1003,23 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
                 : `${selectedFiles.length} selected`}
             </span>
           </div>
+
+          {/* Gallery management for ALREADY-UPLOADED photos — only
+              meaningful in edit mode (create mode has no listing id yet,
+              so no photos can exist). Reads the photos nested on this
+              form's own record query; cover/reorder/delete requests go
+              through photo-manager.tsx's PATCH/DELETE contract
+              (backend PR #16). Freshly-picked-but-unuploaded files are
+              NOT here — they remain in the picker grid below until the
+              next save uploads them. */}
+          {isEditMode &&
+            (recordData as any)?.photos &&
+            ((recordData as any).photos as ManagedPhoto[]).length > 0 && (
+              <PhotoManager
+                listingId={listingId!}
+                photos={(recordData as any).photos as ManagedPhoto[]}
+              />
+            )}
 
           <button
             type="button"
@@ -915,14 +1091,17 @@ export const ListingCreateForm = ({ listingId }: ListingCreateFormProps = {}) =>
                 ? "Save Changes"
                 : "Create Listing"}
           </Button>
-          <Button type="button" variant="outline" onClick={() => router.back()}>
-            {/* router.back() — for the panel case, this closes the panel
-                by returning to whatever URL was active before navigating
-                to .../listings/create (Next.js's intercepting-route pattern
-                relies on this: the panel only exists because the URL
-                changed via client-side navigation, so navigating back
-                un-renders it). For the full-page fallback case, this
-                just acts like a normal browser back button. */}
+          <Button type="button" variant="outline" onClick={() => (onCancel ? onCancel() : router.back())}>
+            {/* onCancel — used by inline-toggle wrappers (the full-page
+                listing view) to flip back to view mode without a
+                navigation. Otherwise router.back(): for the panel case,
+                this closes the panel by returning to whatever URL was
+                active before navigating to .../listings/create (Next.js's
+                intercepting-route pattern relies on this: the panel only
+                exists because the URL changed via client-side navigation,
+                so navigating back un-renders it). For the full-page
+                fallback case, this just acts like a normal browser back
+                button. */}
             Cancel
           </Button>
         </div>

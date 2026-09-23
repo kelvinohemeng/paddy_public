@@ -13,9 +13,11 @@ export const signUpSchema = z.object({
     email: emailSchema,
     password: passwordSchema,
     confirmPassword: z.string().min(1, { error: "Please confirm your password" }),
-    role: z.union([z.enum(["landlord", "renter"]), z.literal("")]).refine((val) => val !== "", {
-        error: "Please select your account type, this choice is permanent",
-    }),
+    // No `role` field: role selection moved out of signup to the
+    // post-auth /onboarding screen (POST /accounts/onboarding/), and
+    // the backend now accepts registration without a role. Keeping a
+    // required role here would fail validation on every submit since
+    // the form no longer renders a role picker.
 }).refine((data) => data.password === data.confirmPassword, {
     error: "Passwords don't match",
     path: ["confirmPassword"],
@@ -38,3 +40,36 @@ export const signInSchema = z.object({
 })
 
 export type SignInFormValue = z.infer<typeof signInSchema>
+
+// Request-reset step (/reset-password without ?uid&?token):
+// email only. Backend always returns 200, never leaks existence.
+export const resetPasswordSchema = z.object({
+    email: emailSchema,
+})
+
+export type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>
+
+// Confirm-reset step (/reset-password?uid=<uid>&token=<token>):
+// mirrors signup's password + confirm pattern. Complexity reuses
+// passwordSchema for signup-consistent client feedback; the backend
+// re-validates server-side (Django AUTH_PASSWORD_VALIDATORS) anyway.
+export const confirmResetPasswordSchema = z.object({
+    newPassword: passwordSchema,
+    confirmPassword: z.string().min(1, { error: "Please confirm your password" }),
+}).refine((data) => data.newPassword === data.confirmPassword, {
+    error: "Passwords don't match",
+    path: ["confirmPassword"],
+})
+
+export type ConfirmResetPasswordFormValues = z.infer<typeof confirmResetPasswordSchema>
+
+// Post-auth onboarding (/onboarding): one-time role pick for every
+// auth path. Required — the form blocks submit until a card is picked
+// (RoleCard writes "landlord" | "renter" via Controller).
+export const onboardingSchema = z.object({
+    role: z.enum(["renter", "landlord"], {
+        error: "Pick how you'll use paddy",
+    }),
+})
+
+export type OnboardingFormValues = z.infer<typeof onboardingSchema>

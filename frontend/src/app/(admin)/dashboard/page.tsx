@@ -1,14 +1,13 @@
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 
-// "/dashboard" is a pure REDIRECT, not a real page — it exists so the
-// sidebar (see _refine_context.tsx's "dashboard" resource) always has
-// one stable, always-resolvable link, regardless of who's logged in.
-// Refine's menu can auto-fill a record ":id" but has no way to
-// auto-fill a raw ":user" route segment for a generic nav link, so
-// this route does that resolution itself: read the current session's
-// user id server-side, then send the browser on to the REAL
-// destination at /dashboard/[user]/listings.
+// "/dashboard" is a pure REDIRECT, not a real page — it exists as the
+// stable post-login landing URL (useLogin in hooks/use-auth.ts
+// redirects here), resolving the current session's user id server-side and sending the
+// browser on to the REAL homepage at /dashboard/[user].
+// (Refine's menu can auto-fill a record ":id" but has no way to
+// auto-fill a raw ":user" route segment, so this route does that
+// resolution itself, server-side.)
 //
 // Same auth-check shape as (admin)/layout.tsx's own /accounts/me/
 // call (this route sits inside that same layout, so unauthenticated
@@ -31,5 +30,7 @@ export default async function DashboardRedirectPage() {
   }
 
   const user = await response.json();
-  redirect(`/dashboard/${user.id}/listings`);
+  // Every role lands on the dashboard homepage — role-aware cards
+  // there (not here) decide what each user sees first.
+  redirect(`/dashboard/${user.id}`);
 }

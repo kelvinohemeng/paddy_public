@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
-import { authProviderServer } from "@/providers/auth-provider/auth-provider.server";
+import { authServer } from "@/lib/auth-server";
 import { cookies } from "next/headers";
+import { AdminChrome } from "./_chrome/admin-chrome";
 // Your existing server-side auth provider — reads the cookie,
 // not localStorage, since this code runs on the server, where
 // localStorage doesn't exist at all
@@ -18,7 +19,7 @@ export default async function AdminLayout({
   // (either the intercepted create form, or its default.tsx null)
   // arrives here as this prop, already resolved.
 }) {
-  const { authenticated } = await authProviderServer.check();
+  const { authenticated } = await authServer.check();
 
   if (!authenticated) {
     redirect("/login");
@@ -58,24 +59,19 @@ export default async function AdminLayout({
 
   const user = await response.json();
 
-  if (user.role !== "landlord") {
-    // Landlords create/manage their own listings; staff verify/manage
-    // listings too; admins also need access here (revised — originally
-    // scoped to just landlord/staff, with admin routed through Django's
-    // own admin panel instead, but that was reconsidered).
-    redirect("/login");
-  }
+  // All authenticated roles pass here — renters included. Renter pages
+  // (leases, saved homes, profile) live under this same dashboard area,
+  // so a blanket renter block would lock them out entirely. Role-specific
+  // restrictions (e.g. listing management is landlord/staff-only) are
+  // enforced per-page, not at this layout gate.
 
+  // Chrome (sidebar + header + logout) renders via the AdminChrome
+  // client wrapper below — server layouts can't render the client
+  // sidebar/header directly with server-rendered children, hence the
+  // indirection.
   return (
-    <div className="flex min-h-screen w-full items-stretch">
+    <AdminChrome modal={modal}>
       <div className="min-w-0 flex-1">{children}</div>
-      {modal}
-      {/* Parallel-route slot rendered as a SIBLING flex column, not an
-          overlay — when @modal/default.tsx is active (null) this adds
-          nothing and children take full width; when the intercepted
-          create route is active, its <aside> docks on the right and
-          physically squeezes children, so the panel occupies space in
-          the layout instead of floating over it. */}
-    </div>
+    </AdminChrome>
   );
 }

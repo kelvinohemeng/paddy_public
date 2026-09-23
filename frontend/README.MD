@@ -1,19 +1,19 @@
 # paddy-dashboard
 
-<div align="center" style="margin: 30px;">
-    <a href="https://refine.dev">
-    <img alt="refine logo" src="https://refine.ams3.cdn.digitaloceanspaces.com/readme/refine-readme-banner.png">
-    </a>
-</div>
-<br/>
-
-This [Refine](https://github.com/refinedev/refine) project was generated with [create refine-app](https://github.com/refinedev/refine/tree/master/packages/create-refine-app).
+paddy — a curated, staff-verified long-term rental marketplace for Ghana.
+Next.js frontend (server-rendered public discovery pages for SEO, client
+dashboard) on a Django + PostGIS backend, Paystack payments, Cloudflare R2
+storage.
 
 ## Getting Started
 
-A React Framework for building internal tools, admin panels, dashboards & B2B apps with unmatched flexibility ✨
+```bash
+    npm install
+    npm run dev
+```
 
-Refine's hooks and components simplifies the development process and eliminates the repetitive tasks by providing industry-standard solutions for crucial aspects of a project, including authentication, access control, routing, networking, state management, and i18n.
+Requires `NEXT_PUBLIC_API_URL` (and `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` for
+maps) — see `.env`.
 
 ## Available Scripts
 
@@ -35,12 +35,14 @@ Refine's hooks and components simplifies the development process and eliminates 
     npm run start
 ```
 
-## Learn More
+## Tech notes
 
-To learn more about **Refine**, please check out the [Documentation](https://refine.dev/docs)
-
-- **REST Data Provider** [Docs](https://refine.dev/docs/core/providers/data-provider/#overview)
-- **Custom Auth Provider** [Docs](https://refine.dev/docs/core/providers/auth-provider/)
+- Server state via TanStack Query (`src/hooks/use-api.ts`, `src/hooks/use-auth.ts`)
+  over a thin JSON client (`src/lib/api-client.ts`) with Bearer auth +
+  silent refresh (`src/lib/api.ts`, `src/lib/auth-refresh.ts`).
+- Auth is Django-owned (SimpleJWT); tokens live in cookies (server reads)
+  and localStorage (client reads).
+- Light theme only — no dark mode anywhere.
 
 ## License
 

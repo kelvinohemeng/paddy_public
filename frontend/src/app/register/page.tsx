@@ -1,5 +1,5 @@
-import { SignUpForm } from "@/components/refine-ui/form/sign-up-form";
-import { authProviderServer } from "@providers/auth-provider/auth-provider.server";
+import { SignUpForm } from "@/components/auth/sign-up-form";
+import { authServer } from "@/lib/auth-server";
 import { redirect } from "next/navigation";
 
 export default async function Register() {
@@ -14,11 +14,10 @@ export default async function Register() {
 }
 
 async function getData() {
-  const { authenticated, redirectTo, error } = await authProviderServer.check();
+  const { authenticated, redirectTo } = await authServer.check();
 
   return {
     authenticated,
     redirectTo,
-    error,
   };
 }

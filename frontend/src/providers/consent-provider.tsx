@@ -15,14 +15,16 @@ type ConsentContextValue = {
 const ConsentContext = createContext<ConsentContextValue | null>(null);
 
 export function ConsentProvider({ children }: { children: React.ReactNode }) {
-  const [consent, setConsent] = useState<ConsentState>("pending");
-
-  useEffect(() => {
-    const storedConsent = window.localStorage.getItem(CONSENT_STORAGE_KEY);
-    if (storedConsent === "accepted" || storedConsent === "rejected") {
-      setConsent(storedConsent);
+  const [consent, setConsent] = useState<string | null>(() => {
+    // Check if window is defined (if you are using Next.js/SSR)
+    if (typeof window !== "undefined") {
+      const storedConsent = window.localStorage.getItem(CONSENT_STORAGE_KEY);
+      if (storedConsent === "accepted" || storedConsent === "rejected") {
+        return storedConsent;
+      }
     }
-  }, []);
+    return null; // Default fallback state
+  });
 
   const value = useMemo(
     () => ({

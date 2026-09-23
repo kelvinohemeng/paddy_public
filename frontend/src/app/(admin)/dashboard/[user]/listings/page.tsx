@@ -5,7 +5,8 @@
 // is present, and a server component genuinely cannot call a client
 // hook at all — this is a hard runtime error, not a style choice.
 
-import { useList } from "@refinedev/core";
+import { useApiList } from "@/hooks/use-api";
+import { useMe } from "@/hooks/use-auth";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Bed, Bath, MapPin } from "lucide-react";
@@ -17,6 +18,14 @@ import { Bed, Bath, MapPin } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { SubscriptionCard } from "./_components/subscription-card";
+import { STATUS_META, parseStatus } from "@/lib/listing-status";
+
+// Same lifecycle flag as listing-preview.tsx — LIVE since backend PR #16
+// exposed `status` on ListingSerializer. Duplicated literal, deliberate:
+// importing a flag from a component file would couple list page ->
+// preview component for one boolean.
+const LIFECYCLE_UI_ENABLED = true;
 
 // Same defensive photo-field reading as listing-preview.tsx — backend
 // shape for ListingPhoto isn't pinned down from the frontend alone.
@@ -27,41 +36,70 @@ function getPhotoUrl(photo: any): string | null {
 export default function ListingsPage() {
   const params = useParams<{ user: string }>();
   const userId = params.user;
+  const { data: identity } = useMe();
+  const role: string | undefined = identity?.role;
 
-  // useList — Refine's generic "fetch a list of a resource" hook. It
-  // reads the CURRENT route to infer resource="listings" (matching
-  // the "listings" resource registered in _refine_context.tsx, whose
-  // `list` route is "/dashboard/:user/listings" — Refine matches on
-  // the route PATTERN, so this still resolves correctly even though
-  // the actual URL has a real user id in place of ":user"), then
-  // internally calls dataProvider.getList({ resource: "listings" }) —
-  // the exact same generic function you wrote by hand earlier, with
-  // zero listings-specific code inside it.
+  // GET /listings/?mine=true (backend PR #16): ONLY this landlord's own
+  // listings, any status — instead of the default own-UNION-published
+  // mix. The dashboard is a management view, not a browse view; before
+  // this param existed the grid mixed in every other landlord's
+  // published listings AND the subscription-cap count below read
+  // high. Filters append verbatim as query params, so this arrives as
+  // &mine=true.
   //
-  // Refine v5 nests the return value as { query, result } rather than
-  // the flatter { data, isLoading, isError } shape older docs/examples
-  // show (a real breaking change between major versions) — confirmed
-  // against this project's actual installed @refinedev/core version
-  // via a real TypeScript error, not assumed from memory.
-  const { query, result } = useList({
-    resource: "listings",
+  // Refine v5 nested the return as { query, result }; the plain
+  // useQuery replacement returns { data, isLoading, isError } flat.
+  // (The old { field, operator, value } filter shape is now just
+  // { field, value } — the operator was never sent to the backend.)
+  const { data, isLoading, isError } = useApiList("listings", {
+    filters: [
+      // ?mine=true (backend PR #16): ONLY this landlord's own listings,
+      // any status — instead of the default own-UNION-published mix.
+      // The dashboard is a management view, not a browse view; before
+      // this param existed the grid mixed in every other landlord's
+      // published listings AND the subscription-cap count below read
+      // high. Filters append verbatim as query params, so this arrives
+      // as &mine=true.
+      { field: "mine", value: "true" },
+    ],
   });
 
-  if (query.isLoading) {
+  if (isLoading) {
     return <p className="p-6">Loading listings...</p>;
   }
 
-  if (query.isError) {
+  if (isError) {
     // A real, visible failure state — worth having explicitly rather
     // than letting a failed fetch render a silently empty list, which
     // would be indistinguishable from "zero listings exist yet"
     return <p className="p-6 text-red-500">Failed to load listings.</p>;
   }
 
-  const listings = result?.data ?? [];
-  // result.data — the actual array of listings. result.total also
+  const listings = data?.data ?? [];
+  // data.data — the actual array of listings. data.total also
   // exists here for pagination, unused for now since this is a first
   // pass at just proving the create flow works end to end.
+
+  // Listing management is landlord/staff-only (renters reach this URL
+  // only by typing it — the layout gate lets all roles through and the
+  // sidebar hides this entry for renters). Render a pointer, not the
+  // management UI; the backend would 403 any actual write anyway.
+  if (role === "renter") {
+    return (
+      <div className="p-6">
+        <p className="text-muted-foreground">
+          Listing management is for landlords — your tenancies live under{" "}
+          <Link
+            href={`/dashboard/${userId}/leases`}
+            className="text-indigo-600 underline"
+          >
+            Leases
+          </Link>
+          .
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6">
@@ -82,6 +120,21 @@ export default function ListingsPage() {
             whether navigation happened via this Link (client-side,
             intercepted -> modal) or a hard refresh/direct visit
             (full page, see the create/page.tsx fallback below) */}
+      </div>
+
+      {/* Subscription surface (AGENTS.md: landlords need to see their
+          tier/cap "sooner than post-MVP" now that subscriptions gate
+          listing creation). Lives BELOW the header/CTA so the primary
+          task (listings) stays first in reading order.
+
+          listingsUsed = listings.length is now EXACT: the ?mine=true
+          filter above scopes this list to the landlord's own rows (any
+          status), which is precisely the population the backend's
+          perform_create cap counts (every listing, regardless of
+          status — an abandoned draft burns a free-tier slot, which the
+          card's usage bar now makes visible). */}
+      <div className="mb-6 max-w-md">
+        <SubscriptionCard userId={userId} listingsUsed={listings.length} />
       </div>
 
       {listings.length === 0 ? (
@@ -127,18 +180,26 @@ export default function ListingsPage() {
                   <CardContent className="space-y-2 py-4">
                     <div className="flex items-start justify-between gap-2">
                       <p className="truncate font-medium">{listing.title}</p>
-                      {listing.status && (
-                        <Badge
-                          variant={
-                            listing.status === "published"
-                              ? "default"
-                              : "secondary"
-                          }
-                          className="shrink-0"
-                        >
-                          {listing.status}
-                        </Badge>
-                      )}
+                      {/* Was a dead {listing.status && <Badge>...} — the
+                          serializer excludes status so the key never
+                          arrives. Flag-gated StatusBadge now; lights up
+                          with the preview's when Task 2a lands. */}
+                      {LIFECYCLE_UI_ENABLED &&
+                        (() => {
+                          const status = parseStatus(listing.status);
+                          if (!status) return null;
+                          const meta = STATUS_META[status];
+                          const Icon = meta.icon;
+                          return (
+                            <Badge
+                              variant={meta.badgeVariant}
+                              className="shrink-0 gap-1"
+                            >
+                              <Icon className="size-3" />
+                              {meta.label}
+                            </Badge>
+                          );
+                        })()}
                     </div>
 
                     <p className="text-muted-foreground flex items-center gap-1 truncate text-xs">

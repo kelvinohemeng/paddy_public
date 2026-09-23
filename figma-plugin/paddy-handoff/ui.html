@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Inter, sans-serif; font-size: 13px; margin: 0; padding: 16px; color: #111; }
+  h2 { font-size: 14px; margin: 0 0 4px; }
+  p.sub { color: #666; margin: 0 0 12px; font-size: 12px; }
+  .section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  button { background: #111; color: #fff; border: 0; border-radius: 6px; padding: 8px 12px; cursor: pointer; margin: 4px 4px 0 0; font-size: 13px; }
+  button.secondary { background: #f3f4f6; color: #111; }
+  input[type=text] { width: 100%; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 6px; padding: 8px; font-size: 12px; font-family: monospace; }
+  #log { white-space: pre-wrap; font-size: 12px; color: #374151; background: #f9fafb; border-radius: 6px; padding: 8px; max-height: 150px; overflow: auto; }
+  .row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #d1d5db; display: inline-block; }
+  .dot.on { background: #16a34a; }
+  .dot.err { background: #dc2626; }
+  #status { font-size: 12px; color: #374151; }
+</style>
+</head>
+<body>
+  <div class="section">
+    <h2>Portal — relay connection</h2>
+    <p class="sub">Keep this plugin open. While connected it pushes live file reads to the relay and executes agent commands. Agents talk to the relay, never to Figma directly.</p>
+    <div class="row">
+      <span id="dot" class="dot"></span>
+      <span id="status">disconnected</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="relayUrl" value="http://localhost:8787" />
+    </div>
+    <div class="row">
+      <button id="connect">Connect</button>
+      <button id="disconnect" class="secondary">Disconnect</button>
+      <button id="pushNow" class="secondary">Push snapshot now</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Offline fallback (relay down)</h2>
+    <p class="sub">Same snapshot/create path, manual copy. Only needed if the relay isn't running.</p>
+    <div class="row">
+      <button id="snap" class="secondary">Snapshot</button>
+      <button id="copy" class="secondary">Copy JSON</button>
+      <button id="tplCard" class="secondary">Listing Card</button>
+    </div>
+  </div>
+
+  <div id="log">Portal idle. Connect to start the live read.</div>
+
+<script>
+  let relayUrl = 'http://localhost:8787';
+  let connected = false;
+  let lastSnapshot = null;
+  let lastCommandId = 0;
+  let pollTimer = null;
+  let pushTimer = null;
+  let pendingPush = null;
+
+  const $ = (id) => document.getElementById(id);
+  const log = (m) => { $('log').textContent = m; };
+  const setStatus = (ok, msg) => {
+    $('dot').className = 'dot' + (ok === true ? ' on' : ok === false ? ' err' : '');
+    $('status').textContent = msg;
+  };
+
+  async function postSnapshot(snap) {
+    if (!connected) return;
+    await fetch(relayUrl + '/snapshot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snapshot: snap })
+    });
+  }
+
+  function requestSnapshot() {
+    parent.postMessage({ pluginMessage: { type: 'pull-snapshot' } }, '*');
+  }
+
+  async function pollCommands() {
+    if (!connected) return;
+    try {
+      const res = await fetch(relayUrl + '/commands?after=' + lastCommandId);
+      if (!res.ok) throw new Error('relay ' + res.status);
+      const body = await res.json();
+      const cmds = body.commands || [];
+      setStatus(true, 'connected — ' + (body.snapshotAge || 'live') + ', ' + cmds.length + ' new cmd(s)');
+      for (const c of cmds) {
+        lastCommandId = Math.max(lastCommandId, c.id);
+        // Forward agent command into the plugin sandbox for execution.
+        parent.postMessage({ pluginMessage: { type: 'exec', id: c.id, command: c.command } }, '*');
+      }
+    } catch (e) {
+      setStatus(false, 'relay unreachable: ' + e.message);
+    }
+  }
+
+  async function postResult(id, ok, data, error) {
+    try {
+      await fetch(relayUrl + '/result', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ok, data, error })
+      });
+    } catch (e) {
+      log('Result post failed (relay down?): ' + e.message);
+    }
+  }
+
+  onmessage = (e) => {
+    const msg = e.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === 'snapshot-result') {
+      lastSnapshot = msg.snapshot;
+      log('Snapshot OK: ' + msg.snapshot.pageCount + ' pages, selection ' +
+        (msg.snapshot.selection || []).length + '.');
+      if (connected) postSnapshot(msg.snapshot).catch(() => {});
+    } else if (msg.type === 'auto-snapshot') {
+      // Live read: selection changed inside Figma — forward if connected.
+      lastSnapshot = msg.snapshot;
+      pendingPush = msg.snapshot;
+      if (connected) postSnapshot(msg.snapshot).catch(() => {});
+    } else if (msg.type === 'exec-result') {
+      postResult(msg.id, msg.ok, msg.data, msg.error);
+      log((msg.ok ? 'Agent cmd #' + msg.id + ' done: ' : 'Agent cmd #' + msg.id + ' failed: ') +
+        JSON.stringify(msg.data || msg.error || {}).slice(0, 300));
+    } else if (msg.type === 'create-result') {
+      log('Created (' + (msg.kind || 'spec') + '): ' +
+        msg.created.map(c => c.name + ' [' + c.id + ']').join(', '));
+    } else if (msg.type === 'error') {
+      log('Error: ' + msg.message);
+    }
+  };
+
+  $('connect').onclick = () => {
+    relayUrl = $('relayUrl').value.replace(/\/$/, '');
+    connected = true;
+    setStatus(true, 'connected — starting live read…');
+    log('Portal connected to ' + relayUrl + '. Pushing live reads; polling for agent commands.');
+    requestSnapshot();
+    clearInterval(pollTimer); clearInterval(pushTimer);
+    pollTimer = setInterval(pollCommands, 1500);
+    // Heartbeat read: whole-file snapshot every 8s while open.
+    pushTimer = setInterval(requestSnapshot, 8000);
+    pollCommands();
+  };
+  $('disconnect').onclick = () => {
+    connected = false;
+    clearInterval(pollTimer); clearInterval(pushTimer);
+    setStatus(null, 'disconnected');
+    log('Portal idle. Live read stopped; offline fallback still works.');
+  };
+  $('pushNow').onclick = () => requestSnapshot();
+
+  // Offline fallback mirrors the relay path locally.
+  $('snap').onclick = () => parent.postMessage({ pluginMessage: { type: 'snapshot' } }, '*');
+  $('copy').onclick = async () => {
+    if (!lastSnapshot) return log('Snapshot first.');
+    await navigator.clipboard.writeText(JSON.stringify(lastSnapshot, null, 2));
+    log('Copied snapshot JSON to clipboard.');
+  };
+  $('tplCard').onclick = () =>
+    parent.postMessage({ pluginMessage: { type: 'create-template', kind: 'listing-card' } }, '*');
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useSelect, useCreate } from "@refinedev/core";
+import { useApiCreate, useApiList } from "@/hooks/use-api";
 import { Check, ChevronsUpDown, Plus, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -49,34 +49,20 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
   // break every .includes() check below via strict-equality mismatch.
   const selectedIds = useMemo(() => value.map(Number), [value]);
 
-  const { options, query } = useSelect<Amenity>({
-    resource: "core/amenities",
-    // Matches the resource name registered in _refine_context.tsx —
-    // Refine looks this up to know which dataProvider.getList() call
-    // to make, which in turn builds the real /core/amenities/ URL
-    optionLabel: "name",
-    optionValue: "id",
-    searchField: "name",
-    onSearch: (searchValue) => [
-      { field: "name", operator: "contains", value: searchValue },
-    ],
-    // onSearch controls what filter gets sent to the backend as the
-    // user types. NOTE: your AmenityViewSet doesn't currently
-    // implement any search/filter logic in get_queryset — it's a
-    // plain ModelViewSet with `queryset = Amenity.objects.all()`, so
-    // this filter is actually a no-op against your real backend right
-    // now (DRF just ignores unrecognized query params by default).
-    // Filtering therefore happens CLIENT-SIDE below instead, which is
-    // fine at amenity-list scale (dozens, not thousands, of rows).
-  });
+  const { data, isLoading, isError, refetch } = useApiList<Amenity>("core/amenities");
+  // GET /core/amenities/ — the resource name carries the full backend
+  // path. NOTE: AmenityViewSet doesn't implement server-side search
+  // (plain ModelViewSet, unrecognized params ignored), so filtering
+  // happens CLIENT-SIDE below instead — fine at amenity-list scale
+  // (dozens, not thousands, of rows).
+  const options = useMemo(
+    () =>
+      (data?.data ?? []).map((a) => ({ label: a.name, value: a.id })),
+    [data],
+  );
 
-  const { mutate: createAmenity, mutation } = useCreate();
-  const isCreating = mutation.isPending;
-  // Refine v5 nests mutation state under `mutation` (same pattern as
-  // useList's `{ query, result }` nesting discovered earlier) rather
-  // than spreading isPending/data/error flat on the hook's own return
-  // value — confirmed directly against the installed type definitions
-  // via a scratch file, not assumed from older docs/examples.
+  const { mutate: createAmenity, isPending: isCreating } =
+    useApiCreate<Amenity>("core/amenities");
 
   const selectedAmenities = options.filter((opt) =>
     selectedIds.includes(Number(opt.value)),
@@ -114,20 +100,15 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
     setCreateError(null);
 
     createAmenity(
+      { name },
       {
-        resource: "core/amenities",
-        values: { name },
-        // dataProvider.create() sends this straight to
-        // POST /core/amenities/ — the backend's get-or-create logic
-        // decides whether this becomes a genuinely new row (201) or
-        // returns an existing match (200). Either way, the response
-        // contains a real Amenity id we can immediately select.
-      },
-      {
-        onSuccess: (response) => {
-          const newAmenity = response.data as unknown as Amenity;
-          // Guard against double-adding: the 200 (matched-existing)
-          // path can return an id that's already selected.
+        onSuccess: (newAmenity) => {
+          // POST /core/amenities/ — the backend's get-or-create logic
+          // decides whether this becomes a genuinely new row (201) or
+          // returns an existing match (200). Either way, the response
+          // is the Amenity itself, carrying a real id we immediately
+          // select. Guard against double-adding: the 200 path can
+          // return an id that's already selected.
           onChange(
             selectedIds.includes(newAmenity.id)
               ? selectedIds
@@ -138,7 +119,7 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
           // part of this listing, not just added to the shared table
           // in the abstract
           setSearch("");
-          query.refetch();
+          refetch();
           // Refetch the list so this new/matched amenity shows up in
           // `options` on the next render — without this, a TRULY new
           // amenity would be selected (its id is in `value`) but
@@ -165,7 +146,7 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
             className="w-full justify-between font-normal"
           >
             <span className="truncate">
-              {query.isLoading && options.length === 0
+              {isLoading && options.length === 0
                 ? "Loading amenities..."
                 : selectedAmenities.length > 0
                   ? `${selectedAmenities.length} amenities selected`
@@ -194,13 +175,13 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
               }}
             />
             <CommandList>
-              {query.isLoading && (
+              {isLoading && (
                 <div className="text-muted-foreground p-4 text-sm">
                   Loading...
                 </div>
               )}
 
-              {query.isError && !query.isLoading && (
+              {isError && !isLoading && (
                 <div className="p-4 text-sm text-red-500">
                   Couldn&apos;t load amenities — close and reopen to retry.
                 </div>

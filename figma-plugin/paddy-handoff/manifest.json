@@ -1,0 +1,15 @@
+{
+  "name": "paddy-handoff",
+  "id": "paddy-handoff-v1",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "capabilities": [],
+  "enableProposedApi": false,
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["http://localhost:8787"],
+    "devAllowedDomains": ["http://localhost:8787"],
+    "reasoning": "Push live file snapshots to the local paddy relay and poll it for agent-issued creation commands. Localhost only."
+  }
+}

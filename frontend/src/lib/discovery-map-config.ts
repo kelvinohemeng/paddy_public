@@ -3,7 +3,9 @@ export type DiscoveryMapScope = "ghana" | "world";
 // Change this one value to switch the discovery map's geographic scope.
 // - "ghana": keeps the initial view and panning within Ghana.
 // - "world": starts at a world view and allows unrestricted panning.
-export const DISCOVERY_MAP_SCOPE: DiscoveryMapScope = "ghana";
+// Currently "world": anyone from anywhere can access the platform,
+// no geographic constraint on browsing or searching.
+export const DISCOVERY_MAP_SCOPE: DiscoveryMapScope = "world";
 
 const GHANA_CENTER = { lat: 7.9465, lng: -1.0232 };
 const GHANA_BOUNDS = {
