@@ -96,12 +96,32 @@ class ListingViewSet(viewsets.ModelViewSet):
             # across a relationship, in one line, without manually
             # traversing it yourself. Reads as "filter by the user field,
             # on the related landlord_profile"
+        elif user.is_authenticated and user.role == user.Role.RENTER:
+            queryset = (
+                Listing.objects.filter(status=Listing.Status.PUBLISHED)
+                | Listing.objects.filter(
+                    status=Listing.Status.LEASED,
+                    leases__renter_profile__user=user,
+                )
+            ).distinct()
+            # A renter sees: published listings (normal browsing) OR
+            # their OWN leased listing(s) — a unit that dropped out of
+            # public discovery the moment its Lease was created (see
+            # LeaseViewSet.perform_create) but must stay reachable for
+            # the renter who actually lives there (lease document
+            # review, dashboard card, etc.). leases__renter_profile__user
+            # crosses the reverse FK from Lease (related_name='leases')
+            # — no import of the leases app needed here, same "filter
+            # across the relationship" style as landlord_profile__user
+            # elsewhere in this method. .distinct() guards against a
+            # renter with more than one Lease row on the same listing
+            # (e.g. a renewed/re-signed lease) surfacing duplicate rows.
         else:
             queryset = Listing.objects.filter(status=Listing.Status.PUBLISHED)
-            # Everyone else (anonymous visitors, renters, landlords
-            # browsing) only sees published listings — draft/pending/
-            # rejected ones stay hidden. user.is_authenticated is
-            # checked FIRST in both branches above — AnonymousUser (the
+            # Everyone else (anonymous visitors, landlords browsing)
+            # only sees published listings — draft/pending/rejected/
+            # leased ones stay hidden. user.is_authenticated is checked
+            # FIRST in both branches above — AnonymousUser (the
             # request.user value on a logged-out request now that
             # list/retrieve allow it) has no .role attribute at all, so
             # touching user.role before confirming authentication would

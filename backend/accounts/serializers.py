@@ -33,6 +33,12 @@ class RegisterSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'first_name': {'required': True},
             'last_name': {'required': True},
+            'role': {'required': False, 'allow_null': True},
+            # Role is now optional at registration — omitting it (or
+            # sending null) is valid and defers the choice to the
+            # post-auth onboarding screen (POST /accounts/onboarding/).
+            # ModelSerializer would infer required=False from the model's
+            # blank=True on its own, but allow_null needs to be explicit.
         }
 
     def create(self, validated_data):
@@ -41,7 +47,12 @@ class RegisterSerializer(serializers.ModelSerializer):
         # hashing the password correctly, and creating the matching profile row
 
         role = validated_data.get('role')
-        # Pull the role out of the already-validated incoming data
+        # Pull the role out of the already-validated incoming data. role is
+        # now OPTIONAL at registration (model field is nullable, no default)
+        # — omitting it entirely is valid and leaves role=None, the signal
+        # the frontend's onboarding gate checks for on every auth path. The
+        # matching profile row is deliberately NOT created in that case —
+        # POST /accounts/onboarding/ below creates it once a role is chosen.
 
         user = User.objects.create_user(
             email=validated_data['email'],
@@ -57,13 +68,11 @@ class RegisterSerializer(serializers.ModelSerializer):
             RenterProfile.objects.create(user=user, full_name='')
         elif role == User.Role.LANDLORD:
             LandlordProfile.objects.create(user=user, full_name='')
-        # This is the actual missing piece from our earlier conversation —
-        # immediately after creating the User, we also create the matching
-        # profile row, linked via user=user (Django resolves this to the
-        # right user_id automatically)
-        # full_name='' as a placeholder for now — the real name can be
-        # filled in later via a "complete your profile" step, not required
-        # at signup itself
+        # Only runs when a role WAS supplied at registration (still fully
+        # supported, e.g. a client that hasn't moved to the deferred
+        # onboarding flow yet) — role=None skips this, onboarding handles
+        # it later. full_name='' as a placeholder either way — the real
+        # name can be filled in later via a "complete your profile" step.
 
         return user
         # Return the created user — DRF uses this to build the response
@@ -71,7 +80,9 @@ class RegisterSerializer(serializers.ModelSerializer):
     def validate_role(self, value):
         # DRF automatically calls any method named validate_<fieldname> —
         # this one runs specifically for the `role` field, after the basic
-        # type/choices validation already passed
+        # type/choices validation already passed. Not called at all when
+        # role is omitted from the request body (optional field), so no
+        # None-handling needed here.
 
         if value in [User.Role.ADMIN, User.Role.STAFF]:
             # Block these two values specifically — admin and staff accounts

@@ -78,9 +78,14 @@ class User(AbstractUser):
         STAFF = 'staff', 'Staff'
         ADMIN = 'admin', 'Admin'
 
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.RENTER)
-    # The actual role column, restricted to the 4 values above, defaults to 'renter'
-    # for normal signups (our custom manager overrides this default for superusers)
+    role = models.CharField(max_length=20, choices=Role.choices, null=True, blank=True, default=None)
+    # The actual role column, restricted to the 4 values above. Deliberately
+    # NULLABLE with no default (used to default to Role.RENTER) — role is now
+    # optional at registration time and set exactly once, afterward, via the
+    # dedicated POST /accounts/onboarding/ endpoint below. role=None is the
+    # single canonical "needs onboarding" signal the frontend checks for on
+    # every auth path (email/password, Google OAuth) — our custom manager
+    # still overrides this to Role.ADMIN for superusers specifically.
 
     created_at = models.DateTimeField(auto_now_add=True)
     # Automatically set once, at creation time — never changes after that

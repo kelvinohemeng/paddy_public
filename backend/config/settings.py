@@ -150,6 +150,13 @@ REST_FRAMEWORK = {
 
         'login': '5/min',
         'register': '5/min',
+        'password_reset': '5/min',
+        # Same strict tier as login/register — a forgot-password request
+        # endpoint is a prime target for email-enumeration and spam-abuse
+        # (hammering someone else's inbox with reset emails), and the
+        # confirm endpoint accepts a uid/token pair that a brute-force
+        # attempt could try to guess. Both new views below share this one
+        # scope.
         # Deliberately MUCH stricter — these are the exact endpoints a
         # brute-force/credential-stuffing attack or a spam-signup bot
         # would hammer. 5/min per IP makes that kind of automated abuse
@@ -263,6 +270,14 @@ CORS_ALLOWED_ORIGINS = config(
     default='http://localhost:3000',
     cast=lambda v: [origin.strip() for origin in v.split(',')],
 )
+
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
+# The single frontend origin used to build links WE send out (email
+# verification, password reset) — separate from CORS_ALLOWED_ORIGINS
+# above (an allow-list of origins permitted to call US), even though
+# they'll typically share the same value. Same env-driven pattern:
+# defaults to the local Next.js dev server, must be set to the real
+# deployed frontend domain in production via .env.
 # The actual ALLOW-LIST — every origin (protocol + domain + port,
 # EXACTLY, e.g. "https://paddy.com", not just "paddy.com") that's
 # permitted to make cross-origin requests to this API and have the

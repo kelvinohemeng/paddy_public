@@ -525,3 +525,261 @@ class MeProfileWriteTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('error', response.data)
+
+
+class PasswordResetTests(APITestCase):
+    # Covers both halves of the forgot-password flow: request (send a
+    # reset link) and confirm (actually change the password using it).
+    # Same APITestCase per-test transaction rollback as every other class
+    # here — no leftover state between tests.
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='resetme@example.com',
+            password='originalpass123',
+            role='renter',
+        )
+
+    def test_request_reset_for_unknown_email_returns_generic_message(self):
+        # THE core anti-enumeration behavior: an email with no matching
+        # account must come back looking identical to one that exists
+
+        response = self.client.post(
+            '/accounts/password-reset/', {'email': 'nobody@example.com'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('message', response.data)
+        self.assertNotIn('error', response.data)
+
+    def test_request_reset_for_known_email_returns_same_generic_message(self):
+        response = self.client.post(
+            '/accounts/password-reset/', {'email': self.user.email}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('message', response.data)
+        # Deliberately the SAME shape/status as the unknown-email case
+        # above — asserted separately here (not by comparing the two
+        # responses directly) so either test failing independently
+        # still points at the right one
+
+    def test_request_reset_without_email_is_400(self):
+        response = self.client.post('/accounts/password-reset/', {}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def _get_valid_uid_and_token(self):
+        # Shared helper — generates a real uid/token pair the same way
+        # request_password_reset does internally, without needing to
+        # parse one out of a sent email (console/Resend backend isn't
+        # something a test should need to scrape)
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+        from .views import password_reset_token
+
+        uid = urlsafe_base64_encode(force_bytes(self.user.pk))
+        token = password_reset_token.make_token(self.user)
+        return uid, token
+
+    def test_confirm_reset_with_valid_token_changes_password(self):
+        uid, token = self._get_valid_uid_and_token()
+
+        response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': token, 'new_password': 'brandnewpass456'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('brandnewpass456'))
+        self.assertFalse(self.user.check_password('originalpass123'))
+        # Confirms the OLD password genuinely stopped working, not just
+        # that the new one happens to also work
+
+    def test_confirm_reset_blacklists_outstanding_refresh_tokens(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+
+        refresh = RefreshToken.for_user(self.user)
+        # A real outstanding refresh token for this user, as if they'd
+        # logged in on some device before requesting the reset
+
+        uid, token = self._get_valid_uid_and_token()
+        response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': token, 'new_password': 'brandnewpass456'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            BlacklistedToken.objects.filter(token__jti=refresh['jti']).exists()
+        )
+        # The pre-existing session's refresh token must now be revoked —
+        # this is the actual security property, not just "password
+        # changed successfully" in isolation
+
+    def test_confirm_reset_with_invalid_token_is_400(self):
+        uid, _ = self._get_valid_uid_and_token()
+
+        response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': 'not-a-real-token', 'new_password': 'brandnewpass456'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('originalpass123'))
+        # Password must be UNCHANGED after a rejected attempt
+
+    def test_confirm_reset_token_cannot_be_reused(self):
+        # A token is bound to the user's CURRENT password hash — once
+        # set_password() runs once, the same token must stop validating
+
+        uid, token = self._get_valid_uid_and_token()
+
+        first_response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': token, 'new_password': 'firstnewpass456'},
+            format='json',
+        )
+        self.assertEqual(first_response.status_code, status.HTTP_200_OK)
+
+        second_response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': token, 'new_password': 'secondnewpass789'},
+            format='json',
+        )
+        self.assertEqual(second_response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('firstnewpass456'))
+        # Confirms the SECOND attempt was rejected outright, not silently
+        # applied on top of the first
+
+    def test_confirm_reset_with_malformed_uid_is_400(self):
+        response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': 'not-valid-base64!!', 'token': 'whatever', 'new_password': 'brandnewpass456'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_confirm_reset_weak_password_is_rejected(self):
+        uid, token = self._get_valid_uid_and_token()
+
+        response = self.client.post(
+            '/accounts/password-reset/confirm/',
+            {'uid': uid, 'token': token, 'new_password': '1234'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('originalpass123'))
+        # AUTH_PASSWORD_VALIDATORS rejects it — original password stands
+
+
+class OnboardingTests(APITestCase):
+    # Covers the deferred-role-selection flow: registration without a
+    # role, then the dedicated POST /accounts/onboarding/ endpoint that
+    # sets it exactly once, post-auth.
+
+    def test_registration_without_role_leaves_role_unset(self):
+        data = {
+            'email': 'noroleyet@example.com',
+            'password': 'testpass123',
+            'first_name': 'No',
+            'last_name': 'Role',
+            # role omitted entirely — must be accepted, not required
+        }
+        response = self.client.post('/accounts/register/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(email='noroleyet@example.com')
+        self.assertIsNone(user.role)
+        # No profile row of either kind should exist yet — onboarding
+        # creates it once a role is actually chosen
+        self.assertFalse(RenterProfile.objects.filter(user=user).exists())
+        self.assertFalse(LandlordProfile.objects.filter(user=user).exists())
+
+    def test_me_reports_null_role_when_unset(self):
+        user = User.objects.create_user(email='unset@example.com', password='testpass123')
+        self.assertIsNone(user.role)
+
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/accounts/me/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data['role'])
+
+    def test_onboarding_sets_role_and_creates_renter_profile(self):
+        user = User.objects.create_user(email='pickme@example.com', password='testpass123')
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/accounts/onboarding/', {'role': 'renter'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['role'], 'renter')
+
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.RENTER)
+        self.assertTrue(RenterProfile.objects.filter(user=user).exists())
+
+    def test_onboarding_sets_role_and_creates_landlord_profile(self):
+        user = User.objects.create_user(email='pickmetoo@example.com', password='testpass123')
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/accounts/onboarding/', {'role': 'landlord'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.LANDLORD)
+        self.assertTrue(LandlordProfile.objects.filter(user=user).exists())
+
+    def test_onboarding_rejects_staff_and_admin_roles(self):
+        user = User.objects.create_user(email='sneaky@example.com', password='testpass123')
+        self.client.force_authenticate(user=user)
+
+        for forbidden_role in ('staff', 'admin'):
+            response = self.client.post(
+                '/accounts/onboarding/', {'role': forbidden_role}, format='json'
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        user.refresh_from_db()
+        self.assertIsNone(user.role)
+
+    def test_onboarding_is_one_time_only(self):
+        user = User.objects.create_user(
+            email='alreadyset@example.com', password='testpass123', role='renter'
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            '/accounts/onboarding/', {'role': 'landlord'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.RENTER)
+        # The original role must survive an attempted second call untouched
+
+    def test_onboarding_requires_authentication(self):
+        response = self.client.post(
+            '/accounts/onboarding/', {'role': 'renter'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

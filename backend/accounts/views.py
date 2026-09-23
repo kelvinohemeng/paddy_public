@@ -18,9 +18,16 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.request import Request
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
+from django.contrib.auth.password_validation import validate_password
 from django.core.mail import EmailMultiAlternatives
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+# OutstandingToken/BlacklistedToken — same blacklist app RefreshToken.blacklist()
+# already writes to in logout() below, used directly here (not via
+# RefreshToken) because confirm_password_reset needs to revoke EVERY
+# refresh token a user currently holds, not just the one raw token a
+# single request happens to carry.
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.files.base import ContentFile
@@ -366,11 +373,14 @@ def google_login(request):
     email = idinfo['email']
     # Now safe to trust this — it's been cryptographically verified as
     # genuinely coming from Google, for a real Google account
-    role = request.data.get('role', User.Role.RENTER)
-    # Google doesn't know about our renter/landlord distinction — the
-    # frontend needs to tell us which one this signup is for.
-    # Defaults to renter if not specified (e.g. if this account already
-    # exists and role doesn't matter for a login, only a first-time signup)
+    role = request.data.get('role')
+    # Google doesn't know about our renter/landlord distinction, and role
+    # is now OPTIONAL here too (previously defaulted to renter) — a
+    # first-time Google sign-in with no role supplied creates the user
+    # with role=None, deferring the choice to the same post-auth
+    # onboarding screen every other auth path uses. Existing accounts
+    # logging in again just ignore this value entirely (get_or_create
+    # below only uses it for a brand-new user).
     user, created = User.objects.get_or_create(
         email=email,
         defaults={
@@ -480,11 +490,13 @@ def send_verification_email(user):
     # Encode the user's primary key (id) into a safe string we can put
     # in a URL — force_bytes converts it to bytes first, which the
     # encoder requires
-    verification_link = f"http://localhost:3000/verify-email?uid={uid}&token={token}"
+    verification_link = f"{settings.FRONTEND_URL}/verify-email?uid={uid}&token={token}"
     # The link we're emailing — points at the FRONTEND (Next.js), which
     # will read these two values and send them on to our Django endpoint.
     # The frontend itself doesn't verify anything — it just captures the
-    # values from the URL and forwards them
+    # values from the URL and forwards them. settings.FRONTEND_URL is
+    # env-driven (defaults to localhost:3000 for local dev) — set the
+    # real deployed frontend origin via .env before production.
 
     plain_text_body = f"Click here to verify your account: {verification_link}"
     # Kept as a genuine fallback — some email clients still render
@@ -579,3 +591,254 @@ verify_email.throttle_scope = 'sensitive'
 # limit than login/register, while still blocking automated abuse
 # attempts against this endpoint (e.g. trying to guess valid uid/token
 # combinations)
+
+
+password_reset_token = PasswordResetTokenGenerator()
+# A SEPARATE instance from email_verification_token above, even though
+# they're the same class. Deliberately not shared: PasswordResetTokenGenerator
+# tokens are already scoped correctly per-user (hashing the user's current
+# password + last_login into the token, so a token is invalid the moment
+# either changes), but keeping the two instances distinct means a future
+# change to one flow's expiry/behavior can never silently leak into the
+# other, and a verify-email link can never double as a password-reset link
+# by accident.
+
+
+@api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
+def request_password_reset(request: Request) -> Response:
+    # POST /accounts/password-reset/ — body: {"email": "..."}
+    # Step 1 of the forgot-password flow: given an email, (maybe) send a
+    # reset link. Always responds with the SAME generic message whether
+    # or not that email actually belongs to an account — see below.
+
+    email = request.data.get('email')
+    if not email:
+        return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    generic_response = Response(
+        {'message': 'If that email is registered, a password reset link has been sent.'}
+    )
+    # ONE shared response object for both the found and not-found cases.
+    # Returning a 404/different message for an unknown email would let an
+    # attacker enumerate which addresses have real paddy accounts, simply
+    # by trying emails here and watching which ones come back different —
+    # a real, well-known vulnerability class for this exact endpoint.
+
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return generic_response
+        # Deliberately no logging/signal here that distinguishes this
+        # case from the success path below at the HTTP layer — the
+        # generic_response is byte-for-byte identical either way.
+
+    token = password_reset_token.make_token(user)
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}"
+    # Same uid/token URL shape as send_verification_email's verification_link
+    # above, just a different frontend route — the frontend reads both
+    # values off the URL and forwards them to the confirm endpoint below,
+    # it never validates anything itself. Same settings.FRONTEND_URL
+    # env-driven origin as verification_link — no longer hardcoded.
+
+    plain_text_body = (
+        f"We received a request to reset your paddy account password. "
+        f"Click here to choose a new password: {reset_link}\n\n"
+        f"If you didn't request this, you can safely ignore this email — "
+        f"your password will not be changed."
+    )
+
+    html_body = f"""
+    <html>
+      <body style="font-family: sans-serif; color: #1a1a1a;">
+        <h2>Reset your paddy password</h2>
+        <p>
+          We received a request to reset the password on your paddy
+          account. Click the button below to choose a new one.
+        </p>
+        <p>
+          <a href="{reset_link}"
+             style="display: inline-block; padding: 12px 24px;
+                    background-color: #16a34a; color: #ffffff;
+                    text-decoration: none; border-radius: 6px;">
+            Reset my password
+          </a>
+        </p>
+        <p style="color: #666; font-size: 13px;">
+          If the button doesn't work, copy and paste this link into your
+          browser: {reset_link}
+        </p>
+        <p style="color: #666; font-size: 13px;">
+          If you didn't request this, you can safely ignore this email —
+          your password will not be changed.
+        </p>
+      </body>
+    </html>
+    """
+    # Same multipart plain-text + HTML pattern as send_verification_email,
+    # for the same deliverability reasoning (a bare single-link plain-text
+    # email reads as spam/phishing to real filters regardless of sender
+    # reputation) — plus an explicit "ignore this if it wasn't you" line,
+    # standard practice for a reset email specifically since, unlike
+    # verify-email, the recipient here didn't necessarily take any action
+    # themselves moments ago.
+
+    email_message = EmailMultiAlternatives(
+        subject='Reset your paddy password',
+        body=plain_text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[user.email],
+        headers={
+            "List-Unsubscribe": f"<mailto:{settings.DEFAULT_FROM_EMAIL}>",
+        },
+    )
+    email_message.attach_alternative(html_body, "text/html")
+
+    try:
+        email_message.send()
+    except Exception:
+        # Same non-fatal-email-failure reasoning as register(): a
+        # provider outage here must not turn into a 500 that also
+        # reveals (via its very failure) that the email WAS found —
+        # the generic response still goes out either way.
+        logger.exception(
+            "Failed to send password reset email to %s (user id %s).",
+            user.email, user.id,
+        )
+
+    return generic_response
+
+request_password_reset.throttle_scope = 'password_reset'
+
+
+@api_view(['POST'])
+@throttle_classes([ScopedRateThrottle])
+def confirm_password_reset(request: Request) -> Response:
+    # POST /accounts/password-reset/confirm/
+    # body: {"uid": "...", "token": "...", "new_password": "..."}
+    # Step 2: the frontend forwards the uid/token it read off the reset
+    # link, plus the new password the user chose.
+
+    uid = request.data.get('uid')
+    token = request.data.get('token')
+    new_password = request.data.get('new_password')
+
+    if not uid or not token or not new_password:
+        return Response(
+            {'error': 'uid, token, and new_password are all required.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        user_id = urlsafe_base64_decode(uid).decode()
+        user = User.objects.get(pk=user_id)
+    except (User.DoesNotExist, ValueError, TypeError):
+        return Response({'error': 'Invalid link'}, status=status.HTTP_400_BAD_REQUEST)
+        # Same malformed-uid / deleted-user handling as verify_email above
+
+    if not password_reset_token.check_token(user, token):
+        return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
+        # check_token also fails closed if this token was already used
+        # to reset the password once before — make_token hashes the
+        # user's CURRENT password into the token, so the moment
+        # set_password() below runs, this exact token stops validating
+        # ever again. No separate one-time-use tracking needed.
+
+    try:
+        validate_password(new_password, user=user)
+    except ValidationError as exc:
+        return Response({'error': exc.messages}, status=status.HTTP_400_BAD_REQUEST)
+        # Reuses Django's AUTH_PASSWORD_VALIDATORS (same rules already
+        # enforced elsewhere for password strength), rather than
+        # inventing a separate ad hoc rule (e.g. RegisterSerializer's
+        # bare min_length=8) just for this one endpoint.
+
+    user.set_password(new_password)
+    user.save()
+
+    try:
+        for outstanding_token in OutstandingToken.objects.filter(user=user):
+            BlacklistedToken.objects.get_or_create(token=outstanding_token)
+        # Revoke every refresh token this user currently holds, across
+        # every device/session — the same effect logout() has for one
+        # token, applied to all of them. Matters here specifically: if
+        # an attacker's session was the REASON the password needed
+        # resetting, leaving their existing refresh token valid would
+        # let them keep minting new access tokens right through the
+        # reset. get_or_create (not create) — a token already
+        # blacklisted for some other reason is a harmless no-op, not a
+        # uniqueness-constraint 500.
+    except Exception:
+        logger.exception(
+            "Failed to blacklist outstanding tokens for user id %s after password reset.",
+            user.id,
+        )
+        # Never let a token-revocation hiccup mask the fact that the
+        # password itself WAS successfully changed — the response below
+        # still reports success either way; this is defense in depth,
+        # not the primary security boundary.
+
+    return Response({'message': 'Password has been reset successfully.'})
+
+confirm_password_reset.throttle_scope = 'password_reset'
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def onboarding(request: Request) -> Response:
+    # POST /accounts/onboarding/ — body: {"role": "renter" | "landlord"}
+    # The post-auth gate every signup path (email/password with role
+    # omitted, Google OAuth first-time sign-in) funnels into once role
+    # is nullable. A SEPARATE endpoint from PATCH /accounts/me/ on
+    # purpose: UserUpdateSerializer deliberately blocks `role` as a
+    # security boundary (see serializers.py) — reusing /me/ here would
+    # mean punching a hole in that boundary instead of a single,
+    # narrowly-scoped action with its own one-time rule.
+
+    user: User = request.user
+
+    if user.role is not None:
+        return Response(
+            {'error': 'Role has already been set for this account and cannot be changed here.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        # Strictly one-time, per Kelvin's confirmation: once role is set,
+        # it can never change through this endpoint again — not even to
+        # the same value. A genuine role change after this point is a
+        # staff/admin action via Django admin, deliberately outside any
+        # self-service API surface.
+
+    role = request.data.get('role')
+    if role not in (User.Role.RENTER, User.Role.LANDLORD):
+        return Response(
+            {'error': 'role must be either "renter" or "landlord".'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        # Same admin/staff exclusion as RegisterSerializer.validate_role —
+        # onboarding can never self-assign a staff or admin account either,
+        # only the two self-service roles.
+
+    user.role = role
+    user.save()
+
+    if role == User.Role.RENTER:
+        RenterProfile.objects.get_or_create(user=user, defaults={'full_name': ''})
+    elif role == User.Role.LANDLORD:
+        LandlordProfile.objects.get_or_create(user=user, defaults={'full_name': ''})
+    # get_or_create, not create: mirrors RegisterSerializer.create()'s
+    # profile-row creation for the "role chosen at signup" path, but
+    # guards against a profile row somehow already existing (defensive —
+    # shouldn't happen given role was None, but a create() 500 here would
+    # be a strictly worse failure mode than a harmless no-op).
+
+    return Response(UserSerializer(user).data)
+    # Same "return the full updated user" convention as PATCH /accounts/me/
+    # above — the frontend has everything it needs to proceed past
+    # onboarding without a separate follow-up GET.
+
+onboarding.throttle_scope = 'sensitive'
+# Not a brute-forceable endpoint (no secret being guessed — it's gated on
+# an already-authenticated session), but still an account-mutating action,
+# so it gets the same looser-than-login 'sensitive' scope as verify_email
+# rather than no throttling at all.

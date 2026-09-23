@@ -60,7 +60,8 @@ class LeaseViewSet(viewsets.ModelViewSet):
             # A landlord can't be trusted to pass their own landlord_profile
             # correctly either — force it from who's logged in, same
             # non-negotiable pattern as landlord_profile on Listing.create
-            serializer.save(landlord_profile=user.landlordprofile)
+            lease = serializer.save(landlord_profile=user.landlordprofile)
+            self._mark_listing_leased(lease.listing)
             return
 
         # Staff AND admin: trust the submitted landlord_profile, but it
@@ -71,7 +72,29 @@ class LeaseViewSet(viewsets.ModelViewSet):
         if listing is not None and landlord_profile is not None and listing.landlord_profile_id != landlord_profile.id:
             raise PermissionDenied("landlord_profile must match the listing's landlord")
 
-        serializer.save()
+        lease = serializer.save()
+        self._mark_listing_leased(lease.listing)
+
+    def _mark_listing_leased(self, listing):
+        # THE automatic (and only) published -> leased transition, per
+        # the product decision: no manual staff/landlord action exists
+        # for this status at all — creating a real Lease record IS what
+        # "leased" means. Deliberately scoped to PUBLISHED only: a
+        # staff/admin backfilling historical lease data against a
+        # draft/archived/already-leased listing shouldn't silently flip
+        # unrelated status machinery (e.g. resurrecting an archived
+        # listing as "leased" would be a lie about its current state).
+        from listings.models import Listing
+        # Imported here, not at module top — avoids a circular import:
+        # listings/views.py already imports nothing from leases, so this
+        # keeps that one-directional graph intact rather than assuming
+        # it's safe and finding out otherwise later.
+
+        if listing.status == Listing.Status.PUBLISHED:
+            listing.status = Listing.Status.LEASED
+            listing.save(update_fields=['status'])
+            # Scoped write — same update_fields discipline as
+            # ListingViewSet's submit-for-review/review actions.
 
     def perform_update(self, serializer):
         lease = self.get_object()

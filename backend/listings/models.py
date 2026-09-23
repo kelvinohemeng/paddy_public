@@ -92,6 +92,17 @@ class Listing(models.Model):
         PUBLISHED = 'published', 'Published'
         REJECTED = 'rejected', 'Rejected'
         ARCHIVED = 'archived', 'Archived'
+        LEASED = 'leased', 'Leased'
+        # Set automatically (never via a manual staff/landlord action) the
+        # moment a Lease record is created against this listing — see
+        # leases/views.py LeaseViewSet.perform_create. Means "a renter has
+        # actually signed a tenancy here", not "sold" (BUY-type listings
+        # have no Lease model backing them at all). Excluded from public
+        # discovery results same as archived — an occupied unit has no
+        # vacancy to search for — but stays visible to the owning
+        # landlord/staff/admin, AND to the specific renter who holds the
+        # Lease (see ListingViewSet.get_queryset's renter branch), so they
+        # can still reach their own leased listing's detail/dashboard card.
 
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT

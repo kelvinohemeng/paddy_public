@@ -17,7 +17,7 @@ class ViewingCreateTests(APITestCase):
 
     def setUp(self):
         self.renter_user = User.objects.create_user(
-            email='renter@example.com', password='pass123456'
+            email='renter@example.com', password='pass123456', role='renter'
         )
         self.renter_profile = RenterProfile.objects.create(
             user=self.renter_user, full_name='Test Renter'
@@ -172,14 +172,14 @@ class ViewingVisibilityTests(APITestCase):
 
     def setUp(self):
         self.renter_user = User.objects.create_user(
-            email='renter2@example.com', password='pass123456'
+            email='renter2@example.com', password='pass123456', role='renter'
         )
         self.renter_profile = RenterProfile.objects.create(
             user=self.renter_user, full_name='Renter Two'
         )
 
         self.other_renter_user = User.objects.create_user(
-            email='renter3@example.com', password='pass123456'
+            email='renter3@example.com', password='pass123456', role='renter'
         )
         self.other_renter_profile = RenterProfile.objects.create(
             user=self.other_renter_user, full_name='Renter Three'
@@ -283,14 +283,14 @@ class ViewingActionTests(APITestCase):
 
     def setUp(self):
         self.renter_user = User.objects.create_user(
-            email='renter4@example.com', password='pass123456'
+            email='renter4@example.com', password='pass123456', role='renter'
         )
         self.renter_profile = RenterProfile.objects.create(
             user=self.renter_user, full_name='Renter Four'
         )
 
         self.other_renter_user = User.objects.create_user(
-            email='renter5@example.com', password='pass123456'
+            email='renter5@example.com', password='pass123456', role='renter'
         )
         self.other_renter_profile = RenterProfile.objects.create(
             user=self.other_renter_user, full_name='Renter Five'
