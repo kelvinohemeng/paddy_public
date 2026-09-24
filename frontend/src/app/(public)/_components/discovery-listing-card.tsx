@@ -95,15 +95,15 @@ export function DiscoveryListingCard({
     >
       <Card
         className={cn(
-          "cursor-pointer overflow-hidden py-0 transition hover:shadow-md",
-          isHovered && "ring-2 ring-indigo-500",
+          "border-none gap-4 h-full cursor-pointer overflow-hidden py-0 transition hover:shadow-md rounded-none shadow-none",
+          isHovered && "-translate-y-2 shadow-none!",
           // Mirrors DiscoveryMap's hovered-pin highlight — hovering
           // EITHER the card or its map marker highlights both, so the
           // split-pane reads as one connected view rather than two
           // independent lists that happen to share a page.
         )}
       >
-        <div className="bg-muted relative aspect-video w-full overflow-hidden">
+        <div className="bg-muted border relative w-full aspect-square overflow-hidden shadow rounded-xl">
           <div className="absolute right-2 top-2">{listing.is_staff_verified && (
             <Badge variant="secondary" className="shrink-0 gap-1">
               <BadgeCheck className="size-3.5" />
@@ -133,7 +133,7 @@ export function DiscoveryListingCard({
 
         </div>
 
-        <CardContent className="space-y-2 py-4">
+        <CardContent className="px-0 space-y-2">
           <div className="flex items-start justify-between gap-2">
             <p className="line-clamp-2 font-medium flex-1">{listing.title}</p>
             {price && (

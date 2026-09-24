@@ -104,7 +104,7 @@ export default async function HomesHubPage({
         listingType={listingType}
         focusLocation={params.city ?? null}
         gridHeader={
-          <div className="space-y-2">
+          <div className="space-y-2 ">
             {cityFallback && params.city && (
               <DiscoveryFallbackNotice city={params.city} />
             )}

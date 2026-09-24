@@ -75,9 +75,9 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
           gotcha. */}
       <div className="flex min-h-0 w-[50%] flex-none flex-col">
         {gridHeader && (
-          <div className="shrink-0 px-4 pt-4">{gridHeader}</div>
+          <div className="shrink-0 px-10 py-5 border-b">{gridHeader}</div>
         )}
-        <div className="grid min-h-0 flex-1 content-start grid-cols-[repeat(auto-fill,minmax(22rem,1fr))] gap-5 overflow-y-auto p-10">
+        <div className="grid min-h-0 flex-1 content-start grid-cols-[repeat(auto-fill,minmax(22rem,1fr))] gap-6 overflow-y-auto p-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {visibleListings.length === 0 ? (
           <p className="text-muted-foreground col-span-full py-12 text-center text-sm">
             No listings match your search yet — try widening your filters.
@@ -86,7 +86,7 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
           visibleListings.map((listing) => (
             <div
               key={listing.id}
-              className="w-full max-w-[32rem] min-w-0 justify-self-center"
+              className="w-full max-w-[32rem] min-w-0 min-h-[32rem] justify-self-center"
             >
               <DiscoveryListingCard
                 listing={listing}
@@ -103,20 +103,21 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
           full available height, never scrolls with the grid. Always
           side-by-side (left grid / right map), never stacked
           top/bottom at any viewport width. */}
-      <div className="relative min-h-0 flex-1">
-        <DiscoveryMap
-          // Type-filtered too — markers must match the grid, or the
-          // hover-sync cross-referencing breaks (pin with no card).
-          listings={typeFiltered}
-          searchFocus={focusLocation ?? null}
-          onVisibleListingsChange={setVisibleListingIds}
-          hoveredId={hoveredId}
-          selectedListing={selectedListing ?? null}
-          selectedPoi={selectedPoi}
-          onMarkerClick={(id) => {
-            setSelectedListingId(id);
-            setSelectedPoi(null);
-            // Scroll the matching card into view rather than
+      <div className="relative min-h-0 flex-1 p-5">
+        <div className="rounded-xl overflow-hidden border w-full h-full">
+          <DiscoveryMap
+            // Type-filtered too — markers must match the grid, or the
+            // hover-sync cross-referencing breaks (pin with no card).
+            listings={typeFiltered}
+            searchFocus={focusLocation ?? null}
+            onVisibleListingsChange={setVisibleListingIds}
+            hoveredId={hoveredId}
+            selectedListing={selectedListing ?? null}
+            selectedPoi={selectedPoi}
+            onMarkerClick={(id) => {
+              setSelectedListingId(id);
+              setSelectedPoi(null);
+              // Scroll the matching card into view rather than
             // navigating immediately — clicking a pin is closer to
             // "show me that one" than "commit to that one," matching
             // the split-pane's whole point of letting a visitor
@@ -133,7 +134,7 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
             setSelectedListingId(null);
             setSelectedPoi(null);
           }}
-        />
+        /></div>
       </div>
     </div>
   );
