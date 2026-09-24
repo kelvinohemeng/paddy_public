@@ -14,12 +14,6 @@ from django.db import transaction
 # write. Without it, two near-simultaneous set-cover requests could each
 # clear-then-set in an interleaved order and leave two covers behind.
 
-from django.contrib.gis.geos import Polygon
-# Polygon — GeoDjango's shape class, same toolbox that gave us PointField
-# on the model. We're not storing a Polygon anywhere; we're building one
-# temporarily, in memory, purely to describe the map's visible rectangle
-# for THIS ONE request — it only exists for the life of this function call
-
 from .models import Listing, ListingPhoto, SavedListing
 from accounts.models import User, StaffProfile
 # User — for the Role enum in the review action + admin-visibility
@@ -34,6 +28,7 @@ from accounts.models import User, StaffProfile
 # RelatedObjectDoesNotExist → 500 instead of recording the review.
 from core.models import Amenity
 from .serializers import ListingSerializer, ListingPhotoSerializer, SavedListingSerializer
+from .location_privacy import snap_bbox
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -240,13 +235,19 @@ class ListingViewSet(viewsets.ModelViewSet):
             # means this whole block is skipped entirely unless the
             # frontend sends a genuinely complete box
 
-            bbox = Polygon.from_bbox((float(west), float(south), float(east), float(north)))
-            # Polygon.from_bbox expects (west, south, east, north) in
-            # THAT exact order — (min_x, min_y, max_x, max_y) in
-            # longitude/latitude terms. float(...) is required because
-            # query_params always arrive as plain TEXT strings (like
-            # every other query param we've read so far) — Polygon needs
-            # actual numbers, not the string "5.65"
+            bbox = snap_bbox(float(west), float(south), float(east), float(north))
+            # snap_bbox takes (west, south, east, north) in THAT exact
+            # order — (min_x, min_y, max_x, max_y) in longitude/latitude
+            # terms, same as Polygon.from_bbox, which it wraps. float(...)
+            # is required because query_params always arrive as plain
+            # TEXT strings (like every other query param we've read so
+            # far) — Polygon needs actual numbers, not the string "5.65".
+            #
+            # snap_bbox (not a raw Polygon.from_bbox) widens the box out
+            # to the same ~550m grid locked listings' pins are snapped
+            # to. Without that, shrinking the box around a locked
+            # listing until it drops out of the results would reveal its
+            # exact location — see location_privacy.py.
 
             queryset = queryset.filter(location__within=bbox)
             # location__within — the geospatial lookup this whole feature

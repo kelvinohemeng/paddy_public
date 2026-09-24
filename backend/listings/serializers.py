@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Listing, ListingPhoto, SavedListing
 from core.serializers import AmenitySerializer
+from .location_privacy import snap_point
 
 
 class ListingPhotoSerializer(serializers.ModelSerializer):
@@ -244,6 +245,24 @@ class ListingSerializer(serializers.ModelSerializer):
             data['address_precise'] = None
             # Same None-not-omitted reasoning as landlord_contact above —
             # consistent shape for the frontend regardless of lock state
+
+            if instance.location is not None:
+                data['location'] = snap_point(instance.location).ewkt
+                # The exact lat/lng is just as much "the precise address"
+                # as address_precise is — anyone can paste a raw point
+                # into a map app and walk to the door. So a locked viewer
+                # gets the centre of the ~550m grid cell instead (see
+                # location_privacy.py for why a fixed grid, never random
+                # jitter). Replaced rather than nulled: the Discovery Hub
+                # still needs SOMETHING to pin, and the detail page draws
+                # its "approximate area" circle around this point.
+                #
+                # .ewkt gives the same "SRID=4326;POINT (lng lat)" string
+                # shape DRF already produces for the real field, so the
+                # frontend's parseWktPoint reads both identically. Only
+                # the OUTPUT changes — instance.location itself is never
+                # modified, and the bbox filter in get_queryset still
+                # queries the real column.
 
         return data
 

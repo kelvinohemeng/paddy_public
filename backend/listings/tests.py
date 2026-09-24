@@ -1,6 +1,6 @@
 from rest_framework.test import APITestCase
 from rest_framework import status
-from django.contrib.gis.geos import Point
+from django.contrib.gis.geos import Point, GEOSGeometry
 # Point — GeoDjango's coordinate class, used here to give test listings
 # REAL coordinates to filter against. Same toolbox as Polygon in
 # views.py, just the "single location" shape instead of "rectangle"
@@ -779,11 +779,11 @@ class ListingUnlockGatingTests(APITestCase):
         # The unlock for a DIFFERENT listing must not leak access here
 
     def test_map_pin_stays_visible_when_locked(self):
-        # Per the explicit product decision: the lat/long point (used
-        # for the Discovery Hub map) is NOT part of the paywall — only
-        # address_precise (the text address) and landlord contact are
-        # gated. Confirms `location` is never touched by _has_access at
-        # all, since it's excluded from the gating logic entirely
+        # A locked listing still gets a map pin (the Discovery Hub needs
+        # something to plot) — but only the COARSENED one, not null.
+        # The exact-vs-coarse split itself is covered in detail by
+        # ListingLocationPrivacyTests below; this just confirms locking
+        # never blanks the pin out entirely
 
         from django.contrib.gis.geos import Point
 
@@ -797,7 +797,176 @@ class ListingUnlockGatingTests(APITestCase):
         self.assertIsNone(response.data['address_precise'])
         self.assertFalse(response.data['is_unlocked'])
         self.assertIsNotNone(response.data['location'])
-        # Locked on address/contact, but the map pin is still there
+        # Locked on address/contact, but a (coarsened) map pin is still
+        # there
+
+
+class ListingLocationPrivacyTests(APITestCase):
+    # The exact lat/lng is as much "the precise address" as
+    # address_precise is — so it sits behind the same _has_access gate.
+    # Locked viewers get the centre of a ~550m grid cell instead (see
+    # listings/location_privacy.py); anyone _has_access lets through
+    # keeps the exact point. Also covers the bbox filter, which could
+    # otherwise leak the exact point on its own without ever
+    # serializing it.
+
+    EXACT = (-0.182, 5.556)
+    # Real point: lng -0.182, lat 5.556. Its grid cell is lng
+    # [-0.185, -0.180) × lat [5.555, 5.560), whose centre is
+    # (-0.1825, 5.5575) — worked out by hand here, deliberately NOT by
+    # calling snap_point, so a bug in snap_point can't also "fix" the
+    # expected value
+    COARSE = (-0.1825, 5.5575)
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='privacylandlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Privacy Landlord',
+            national_id_number='GHA-321', preferred_payout_method='momo'
+        )
+
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Located listing', description='Test', listing_type='rent',
+            price_monthly='2000.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='42 Secret Ave',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+            location=Point(*self.EXACT, srid=4326),
+        )
+
+        self.renter_user = User.objects.create_user(
+            email='privacyrenter@example.com', password='pass123456'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Renter')
+
+        self.staff_user = User.objects.create_user(
+            email='privacystaff@example.com', password='pass123456', role='staff'
+        )
+
+    def _coords(self, wkt):
+        # Parses the serialized "SRID=4326;POINT (lng lat)" string back
+        # into numbers — asserting on coordinates rather than the raw
+        # string keeps these tests about WHERE the point is, not about
+        # how many decimal places the WKT writer happens to print
+        point = GEOSGeometry(wkt)
+        return (point.x, point.y)
+
+    def _assert_point(self, wkt, expected):
+        x, y = self._coords(wkt)
+        self.assertAlmostEqual(x, expected[0], places=6)
+        self.assertAlmostEqual(y, expected[1], places=6)
+
+    def test_anonymous_viewer_gets_coarsened_point(self):
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self._assert_point(response.data['location'], self.COARSE)
+        self.assertTrue(response.data['location'].startswith('SRID=4326;POINT ('))
+        # Same string shape as the real field, so the frontend's
+        # parseWktPoint keeps working unchanged
+
+    def test_anonymous_list_gets_coarsened_point(self):
+        # The list endpoint is what feeds the Discovery Hub's map pins —
+        # the main place the exact point was leaking
+        response = self.client.get('/listings/')
+
+        results = response.data['results'] if 'results' in response.data else response.data
+        row = next(item for item in results if item['id'] == self.listing.id)
+        self._assert_point(row['location'], self.COARSE)
+
+    def test_locked_renter_gets_coarsened_point(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self._assert_point(response.data['location'], self.COARSE)
+
+    def test_owner_gets_exact_point(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self._assert_point(response.data['location'], self.EXACT)
+        # Also what the listing edit form reads back to place its pin —
+        # a coarsened point here would silently move the landlord's pin
+        # on every save
+
+    def test_renter_who_unlocked_gets_exact_point(self):
+        from payments.models import ListingUnlock
+
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self._assert_point(response.data['location'], self.EXACT)
+
+    def test_staff_gets_exact_point(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self._assert_point(response.data['location'], self.EXACT)
+
+    def test_coarsened_point_is_stable_across_requests(self):
+        # THE property that makes coarsening worth anything: random
+        # per-request jitter could be averaged away over many fetches,
+        # a fixed grid can't
+        first = self.client.get(f'/listings/{self.listing.id}/').data['location']
+        second = self.client.get(f'/listings/{self.listing.id}/').data['location']
+        third = self.client.get('/listings/').data
+        third = third['results'] if 'results' in third else third
+        third = next(item for item in third if item['id'] == self.listing.id)['location']
+
+        self.assertEqual(first, second)
+        self.assertEqual(first, third)
+
+    def test_coarsened_point_reveals_only_the_grid_cell(self):
+        # Moving the real point around WITHIN its cell must not move the
+        # coarse point at all — otherwise the coarse point would still
+        # encode (some of) the exact location
+        self.listing.location = Point(-0.1849, 5.5599, srid=4326)
+        self.listing.save()
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self._assert_point(response.data['location'], self.COARSE)
+
+    def test_listing_without_location_stays_null(self):
+        self.listing.location = None
+        self.listing.save()
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertIsNone(response.data['location'])
+
+    def test_bbox_filter_cannot_pinpoint_exact_location(self):
+        # A tiny box INSIDE the listing's grid cell that does NOT contain
+        # the real point. Filtering on the raw box would exclude the
+        # listing — and shrinking boxes like that step by step would
+        # binary-search the exact coordinates. Snapped to the grid, the
+        # box covers the whole cell, so the listing is still returned:
+        # the filter can't tell anything finer than the cell apart
+        response = self.client.get('/listings/', {
+            'west': '-0.1845', 'south': '5.5590', 'east': '-0.1840', 'north': '5.5595',
+        })
+
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertIn(self.listing.id, [item['id'] for item in results])
+
+    def test_bbox_filter_still_excludes_other_cells(self):
+        # The snapping only widens a box to its OWN cells — a box
+        # entirely inside the next cell over (lng [-0.180, -0.175))
+        # must still exclude the listing, or the map filter would stop
+        # filtering anything useful
+        response = self.client.get('/listings/', {
+            'west': '-0.1795', 'south': '5.5560', 'east': '-0.1790', 'north': '5.5570',
+        })
+
+        results = response.data['results'] if 'results' in response.data else response.data
+        self.assertNotIn(self.listing.id, [item['id'] for item in results])
 
 
 class ListingAnonymousAccessTests(APITestCase):
