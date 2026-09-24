@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { BadgeCheck, MapPin } from "lucide-react";
+import { BadgeCheck } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { SaveToggle } from "@/components/save-toggle";
+import { FavoriteButton } from "@/components/favorite-button";
 import { cn } from "@/lib/utils";
 
 // Backend's ListingPhotoSerializer returns `image` as the photo URL
@@ -14,6 +14,14 @@ import { cn } from "@/lib/utils";
 // ever changes.
 function getPhotoUrl(photo: any): string | null {
   return photo?.image ?? photo?.image_url ?? photo?.url ?? null;
+}
+
+// DRF sends DecimalFields as strings ("4000.00"); Figma shows "4,000".
+// Thousands separators, and pesewas only when there are any.
+function formatPrice(raw: string): string {
+  const amount = Number(raw);
+  if (!Number.isFinite(amount)) return raw;
+  return amount.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
 export type PublicListing = {
@@ -42,17 +50,22 @@ type DiscoveryListingCardProps = {
   listing: PublicListing;
   isHovered: boolean;
   onHover: (id: number | string | null) => void;
-  // Figma shows a Favorite heart overlay on the photo. Rendered only on
-  // explicit opt-in: anonymous visitors must see no toggle at all
-  // (SaveToggle contract — saving requires a renter session).
-  showSaveToggle?: boolean;
+  // Figma "Favorite" heart (States Default/Saved). Omitted → no heart
+  // at all (landlords/staff can't save; stories can opt out). State
+  // and the request live in useSavedListings — the card only renders.
+  favorite?: { saved: boolean; onToggle: () => void };
 };
 
+// Figma "Listing Card" (component set 175:21077, States Default and
+// Saved): grey rounded photo with the heart top-right; below it a
+// two-column row — "{Rent|Buy} in {area}" heading, listing title,
+// detail pills and the landlord line on the left, price on the right.
+// Leased/Property states belong to the dashboards, not discovery.
 export function DiscoveryListingCard({
   listing,
   isHovered,
   onHover,
-  showSaveToggle = false,
+  favorite,
 }: DiscoveryListingCardProps) {
   const photos = Array.isArray(listing.photos) ? listing.photos : [];
   const coverUrl = photos.length > 0 ? getPhotoUrl(photos[0]) : null;
@@ -67,23 +80,26 @@ export function DiscoveryListingCard({
   const priceLabel =
     listing.listing_type === "buy" ? "GHC {price}" : "GHC {price}/mo";
 
-  // Figma body pills: "{n} bedroom" / "{n} bathroom" + top amenities.
+  const area = listing.neighborhood || listing.city || "Ghana";
+  const heading = `${listing.listing_type === "buy" ? "Buy" : "Rent"} in ${area}`;
+
+  // Figma body pills: "1 bedroom" / "1 bathroom" / one amenity ("Pool").
+  // The advance-period pill isn't in the Figma card but stays: 6-month
+  // vs 1-year advance is one of paddy's two core filters.
   const pills = [
     `${listing.bedrooms} bedroom${listing.bedrooms === 1 ? "" : "s"}`,
-    `${listing.bathrooms} bathroom${listing.bathrooms === 1 ? "" : "s"}`
+    `${listing.bathrooms} bathroom${listing.bathrooms === 1 ? "" : "s"}`,
+    ...(Array.isArray(listing.amenities_detail)
+      ? listing.amenities_detail.slice(0, 1).map((a) => a.name)
+      : []),
+    ...(listing.advance_rent_period && listing.advance_rent_period !== "none"
+      ? [listing.advance_rent_period === "6_months" ? "6mo advance" : "1yr advance"]
+      : []),
   ];
-  // const pills = [
-  //   `${listing.bedrooms} bedroom${listing.bedrooms === 1 ? "" : "s"}`,
-  //   `${listing.bathrooms} bathroom${listing.bathrooms === 1 ? "" : "s"}`,
-  //   ...(Array.isArray(listing.amenities_detail)
-  //     ? listing.amenities_detail.slice(0, 2).map((a) => a.name)
-  //     : []),
-  // ];
+
   const landlord = listing.landlord_public ?? null;
   // Signup creates profiles with full_name='' until onboarding fills
-  // it — live rows confirm ("landlord_public":{"full_name":"",...}),
-  // and an empty name renders as a "?" avatar plus blank text, which
-  // reads as broken. Only render the row when there's a real name.
+  // it — live rows confirm ("landlord_public":{"full_name":"",...}).
   const landlordName = landlord?.full_name?.trim() || "Name Unknown";
 
   return (
@@ -92,86 +108,84 @@ export function DiscoveryListingCard({
       id={`listing-card-${listing.id}`}
       onMouseEnter={() => onHover(listing.id)}
       onMouseLeave={() => onHover(null)}
+      className="group block rounded-xl focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-black"
     >
       <Card
         className={cn(
-          "border-none gap-4 h-full cursor-pointer overflow-hidden py-0 transition hover:shadow-md rounded-none shadow-none",
-          isHovered && "-translate-y-2 shadow-none!",
+          "h-full gap-3 overflow-visible rounded-none border-none py-0 shadow-none transition-transform duration-200",
           // Mirrors DiscoveryMap's hovered-pin highlight — hovering
-          // EITHER the card or its map marker highlights both, so the
-          // split-pane reads as one connected view rather than two
-          // independent lists that happen to share a page.
+          // EITHER the card or its map marker lifts the card, so the
+          // split-pane reads as one connected view.
+          isHovered && "-translate-y-1",
         )}
       >
-        <div className="bg-muted border relative w-full aspect-square overflow-hidden shadow rounded-xl">
-          <div className="absolute right-2 top-2">{listing.is_staff_verified && (
-            <Badge variant="secondary" className="shrink-0 gap-1">
-              <BadgeCheck className="size-3.5" />
-              Verified
-            </Badge>
-          )}</div>
+        <div className="bg-muted relative aspect-[17/16] w-full overflow-hidden rounded-xl">
           {coverUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={coverUrl}
               alt={listing.title}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
             />
           ) : (
             <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
               No photo yet
             </div>
           )}
-          {showSaveToggle && typeof listing.is_saved === "boolean" && (
-            <div className="absolute top-2 right-2">
-              <SaveToggle
-                listingId={listing.id}
-                initialSaved={listing.is_saved}
-              />
-            </div>
+          {/* Staff verification is the brand promise, so it stays on
+              the photo — top-LEFT, clear of Figma's heart. */}
+          {listing.is_staff_verified && (
+            <Badge
+              variant="secondary"
+              className="absolute top-2.5 left-2.5 gap-1 bg-white/90 shadow-sm"
+            >
+              <BadgeCheck className="size-3.5" />
+              Verified
+            </Badge>
           )}
-
+          {favorite && (
+            <FavoriteButton
+              saved={favorite.saved}
+              onToggle={favorite.onToggle}
+              className="absolute top-1.5 right-1.5"
+            />
+          )}
         </div>
 
-        <CardContent className="px-0 space-y-2">
-          <div className="flex items-start justify-between gap-2">
-            <p className="line-clamp-2 font-medium flex-1">{listing.title}</p>
-            {price && (
-              <span className="text-foreground ml-auto text-sm font-medium text-right flex-1">
-                {priceLabel.replace("{price}", price)}
-              </span>
-            )}
-
-          </div>
-
-          <p className="text-muted-foreground flex items-center gap-1 truncate text-xs">
-            <MapPin className="size-3 shrink-0" />
-            {listing.neighborhood || listing.city || "Ghana"}
-          </p>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {pills.map((pill) => (
-              <Badge key={pill} variant="secondary" className="text-[10px]">
-                {pill}
-              </Badge>
-            ))}
-            {listing.advance_rent_period && listing.advance_rent_period !== "none" && (
-              <Badge variant="secondary" className="text-[10px]">
-                {listing.advance_rent_period === "6_months" ? "6mo advance" : "1yr advance"}
-              </Badge>
-            )}
-
-          </div>
-
-          {landlordName && (
-            <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
-              <span className="bg-muted flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-medium">
+        <CardContent className="flex items-start justify-between gap-3 px-0">
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="truncate text-lg leading-tight font-medium tracking-tight text-black/80 md:text-base">
+              {heading}
+            </p>
+            <p className="truncate text-xs font-medium text-black/80">
+              {listing.title}
+            </p>
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {pills.map((pill) => (
+                <span
+                  key={pill}
+                  className="bg-muted rounded-[4px] px-1.5 py-1 text-[11px] leading-none font-medium text-black/80"
+                >
+                  {pill}
+                </span>
+              ))}
+            </div>
+            <p className="flex items-center gap-1.5 pt-2 text-xs font-medium text-black/80">
+              <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full border bg-neutral-100 text-[9px] text-black/60">
                 {landlordName.charAt(0).toUpperCase()}
               </span>
               <span className="truncate">{landlordName}</span>
               {landlord?.id_verified && (
-                <BadgeCheck className="size-3.5 shrink-0 text-green-600" />
+                <BadgeCheck
+                  className="size-3.5 shrink-0 fill-black text-white"
+                  aria-label="ID verified landlord"
+                />
               )}
+            </p>
+          </div>
+          {price && (
+            <p className="shrink-0 text-right text-lg leading-tight font-medium tracking-tight whitespace-nowrap text-black/80 md:text-base">
+              {priceLabel.replace("{price}", formatPrice(price))}
             </p>
           )}
         </CardContent>

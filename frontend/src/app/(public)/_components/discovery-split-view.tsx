@@ -1,16 +1,25 @@
 "use client";
 
 import { useState } from "react";
+import { LayoutGrid, Map as MapIcon } from "lucide-react";
+
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useSavedListings } from "@/hooks/use-saved-listings";
+import { cn } from "@/lib/utils";
 import { DiscoveryMap } from "./discovery-map";
+import { DiscoveryResultsBar } from "./discovery-results-bar";
+import { sheetOffset, useSheetDrag } from "./use-sheet-drag";
 import { DiscoveryListingCard, type PublicListing } from "./discovery-listing-card";
 import type { MapPlacePreview } from "./discovery-map";
 
 type DiscoverySplitViewProps = {
   listings: PublicListing[];
-  // Optional fixed header above the grid column (e.g. the /homes
-  // results-count + filter row). Rendered outside the scrollable grid
-  // so it stays put while cards scroll. Undefined → today's layout.
-  gridHeader?: React.ReactNode;
+  // Optional notice above the results row (e.g. the city-fallback
+  // banner). The results row itself is rendered here, so it can switch
+  // between the desktop pill and the mobile sheet's icon variant.
+  notice?: React.ReactNode;
+  // Searched city, echoed in "N Places to stay in {city}".
+  city?: string;
   // Rent/Buy toggle value (see discovery-header.tsx), passed as a prop
   // — not read via useSearchParams — so this island stays
   // suspense-free in the server page that renders it. The backend has
@@ -28,7 +37,7 @@ type DiscoverySplitViewProps = {
 // and first paint get real HTML, not an empty shell waiting on a
 // client fetch). This component just receives that server-fetched
 // data as a prop and adds client-only interactivity on top.
-export function DiscoverySplitView({ listings, gridHeader, listingType, focusLocation }: DiscoverySplitViewProps) {
+export function DiscoverySplitView({ listings, notice, city, listingType, focusLocation }: DiscoverySplitViewProps) {
   const typeFiltered =
     listingType === "rent" || listingType === "buy"
       ? listings.filter((listing) => listing.listing_type === listingType)
@@ -57,54 +66,110 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
     setSelectedPoi(null);
   }
 
+  const { mode: favoriteMode, isSaved, toggle: toggleSaved } = useSavedListings();
+  // Mobile only: which half of the hub is in front. Desktop always
+  // shows both side by side and ignores this.
+  const [mobileView, setMobileView] = useState<"map" | "grid">("map");
+  // The Grid/Map pill moves first, then the sheet follows — so the
+  // switch visibly slides before it tucks away with the sheet.
+  const [pill, setPill] = useState<"map" | "grid">("map");
+  const isMobile = useIsMobile();
+  const sheetOpen = mobileView === "grid";
+
+  const count = visibleListings.length;
+  const emptyMessage = (
+    <p className="col-span-full py-24 text-center text-sm font-medium text-black/80">
+      No Listings Available in this area
+    </p>
+  );
+
+  function showGrid() {
+    setPill("grid");
+    setMobileView("grid");
+  }
+
+  function showMap() {
+    setPill("map");
+    window.setTimeout(() => setMobileView("map"), 160);
+  }
+
+  const { drag, bind } = useSheetDrag({ onOpen: showGrid, onClose: showMap });
+
   return (
-    <div className="flex min-h-0 flex-1 flex-row">
-      {/* Listing grid — the ONLY scrollable region on this page.
-          Auto-scaling columns: the container decides how many cards
-          fit via auto-fill, each card clamped between CARD_MIN
-          (15rem, below which the photo/text crush) and CARD_MAX
-          (21rem, above which cards look stretched). Narrow pane →
-          1 column; wide viewport → 3+. `content-start` keeps rows
-          hugging card height (fit-content) instead of the grid
-          default stretching them to fill the tall container.
-          overflow-y-auto + min-h-0 is
-          what actually makes this scroll independently of the map:
-          without min-h-0, a flex child defaults to its content's
-          natural height and never triggers its own scrollbar, growing
-          the whole page instead — the classic flexbox scrolling
-          gotcha. */}
-      <div className="flex min-h-0 w-[50%] flex-none flex-col">
-        {gridHeader && (
-          <div className="shrink-0 px-10 py-5 border-b">{gridHeader}</div>
+    <div className="relative flex min-h-0 flex-1 flex-row">
+      {/* Listing column.
+          Desktop: left half, the ONLY scrollable region on the page
+          (min-h-0 + overflow-y-auto is what lets it scroll
+          independently of the map — without min-h-0 a flex child
+          grows to its content instead).
+          Mobile (Figma "Default Mobile - Expanded"): a rounded sheet
+          over the map. It stays mounted and slides (translateY via
+          --sheet-y, mobile-only classes) so it can follow a drag; the
+          map underneath is never torn down (that re-inits Google Maps
+          and its InfoWindow root). Inert while tucked away. */}
+      <div
+        inert={isMobile && !sheetOpen ? true : undefined}
+        style={{ "--sheet-y": sheetOffset(sheetOpen, drag) } as React.CSSProperties}
+        className={cn(
+          "bg-background flex min-h-0 flex-col",
+          "md:static md:z-auto md:flex md:w-1/2 md:flex-none md:rounded-none md:shadow-none",
+          "absolute inset-0 z-20 rounded-t-2xl shadow-[0_2px_6px_2px_rgba(0,0,0,0.15)]",
+          "max-md:[transform:translateY(var(--sheet-y))]",
+          !drag &&
+            "max-md:transition-transform max-md:duration-300 max-md:ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none",
         )}
-        <div className="grid min-h-0 flex-1 content-start grid-cols-[repeat(auto-fill,minmax(22rem,1fr))] gap-6 overflow-y-auto p-10 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {visibleListings.length === 0 ? (
-          <p className="text-muted-foreground col-span-full py-12 text-center text-sm">
-            No listings match your search yet — try widening your filters.
-          </p>
-        ) : (
-          visibleListings.map((listing) => (
-            <div
-              key={listing.id}
-              className="w-full max-w-[32rem] min-w-0 min-h-[32rem] justify-self-center"
-            >
-              <DiscoveryListingCard
-                listing={listing}
-                isHovered={hoveredId === listing.id}
-                onHover={setHoveredId}
-              />
-            </div>
-          ))
-        )}
+      >
+        {/* Grab area: drag the handle down to close the list. */}
+        <div
+          {...bind("close")}
+          aria-hidden
+          className="-mb-1 flex h-6 shrink-0 cursor-grab touch-none items-start justify-center active:cursor-grabbing md:hidden"
+        >
+          <SheetHandle />
+        </div>
+        <div className="shrink-0 space-y-2 border-b px-5 py-3 md:px-10 md:py-5">
+          {notice}
+          <div className="hidden md:block">
+            <DiscoveryResultsBar count={count} city={city} />
+          </div>
+          <div className="md:hidden">
+            <DiscoveryResultsBar count={count} city={city} variant="icon" />
+          </div>
+        </div>
+        {/* Auto-scaling columns: each card at least 16rem, so the
+            half-width pane gets Figma's 2 columns at 1440px and 3 on
+            wider screens; a narrow pane falls back to 1.
+            Bottom padding on mobile clears the floating Grid/Map switch. */}
+        <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-6 overflow-y-auto p-5 pb-28 [scrollbar-width:none] md:grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] md:p-10 [&::-webkit-scrollbar]:hidden">
+          {count === 0
+            ? emptyMessage
+            : visibleListings.map((listing) => (
+                <div
+                  key={listing.id}
+                  className="w-full max-w-[28rem] min-w-0 justify-self-center"
+                >
+                  <DiscoveryListingCard
+                    listing={listing}
+                    isHovered={hoveredId === listing.id}
+                    onHover={setHoveredId}
+                    favorite={
+                      favoriteMode === "hidden"
+                        ? undefined
+                        : {
+                            saved: isSaved(listing.id),
+                            onToggle: () => toggleSaved(listing.id),
+                          }
+                    }
+                  />
+                </div>
+              ))}
         </div>
       </div>
 
-      {/* Map pane — fixed/sticky, fills all remaining width and the
-          full available height, never scrolls with the grid. Always
-          side-by-side (left grid / right map), never stacked
-          top/bottom at any viewport width. */}
-      <div className="relative min-h-0 flex-1 p-5">
-        <div className="rounded-xl overflow-hidden border w-full h-full">
+      {/* Map pane — desktop: fills the right half, never scrolls.
+          Mobile: fills the whole area under the header. */}
+      <div className="relative min-h-0 flex-1 md:p-5">
+        <div className="h-full w-full overflow-hidden md:rounded-xl md:border">
           <DiscoveryMap
             // Type-filtered too — markers must match the grid, or the
             // hover-sync cross-referencing breaks (pin with no card).
@@ -118,24 +183,118 @@ export function DiscoverySplitView({ listings, gridHeader, listingType, focusLoc
               setSelectedListingId(id);
               setSelectedPoi(null);
               // Scroll the matching card into view rather than
-            // navigating immediately — clicking a pin is closer to
-            // "show me that one" than "commit to that one," matching
-            // the split-pane's whole point of letting a visitor
-            // cross-reference before opening a listing.
-            const el = document.getElementById(`listing-card-${id}`);
-            el?.scrollIntoView({ behavior: "smooth", block: "center" });
-          }}
-          onMarkerHover={setHoveredId}
-          onPoiClick={(place) => {
-            setSelectedPoi(place);
-            setSelectedListingId(null);
-          }}
-          onClosePreview={() => {
-            setSelectedListingId(null);
-            setSelectedPoi(null);
-          }}
-        /></div>
+              // navigating immediately — clicking a pin is closer to
+              // "show me that one" than "commit to that one". On
+              // mobile the card list is hidden behind the map, so
+              // the map's own preview card does that job instead.
+              const el = document.getElementById(`listing-card-${id}`);
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+            }}
+            onMarkerHover={setHoveredId}
+            onPoiClick={(place) => {
+              setSelectedPoi(place);
+              setSelectedListingId(null);
+            }}
+            onClosePreview={() => {
+              setSelectedListingId(null);
+              setSelectedPoi(null);
+            }}
+          />
+        </div>
+
+        {/* Figma "Default Mobile - Map - No Pins": floating notice. */}
+        {count === 0 && (
+          <p className="pointer-events-none absolute bottom-24 left-1/2 z-10 -translate-x-1/2 rounded-full border bg-white px-3 py-3 text-sm font-medium whitespace-nowrap text-black/80 shadow-md md:hidden">
+            No Listings Available
+          </p>
+        )}
+
+        {/* Figma "Default Mobile - Map": sheet peek at the bottom.
+            Tap or drag it up to open the list (onClick keeps it
+            keyboard-operable; a tap opening twice is harmless). */}
+        <button
+          type="button"
+          onClick={showGrid}
+          {...bind("open")}
+          className="absolute inset-x-0 bottom-0 z-10 flex touch-none flex-col items-center gap-2 rounded-t-2xl bg-white pt-2 pb-5 shadow-[0_2px_6px_2px_rgba(0,0,0,0.15)] md:hidden"
+        >
+          <SheetHandle />
+          <span className="text-sm font-medium text-black/80">
+            {count === 0
+              ? "0 Places available"
+              : `${count} Place${count === 1 ? "" : "s"}${city ? ` in ${city}` : " to stay"}`}
+          </span>
+        </button>
+      </div>
+
+      {/* Figma Grid/Map switch — floats over the open list sheet on
+          mobile. Fades up with the sheet; the white pill slides to the
+          tapped option before the sheet closes. */}
+      <div
+        inert={!sheetOpen ? true : undefined}
+        className={cn(
+          "absolute bottom-8 left-1/2 z-30 -translate-x-1/2 rounded-full border bg-white p-1.5 shadow-[0_4px_2px_rgba(0,0,0,0.25)] transition-all duration-300 ease-out motion-reduce:transition-none md:hidden",
+          sheetOpen && !drag ? "opacity-100" : "pointer-events-none translate-y-4 opacity-0",
+        )}
+      >
+        <div className="relative grid grid-cols-2">
+          <span
+            aria-hidden
+            className={cn(
+              "absolute inset-y-0 left-0 w-1/2 rounded-full bg-white shadow-[0_4px_4px_rgba(0,0,0,0.16),inset_0_-2px_4px_rgba(0,0,0,0.08)] transition-transform duration-200 ease-out motion-reduce:transition-none",
+              pill === "map" && "translate-x-full",
+            )}
+          />
+          <ViewSwitchButton
+            active={pill === "grid"}
+            icon={<LayoutGrid className="size-3" />}
+            label="Grid"
+            onClick={showGrid}
+          />
+          <ViewSwitchButton
+            active={pill === "map"}
+            icon={<MapIcon className="size-3.5" />}
+            label="Map"
+            onClick={showMap}
+          />
+        </div>
       </div>
     </div>
+  );
+}
+
+function SheetHandle({ className }: { className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("mx-auto mt-2 block h-[5px] w-[58px] shrink-0 rounded-full bg-neutral-300", className)}
+    />
+  );
+}
+
+function ViewSwitchButton({
+  active = false,
+  icon,
+  label,
+  onClick,
+}: {
+  active?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "relative flex items-center justify-center gap-1 rounded-full px-4 py-2.5 text-xs font-medium transition-colors",
+        active ? "text-black" : "text-black/60",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   );
 }

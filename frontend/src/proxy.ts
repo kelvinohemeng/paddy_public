@@ -96,6 +96,17 @@ export async function proxy(request: NextRequest) {
     }
     return response;
   } catch {
+    // Public listing pages (/homes/:id) only forward the token to show
+    // unlock state — a dead session there should fall back to anonymous
+    // browsing, never bounce a visitor to /login. Clear the stale
+    // cookies so the page's server fetch goes out without a dead token
+    // (which the backend would 401 even on public endpoints).
+    if (!request.nextUrl.pathname.startsWith("/dashboard")) {
+      const response = NextResponse.next();
+      response.cookies.set(ACCESS_COOKIE, "", { path: "/", maxAge: 0 });
+      response.cookies.set(REFRESH_COOKIE, "", { path: "/", maxAge: 0 });
+      return response;
+    }
     // Refresh dead too (logged out elsewhere, refresh expired, backend
     // down-and-responding-4xx). Clear BOTH cookies and send to /login:
     // with no cookies the login page renders a REAL form instead of
@@ -113,8 +124,10 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Scoped to the gated section only. Public pages never carry a
-  // session requirement, so running refresh logic there would just add
-  // latency — and if new gated sections appear later, add them here.
-  matcher: ["/dashboard/:path*"],
+  // The gated section, plus listing detail pages: those server-render
+  // with the viewer's token (unlock state), and a token that expired
+  // after SimpleJWT's 5 minutes made the backend 401 — which the page
+  // showed as "Listing not found". Other public pages fetch
+  // anonymously and don't need this.
+  matcher: ["/dashboard/:path*", "/homes/:id"],
 };

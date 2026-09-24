@@ -3,7 +3,6 @@ import { Suspense } from "react";
 import { DiscoveryHeader, RentBuyToggle } from "./../_components/discovery-header";
 import { SearchPill } from "./../_components/search-pill";
 import { DiscoverySplitView } from "./../_components/discovery-split-view";
-import { DiscoveryResultsBar } from "./../_components/discovery-results-bar";
 import { DiscoveryFallbackNotice } from "./../_components/discovery-fallback-notice";
 import type { PublicListing } from "./../_components/discovery-listing-card";
 import { DISCOVERY_PATH } from "./../_components/discovery-path";
@@ -18,17 +17,27 @@ import { DISCOVERY_PATH } from "./../_components/discovery-path";
 // header) and 60s revalidation. `city`/`max_price` are forwarded to
 // the backend; `listing_type` is deliberately NOT (no such backend
 // param) — DiscoverySplitView filters the fetched rows in the browser
-// instead. `filters` toggles amenity-chip UI that doesn't exist yet —
-// the button writes harmless URL state until it does.
+// instead. `filters=open` shows the amenity-chip row (Figma "Filter
+// Expanded"); picked chips arrive here as `amenities` and are forwarded.
 
 type SearchParams = Promise<{
   city?: string;
   max_price?: string;
   advance_rent_period?: string;
   listing_type?: string;
+  amenities?: string | string[];
 }>;
 
 async function fetchListings(searchParams: Awaited<SearchParams>) {
+  // Filter-row amenity chips (?amenities=wifi&amenities=pool) — the
+  // backend keeps listings having ANY of them. Kept on the city
+  // fallback too, like advance period and price cap.
+  const amenities = [searchParams.amenities ?? []].flat();
+  function withAmenities(params: URLSearchParams) {
+    amenities.forEach((slug) => params.append("amenities", slug));
+    return params;
+  }
+
   const filteredParams = new URLSearchParams();
   if (searchParams.city) filteredParams.set("city", searchParams.city);
   if (searchParams.advance_rent_period)
@@ -49,7 +58,7 @@ async function fetchListings(searchParams: Awaited<SearchParams>) {
     return (Array.isArray(data) ? data : (data.results ?? [])) as PublicListing[];
   }
 
-  const filtered = await get(filteredParams);
+  const filtered = await get(withAmenities(filteredParams));
   if (filtered.length > 0 || !searchParams.city) {
     return { listings: filtered, cityFallback: false };
   }
@@ -64,7 +73,7 @@ async function fetchListings(searchParams: Awaited<SearchParams>) {
     fallbackParams.set("advance_rent_period", searchParams.advance_rent_period);
   if (searchParams.max_price)
     fallbackParams.set("max_price", searchParams.max_price);
-  return { listings: await get(fallbackParams), cityFallback: true };
+  return { listings: await get(withAmenities(fallbackParams)), cityFallback: true };
 }
 
 export default async function HomesHubPage({
@@ -82,8 +91,8 @@ export default async function HomesHubPage({
 
   return (
     <div className="flex h-svh flex-col overflow-hidden">
-      <header className="shrink-0 border-b p-4">
-        <div className="mx-auto max-w-6xl space-y-4">
+      <header className="shrink-0 border-b p-3 md:p-4">
+        <div className="mx-auto max-w-6xl space-y-3 md:space-y-4">
           <DiscoveryHeader />
           <div className="flex flex-col items-center justify-center">
             <Suspense fallback={<div className="h-9" />}>
@@ -103,13 +112,11 @@ export default async function HomesHubPage({
         listings={listings}
         listingType={listingType}
         focusLocation={params.city ?? null}
-        gridHeader={
-          <div className="space-y-2 ">
-            {cityFallback && params.city && (
-              <DiscoveryFallbackNotice city={params.city} />
-            )}
-            <DiscoveryResultsBar count={listings.length} city={params.city} />
-          </div>
+        city={params.city}
+        notice={
+          cityFallback && params.city ? (
+            <DiscoveryFallbackNotice city={params.city} />
+          ) : undefined
         }
       />
     </div>

@@ -82,9 +82,12 @@ export function SearchPill({
   return (
     <form
       onSubmit={handleSubmit}
-      className="bg-background mx-auto flex w-full max-w-2xl flex-col gap-2 rounded-xl border p-1.5 shadow-sm sm:flex-row sm:items-center"
+      className="bg-background mx-auto flex w-full max-w-2xl flex-wrap items-center gap-1 rounded-xl border p-1.5 shadow-sm sm:flex-nowrap sm:gap-2"
     >
-      <div className="flex flex-1 items-center rounded-full px-4 py-2 outline-none focus-within:outline-none">
+      {/* Mobile (Figma "Default Mobile"): Where takes its own row, the
+          rest share the second — keeps Budget reachable on phones
+          instead of dropping it like the 380px frame does. */}
+      <div className="flex basis-full items-center rounded-full px-3 py-1.5 outline-none focus-within:outline-none sm:flex-1 sm:basis-auto sm:px-4 sm:py-2">
         <PlaceAutocompleteInput
           value={city}
           onChange={setCity}
@@ -107,7 +110,7 @@ export function SearchPill({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="hover:bg-muted flex flex-1 items-center gap-2 rounded-full px-4 py-2 text-left"
+            className="hover:bg-muted flex flex-1 items-center gap-2 rounded-full px-3 py-2 text-left sm:px-4"
           >
             <CalendarClock className="text-muted-foreground size-4 shrink-0" />
             <span className="text-sm">
@@ -161,10 +164,10 @@ export function SearchPill({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="hover:bg-muted flex flex-1 items-center gap-2 rounded-full px-4 py-2 text-left"
+            className="hover:bg-muted flex flex-1 items-center gap-2 rounded-full px-3 py-2 text-left sm:px-4"
           >
             <Coins className="text-muted-foreground size-4 shrink-0" />
-            <span className="text-sm">
+            <span className="text-sm whitespace-nowrap">
               {maxPrice ? `Up to GHS ${maxPrice}/mo` : "Price cap"}
             </span>
           </button>

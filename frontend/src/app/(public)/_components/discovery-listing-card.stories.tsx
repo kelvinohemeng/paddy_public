@@ -14,9 +14,9 @@ import {
 // archived), so those two variants have nothing to render from yet.
 // Open decision with design: what maps to them before building stories.
 //
-// NOTE: the SaveToggle heart is visual-only in isolation — clicking it
-// calls the real save endpoint via authedFetch, which has no session
-// inside Storybook and fails gracefully into the toggle's error text.
+// NOTE: the heart is presentational (FavoriteButton) — state and the
+// save request live in useSavedListings, so stories pass a no-op
+// onToggle and toggling here only proves the button renders.
 
 const baseListing: PublicListing = {
   id: 42,
@@ -60,14 +60,14 @@ type Story = StoryObj<typeof DiscoveryListingCard>;
 export const Default: Story = {
   args: {
     listing: { ...baseListing },
-    showSaveToggle: false,
+    favorite: { saved: false, onToggle: () => {} },
   },
 };
 
 export const Saved: Story = {
   args: {
-    listing: { ...baseListing, is_saved: true },
-    showSaveToggle: true,
+    listing: { ...baseListing },
+    favorite: { saved: true, onToggle: () => {} },
   },
 };
 
@@ -83,19 +83,25 @@ export const Verified: Story = {
         { id: 2, name: "Backup power", slug: "backup-power" },
       ],
     },
-    showSaveToggle: true,
+    favorite: { saved: true, onToggle: () => {} },
+  },
+};
+
+// Landlords/staff (and anyone the page opts out) get no heart at all.
+export const NoFavorite: Story = {
+  args: {
+    listing: { ...baseListing },
   },
 };
 
 // The single CssCheck for the project: the "1yr advance" pill uses
-// text-[10px] — fails if Tailwind / globals.css did not load in preview.
+// text-[11px] — fails if Tailwind / globals.css did not load in preview.
 export const CssCheck: Story = {
   args: {
     listing: { ...baseListing },
-    showSaveToggle: false,
   },
   play: async ({ canvas }) => {
     const pill = canvas.getByText("1yr advance");
-    await expect(getComputedStyle(pill).fontSize).toBe("10px");
+    await expect(getComputedStyle(pill).fontSize).toBe("11px");
   },
 };
