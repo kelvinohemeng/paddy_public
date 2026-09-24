@@ -119,6 +119,84 @@ class InitiateSubscriptionTests(APITestCase):
         # would be tested via mocking in a more thorough test suite
 
 
+class InitiateListingUnlockTests(APITestCase):
+    # The one-off unlock charge has NO Paystack plan attached, so the
+    # amount we send is exactly what gets charged — these tests pin
+    # that amount to settings.LISTING_UNLOCK_PRICE_PESEWAS and prove a
+    # client-supplied amount is ignored
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='unlock-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Unlock Renter')
+
+        self.landlord_user = User.objects.create_user(
+            email='unlock-landlord@example.com', password='pass123456', role='landlord'
+        )
+        landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Unlock Landlord',
+            national_id_number='GHA-77', preferred_payout_method='momo'
+        )
+
+        from listings.models import Listing
+        self.listing = Listing.objects.create(
+            landlord_profile=landlord_profile,
+            title='Unlock listing', description='Test', listing_type='rent',
+            price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Unlock Rd',
+            neighborhood='Osu', city='Accra',
+        )
+
+    @override_settings(LISTING_UNLOCK_PRICE_PESEWAS=1234)
+    # A distinctive value, so the assertion can only pass if the view
+    # really reads the setting (not a hardcoded 500 or the request body)
+    @patch('payments.paystack.initialize_transaction')
+    def test_unlock_charges_settings_price_not_request_amount(self, mock_init):
+        mock_init.return_value = {
+            'status': True,
+            'data': {'authorization_url': 'https://paystack.test/x', 'reference': 'ref_unlock'},
+        }
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(
+            '/payments/unlock-listing/',
+            {'listing_id': self.listing.id, 'amount_kobo': 1, 'amount': 1,
+             'callback_url': 'http://x.com'},
+            # amount_kobo/amount = 1 — a malicious client trying to
+            # unlock for a single pesewa; the view must ignore both
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_init.assert_called_once()
+        kwargs = mock_init.call_args.kwargs
+        self.assertEqual(kwargs['amount_kobo'], settings.LISTING_UNLOCK_PRICE_PESEWAS)
+        self.assertEqual(kwargs['amount_kobo'], 1234)
+        self.assertIsNone(kwargs.get('plan_code'))
+        self.assertEqual(kwargs['metadata']['purpose'], 'listing_unlock')
+        self.assertEqual(kwargs['metadata']['listing_id'], self.listing.id)
+        self.assertEqual(kwargs['metadata']['user_id'], self.renter_user.id)
+
+    def test_default_unlock_price_is_an_int(self):
+        # The setting must exist and be a real int in pesewas — its
+        # accidental removal once made every unlock raise AttributeError
+        self.assertIsInstance(settings.LISTING_UNLOCK_PRICE_PESEWAS, int)
+        self.assertGreater(settings.LISTING_UNLOCK_PRICE_PESEWAS, 0)
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_already_unlocked_listing_does_not_call_paystack(self, mock_init):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(
+            '/payments/unlock-listing/', {'listing_id': self.listing.id}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_init.assert_not_called()
+
+
 class MySubscriptionTests(APITestCase):
 
     def setUp(self):
