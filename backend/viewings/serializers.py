@@ -1,3 +1,4 @@
+from django.utils import timezone
 from rest_framework import serializers
 from .models import Viewing
 
@@ -29,3 +30,11 @@ class ViewingSerializer(serializers.ModelSerializer):
         # status — transitions (requested -> scheduled -> completed/
         # cancelled_no_show) are controlled by specific view actions, not
         # a free-form field any client can set to anything
+
+    def validate_scheduled_at(self, value):
+        # The frontend date picker already blocks past dates, but the API
+        # must not trust the client — a direct POST could otherwise book
+        # a viewing in the past
+        if value <= timezone.now():
+            raise serializers.ValidationError('Viewing must be scheduled in the future.')
+        return value

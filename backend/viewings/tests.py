@@ -8,9 +8,22 @@ from django.core import mail
 # lets us verify emails were genuinely sent, and inspect their contents,
 # without hitting a real inbox or even the console
 
+from datetime import timedelta
+from unittest.mock import patch
+
+from anymail.exceptions import AnymailRequestsAPIError
+from django.utils import timezone
+
 from accounts.models import User, RenterProfile, LandlordProfile, StaffProfile
 from listings.models import Listing
 from .models import Viewing
+
+
+def future_scheduled_at():
+    # Relative to "now" rather than a hardcoded date — scheduled_at must
+    # be in the future (ViewingSerializer.validate_scheduled_at), so a
+    # fixed date would make these tests start failing once it passes
+    return (timezone.now() + timedelta(days=7)).isoformat()
 
 
 class ViewingCreateTests(APITestCase):
@@ -47,7 +60,7 @@ class ViewingCreateTests(APITestCase):
 
         data = {
             'listing': self.listing.id,
-            'scheduled_at': '2026-10-01T14:00:00Z',
+            'scheduled_at': future_scheduled_at(),
         }
 
         response = self.client.post('/viewings/', data, format='json')
@@ -74,7 +87,7 @@ class ViewingCreateTests(APITestCase):
 
         data = {
             'listing': self.listing.id,
-            'scheduled_at': '2026-10-01T14:00:00Z',
+            'scheduled_at': future_scheduled_at(),
         }
 
         response = self.client.post('/viewings/', data, format='json')
@@ -98,7 +111,7 @@ class ViewingCreateTests(APITestCase):
 
         data = {
             'listing': self.listing.id,
-            'scheduled_at': '2026-10-01T14:00:00Z',
+            'scheduled_at': future_scheduled_at(),
             'staff_profile': staff_profile.id,
             'status': 'completed',
             # Attempting to sneak these in, even though the serializer
@@ -126,10 +139,14 @@ class ViewingCreateTests(APITestCase):
 
         data = {
             'listing': self.listing.id,
-            'scheduled_at': '2026-10-01T14:00:00Z',
+            'scheduled_at': future_scheduled_at(),
         }
 
-        response = self.client.post('/viewings/', data, format='json')
+        with self.captureOnCommitCallbacks(execute=True):
+            # The email is sent via transaction.on_commit — TestCase wraps
+            # each test in a transaction that never commits, so the
+            # callbacks have to be captured and run explicitly
+            response = self.client.post('/viewings/', data, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         self.assertEqual(len(mail.outbox), 1)
@@ -165,6 +182,44 @@ class ViewingCreateTests(APITestCase):
         # exists with the right name" — this is the part that would
         # silently break if build_ics_content had a typo in the format
 
+
+    def test_email_failure_still_returns_201_with_one_viewing(self):
+        # A Resend outage must not turn a successful booking into a 500 —
+        # otherwise the renter retries and creates duplicate viewings
+
+        self.client.force_authenticate(user=self.renter_user)
+
+        data = {
+            'listing': self.listing.id,
+            'scheduled_at': future_scheduled_at(),
+        }
+
+        with patch(
+            'viewings.views.send_viewing_confirmation_email',
+            side_effect=AnymailRequestsAPIError('Resend unreachable'),
+        ) as mock_send:
+            with self.assertLogs('viewings.views', level='ERROR'):
+                with self.captureOnCommitCallbacks(execute=True):
+                    response = self.client.post('/viewings/', data, format='json')
+
+        mock_send.assert_called_once()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Viewing.objects.filter(listing=self.listing).count(), 1)
+        self.assertEqual(response.data['id'], Viewing.objects.get(listing=self.listing).id)
+
+    def test_past_scheduled_at_is_rejected(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        data = {
+            'listing': self.listing.id,
+            'scheduled_at': (timezone.now() - timedelta(days=1)).isoformat(),
+        }
+
+        response = self.client.post('/viewings/', data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('scheduled_at', response.data)
+        self.assertFalse(Viewing.objects.exists())
 
 class ViewingVisibilityTests(APITestCase):
     # Covers the three-way get_queryset split — staff/landlord/renter

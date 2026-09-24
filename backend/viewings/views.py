@@ -2,7 +2,10 @@ from rest_framework import viewsets, status
 # Same imports as ListingViewSet — viewsets for ModelViewSet, status for
 # readable HTTP status codes
 
+import logging
+
 from django.conf import settings
+from django.db import transaction
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -25,6 +28,9 @@ from django.core.mail import EmailMessage
 from .models import Viewing
 from .serializers import ViewingSerializer
 from accounts.models import User
+
+logger = logging.getLogger(__name__)
+# Same per-module logger pattern as accounts/views.py
 
 
 def build_ics_content(viewing):
@@ -205,11 +211,26 @@ class ViewingViewSet(viewsets.ModelViewSet):
         # Viewing object, with a real .id and .scheduled_at, to build the
         # confirmation email below
 
-        send_viewing_confirmation_email(viewing)
-        # Fire the confirmation email right after the viewing is
-        # successfully saved — same call-site pattern as
-        # send_verification_email(user) running right after
-        # serializer.save() in accounts/views.py's register()
+        transaction.on_commit(lambda: self._send_confirmation_safely(viewing))
+        # Fire the confirmation email only once the Viewing row is
+        # actually committed — on_commit runs the callback immediately
+        # in autocommit mode, or after the surrounding transaction
+        # commits if there is one (and never, if it rolls back)
+
+    def _send_confirmation_safely(self, viewing):
+        try:
+            send_viewing_confirmation_email(viewing)
+        except Exception:
+            # Same non-fatal-email-failure reasoning as register() in
+            # accounts/views.py: the Viewing is already committed, so a
+            # Resend outage (e.g. AnymailRequestsAPIError) must not turn
+            # into a 500 — the renter would see "Could not request this
+            # viewing", retry, and create a duplicate viewing
+            logger.exception(
+                "Failed to send viewing confirmation email for viewing id %s "
+                "— viewing was still created successfully.",
+                viewing.id,
+            )
 
     @action(detail=True, methods=['post'], url_path='assign-staff')
     # @action = a custom endpoint beyond the standard 5, same tool we used
