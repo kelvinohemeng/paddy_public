@@ -85,6 +85,7 @@ class ListingSerializer(serializers.ModelSerializer):
         # the frontend a safe yes/no without exposing WHO verified it.
         extra_kwargs = {
             'status': {'read_only': True},
+            'slug': {'read_only': True},
         }
         # read_only (not writable) — THE load-bearing half of exposing
         # status safely. Without this, removing status from exclude

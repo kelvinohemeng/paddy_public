@@ -30,6 +30,7 @@ from accounts.permissions import require_verified_email
 from core.models import Amenity
 from .serializers import ListingSerializer, ListingPhotoSerializer, SavedListingSerializer
 from .location_privacy import snap_bbox
+from django.shortcuts import get_object_or_404
 
 
 class ListingViewSet(viewsets.ModelViewSet):
@@ -54,9 +55,9 @@ class ListingViewSet(viewsets.ModelViewSet):
     # visitors — this line alone does NOT unblock them.
 
     def get_permissions(self):
-        # Per-action permissions — list/retrieve (browsing the
-        # marketplace and viewing one listing) are opened to everyone,
-        # matching the actual product decision: browsing is free,
+        # Per-action permissions — list/retrieve/by_slug (browsing the
+        # marketplace and viewing one listing, by id OR by slug) are opened
+        # to everyone, matching the actual product decision: browsing is free,
         # precise address + landlord contact stay gated behind
         # pay-to-unlock (ListingSerializer._has_access already returns
         # False for anonymous requests, so nothing sensitive leaks —
@@ -64,7 +65,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         # not what a given caller sees once they're in it).
         # Every other action (create/update/destroy/photos) keeps
         # requiring login, via the class-level permission_classes above.
-        if self.action in ('list', 'retrieve'):
+        if self.action in ('list', 'retrieve', 'by_slug'):
             return [AllowAny()]
         return super().get_permissions()
 
@@ -410,6 +411,33 @@ class ListingViewSet(viewsets.ModelViewSet):
         # fields of the same listing at the same moment.
 
         return Response(self.get_serializer(listing).data)
+
+
+    @action(detail=False, methods=['get'], url_path=r'by-slug/(?P<slug>[-\w]+)')
+    def by_slug(self, request, slug=None):
+        # GET /listings/by-slug/<slug>/ — the public listing page's lookup.
+        #
+        # detail=False — a "list-level" action (URL is /listings/by-slug/...,
+        # not /listings/<id>/...). The router checks list-level URLs before
+        # id-based ones, so "by-slug" is never mistaken for a listing id.
+        #
+        # url_path is a regular expression: (?P<slug>[-\w]+) captures the
+        # piece after by-slug/ and hands it to this method as `slug`.
+        # [-\w]+ = one or more letters, digits, underscores or hyphens —
+        # exactly the characters a SlugField allows.
+        listing = get_object_or_404(self.get_queryset(), slug=slug)
+        # self.get_queryset() is the SAME per-role visibility used by
+        # GET /listings/<id>/: the public only finds published listings,
+        # owners also find their own drafts, staff find everything. So
+        # looking up by slug can never reveal a listing that looking up
+        # by id wouldn't.
+        # get_object_or_404 = "find exactly one, or answer 404 Not Found".
+        return Response(self.get_serializer(listing).data)
+        # self.get_serializer passes the request along, so the unlock
+        # gating (address, landlord contact, exact location) works exactly
+        # as it does for the id lookup.
+
+
 
     @action(detail=True, methods=['post'], url_path='restore')
     def restore(self, request, pk=None):

@@ -2261,3 +2261,73 @@ class ListingLifecycleRuleTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(self.listing.photos.count(), 0)
+
+
+class ListingSlugTests(APITestCase):
+
+    def setUp(self):
+        landlord = User.objects.create_user(
+            email='slug-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=landlord, full_name='Slug Landlord',
+            national_id_number='GHA-S1', preferred_payout_method='momo'
+        )
+
+    def _listing(self, title, status=Listing.Status.PUBLISHED):
+        # Every listing made here is in Osu, Accra — so every slug below
+        # ends with "-osu" (the neighbourhood the slug rule appends).
+        return Listing.objects.create(
+            landlord_profile=self.landlord_profile, title=title, description='Test',
+            listing_type='rent', price_monthly='1000.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Slug Rd',
+            neighborhood='Osu', city='Accra', status=status,
+        )
+
+    def test_slug_is_built_from_title_and_neighbourhood(self):
+        listing = self._listing('Modern 2-bedroom – East Legon!')
+
+        self.assertEqual(listing.slug, 'modern-2-bedroom-east-legon-osu')
+        # "East Legon" comes from the TITLE; "osu" is the listing's actual
+        # neighbourhood field, appended by the rule.
+
+    def test_duplicate_titles_get_numbered_slugs(self):
+        first = self._listing('Cozy Studio')
+        second = self._listing('Cozy Studio')
+
+        self.assertEqual(first.slug, 'cozy-studio-osu')
+        self.assertEqual(second.slug, 'cozy-studio-osu-2')
+
+    def test_editing_title_keeps_slug(self):
+        listing = self._listing('Old Title')
+        listing.title = 'Brand New Title'
+        listing.save()
+
+        listing.refresh_from_db()
+        self.assertEqual(listing.slug, 'old-title-osu')
+
+    def test_public_lookup_by_slug(self):
+        listing = self._listing('Findable Flat')
+
+        response = self.client.get('/listings/by-slug/findable-flat-osu/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], listing.id)
+        self.assertIsNone(response.data['address_precise'])
+        # Still locked for an anonymous visitor.
+
+    def test_draft_is_not_found_by_slug_for_public(self):
+        self._listing('Hidden Draft', status=Listing.Status.DRAFT)
+
+        response = self.client.get('/listings/by-slug/hidden-draft-osu/')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_slug_cannot_be_set_through_api(self):
+        listing = self._listing('Locked Slug')
+        self.client.force_authenticate(user=self.landlord_profile.user)
+
+        self.client.patch(f'/listings/{listing.id}/', {'slug': 'my-own-slug'}, format='json')
+
+        listing.refresh_from_db()
+        self.assertEqual(listing.slug, 'locked-slug-osu')

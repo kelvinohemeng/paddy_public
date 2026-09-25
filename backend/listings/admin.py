@@ -90,7 +90,7 @@ class ListingAdmin(ModelAdmin):
     # form class above, instead of auto-generating a default one —
     # this is the actual wiring that makes the widget override apply
 
-    list_display = ['title', 'city', 'neighborhood', 'status', 'landlord_profile', 'price_monthly']
+    list_display = ['title','slug','city', 'neighborhood', 'status', 'landlord_profile', 'price_monthly']
     # Also adding this now while we're in here — same reasoning as
     # payments/admin.py's LandlordSubscriptionAdmin: without
     # list_display, admin's list view only shows Listing's __str__
@@ -99,7 +99,12 @@ class ListingAdmin(ModelAdmin):
     # just seeded, by eye
 
     list_filter = ['status', 'city', 'listing_type']
-    search_fields = ['title', 'neighborhood', 'city']
+    search_fields = ['title', 'slug', 'neighborhood', 'city']
+
+    prepopulated_fields = {'slug': ('title', 'neighborhood')}
+    # Admin-only convenience: on the "add listing" page, typing a title
+    # fills the slug box live with a suggestion, which staff can edit
+    # before saving. On existing listings it leaves the slug alone.
 
 
 @admin.register(ListingPhoto)

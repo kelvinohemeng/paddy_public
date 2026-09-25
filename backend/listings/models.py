@@ -10,7 +10,7 @@ from core.models import Amenity
 
 from accounts.models import LandlordProfile, StaffProfile
 from django.core.validators import FileExtensionValidator
-
+from django.utils.text import slugify
 
 
 class Listing(models.Model):
@@ -35,6 +35,7 @@ class Listing(models.Model):
     # sense, since a brand new listing has no verifying staff member YET
 
     title = models.CharField(max_length=200)
+    slug = models.SlugField(max_length=220, unique=True, blank=True)
     description = models.TextField()
     # TextField again, same reasoning as About Me earlier — long-form,
     # not length-capped like CharField
@@ -42,7 +43,7 @@ class Listing(models.Model):
     class ListingType(models.TextChoices):
         RENT = 'rent', 'Rent'
         BUY = 'buy', 'Buy'
-    
+
 
     class AdvanceRentPeriod(models.TextChoices):
         NONE = 'none', 'None'
@@ -54,7 +55,7 @@ class Listing(models.Model):
     listing_type = models.CharField(max_length=10, choices=ListingType.choices, default=ListingType.RENT)
     price_monthly = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     price_one_time = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    
+
     advance_rent_period = models.CharField(
         max_length=10, choices=AdvanceRentPeriod.choices, null=True, blank=True
     )
@@ -69,7 +70,7 @@ class Listing(models.Model):
     amenities= models.ManyToManyField(Amenity, related_name='listings', blank=True)
     # many-to-many — one listing can have many amenities, and one amenity
     # can be on many listings
-    
+
     location = gis_models.PointField(geography=True, null=True, blank=True)
     # THE geospatial field — this is the actual payoff of the whole
     # Postgres+PostGIS setup from the start of this project.
@@ -129,6 +130,39 @@ class Listing(models.Model):
         elif self.listing_type == self.ListingType.BUY:
             self.price_monthly = None
             self.advance_rent_period = self.AdvanceRentPeriod.NONE
+
+    def save(self, *args, **kwargs):
+        # Django calls save() every time a Listing is created or updated
+        # (Listing.objects.create(), admin saves, serializer.save()...).
+        # Overriding it lets us fill in the slug automatically.
+        if not self.slug:
+            self.slug = self._unique_slug_from_title()
+            # Only when there isn't one yet: a brand-new listing, or staff
+            # cleared the box in admin. An existing slug is never touched.
+        super().save(*args, **kwargs)
+        # super().save() = "now do Django's normal save". Forgetting this
+        # line would mean nothing is ever written to the database.
+
+    def _unique_slug_from_title(self):
+        # slugify() is Django's built-in: "Modern 2-bed – East Legon!"
+        # becomes "modern-2-bed-east-legon" (lowercase, spaces to
+        # hyphens, symbols dropped).
+        # Rule is title + neighborhood only (city is NOT included, so a
+        # listing in Osu, Accra ends "-osu"). Keeping city out keeps slugs
+        # short while neighborhood already disambiguates most cases.
+        base = slugify(f'{self.title} {self.neighborhood}')[:200].strip('-') or 'listing'
+        # [:200] keeps room for a suffix within max_length.
+        # `or 'listing'` covers a title with no usable characters at all.
+
+        candidate = base
+        number = 2
+        while Listing.objects.filter(slug=candidate).exclude(pk=self.pk).exists():
+            candidate = f'{base}-{number}'
+            number += 1
+        # Keep trying base, base-2, base-3... until nobody else has it.
+        # .exclude(pk=self.pk) — don't count THIS listing as a clash
+        # with itself when it's being re-saved.
+        return candidate
 
     def __str__(self):
         return self.title
