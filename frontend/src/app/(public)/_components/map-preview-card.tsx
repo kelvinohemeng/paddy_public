@@ -73,7 +73,7 @@ export function MapPreviewCard({ listing, poi, onClose }: MapPreviewCardProps) {
           <div className="flex items-center justify-between pt-1">
             <span className="text-sm font-bold">{listingPrice(listing)}</span>
             <Link
-              href={`/homes/${listing.id}`}
+              href={`/homes/${listing.slug ?? listing.id}`}
               className="text-primary text-xs font-semibold underline-offset-2 hover:underline"
             >
               View listing →

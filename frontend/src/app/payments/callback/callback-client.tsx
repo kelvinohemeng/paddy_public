@@ -73,13 +73,13 @@ export function PaymentCallbackClient() {
   // Where "done" goes, per purpose:
   function handleDone() {
     if (purpose === "unlock") {
-      const listingId = sessionStorage.getItem("paddy_unlock_listing_id");
+      const returnPath = sessionStorage.getItem("paddy_unlock_listing_id");
       sessionStorage.removeItem("paddy_unlock_listing_id");
-      if (listingId) {
+      if (returnPath?.startsWith("/homes/")) {
         // Fresh full-page load of the detail page — its server fetch now
         // runs WITH the user's token (see homes/[id]/page.tsx) so the
         // unlocked address/contact render server-side immediately.
-        router.push(`/homes/${listingId}`);
+        router.push(returnPath);
         return;
       }
       router.push("/");

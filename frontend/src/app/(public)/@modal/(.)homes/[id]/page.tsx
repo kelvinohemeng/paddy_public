@@ -11,13 +11,15 @@ import { ListingDetailDrawer } from "../../../homes/[id]/_components/listing-det
 export default async function InterceptedListingPreview({
   params,
 }: {
+  // Same [id]-folder note as homes/[id]/page.tsx: key stays `id`,
+  // value is a slug for new links, numeric id for old ones.
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const { listing, isAuthenticated } = await fetchListingForViewer(id);
+  const { id: slug } = await params;
+  const { listing, isAuthenticated } = await fetchListingForViewer(slug);
 
   return (
-    <ListingDetailDrawer listingId={id}>
+    <ListingDetailDrawer listingSlug={slug}>
       {listing ? (
         <ListingDetail listing={listing} isAuthenticated={isAuthenticated} />
       ) : (

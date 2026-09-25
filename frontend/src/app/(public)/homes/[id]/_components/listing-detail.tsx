@@ -25,6 +25,7 @@ function formatPrice(raw: string): string {
 
 export type DetailListing = {
   id: number | string;
+  slug?: string;
   title: string;
   description?: string | null;
   city?: string | null;
@@ -106,7 +107,7 @@ export function ListingDetail({
   }
 
   async function share() {
-    const url = `${window.location.origin}/homes/${listing.id}`;
+    const url = `${window.location.origin}/homes/${listing.slug ?? listing.id}`;
     try {
       if (navigator.share) {
         await navigator.share({ title: listing.title, url });

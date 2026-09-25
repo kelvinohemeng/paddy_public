@@ -41,7 +41,7 @@ export function useUnlockCheckout(listingId: string | number) {
     try {
       // Stash BEFORE the redirect — Paystack's callback will only carry
       // ?reference= (and whatever we baked into the callback path).
-      sessionStorage.setItem("paddy_unlock_listing_id", String(listingId));
+      sessionStorage.setItem("paddy_unlock_listing_id", window.location.pathname);
 
       const init = await startUnlockCheckout({
         listingId,

@@ -26,6 +26,7 @@ function formatPrice(raw: string): string {
 
 export type PublicListing = {
   id: number | string;
+  slug?: string;
   title: string;
   city: string;
   neighborhood: string;
@@ -104,7 +105,7 @@ export function DiscoveryListingCard({
 
   return (
     <Link
-      href={`/homes/${listing.id}`}
+      href={`/homes/${listing.slug ?? listing.id}`}
       id={`listing-card-${listing.id}`}
       onMouseEnter={() => onHover(listing.id)}
       onMouseLeave={() => onHover(null)}

@@ -12,10 +12,10 @@ import { Maximize2, X } from "lucide-react";
 // to close and scroll locking. Closing = router.back(), which returns
 // to /homes with the map and scroll position untouched.
 export function ListingDetailDrawer({
-  listingId,
+  listingSlug,
   children,
 }: {
-  listingId: string;
+  listingSlug: string;
   children: React.ReactNode;
 }) {
   const router = useRouter();
@@ -46,7 +46,7 @@ export function ListingDetailDrawer({
             {/* Plain <a>, not <Link>: a hard navigation skips the
                 interception and loads the full page. */}
             <a
-              href={`/homes/${listingId}`}
+              href={`/homes/${listingSlug}`}
               aria-label="Open full page"
               title="Open full page"
               className="inline-flex size-[34px] items-center justify-center rounded-full transition hover:bg-zinc-100 active:scale-95"

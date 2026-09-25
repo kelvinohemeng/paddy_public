@@ -129,5 +129,5 @@ export const config = {
   // after SimpleJWT's 5 minutes made the backend 401 — which the page
   // showed as "Listing not found". Other public pages fetch
   // anonymously and don't need this.
-  matcher: ["/dashboard/:path*", "/homes/:id"],
+  matcher: ["/dashboard/:path*", "/homes/:slug"],
 };

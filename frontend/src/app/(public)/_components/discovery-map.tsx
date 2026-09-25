@@ -22,6 +22,7 @@ const SEARCH_MIN_LAT_SPAN = 0.25;
 
 export type MapListing = {
   id: number | string;
+  slug?: string;
   title: string;
   location: string | null;
   price_monthly: string | null;

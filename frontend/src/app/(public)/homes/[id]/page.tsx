@@ -24,10 +24,13 @@ import { ListingDetail } from "./_components/listing-detail";
 export default async function PropertyDetailPage({
   params,
 }: {
+  // Folder is still [id], so the key is `id` — the VALUE is now a slug
+  // (new links) or a numeric id (old bookmarks), both handled by
+  // fetchListingForViewer. Renaming the folder to [slug] is a follow-up.
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  const { listing, isAuthenticated } = await fetchListingForViewer(id);
+  const { id: slug } = await params;
+  const { listing, isAuthenticated } = await fetchListingForViewer(slug);
 
   return (
     <div className="min-h-svh bg-white">
