@@ -30,6 +30,7 @@ urlpatterns = [
     path('me/', views.me, name='me'),
     path('onboarding/', views.onboarding, name='onboarding'),
     path('verify-email/', views.verify_email, name='verify_email'),
+    path('verify-email/resend/', views.resend_verification_email, name='resend_verification_email'),
     path('password-reset/', views.request_password_reset, name='password_reset_request'),
     path('password-reset/confirm/', views.confirm_password_reset, name='password_reset_confirm'),
 ]

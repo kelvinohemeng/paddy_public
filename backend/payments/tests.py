@@ -127,7 +127,8 @@ class InitiateListingUnlockTests(APITestCase):
 
     def setUp(self):
         self.renter_user = User.objects.create_user(
-            email='unlock-renter@example.com', password='pass123456', role='renter'
+            email='unlock-renter@example.com', password='pass123456', role='renter',
+            is_verified=True,  # paying requires a verified email
         )
         RenterProfile.objects.create(user=self.renter_user, full_name='Unlock Renter')
 
@@ -145,7 +146,8 @@ class InitiateListingUnlockTests(APITestCase):
             title='Unlock listing', description='Test', listing_type='rent',
             price_monthly='1200.00', advance_rent_period='1_year',
             bedrooms=1, bathrooms=1, address_precise='1 Unlock Rd',
-            neighborhood='Osu', city='Accra',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+            # PUBLISHED — only live listings can be unlocked now.
         )
 
     @override_settings(LISTING_UNLOCK_PRICE_PESEWAS=1234)
@@ -548,7 +550,8 @@ class PaystackClientResilienceTests(APITestCase):
         # module in isolation — confirms a hung Paystack surfaces as a
         # normal 400 error response to the landlord, not a 500.
         landlord_user = User.objects.create_user(
-            email='resilience-landlord@example.com', password='pass123456', role='landlord'
+            email='resilience-landlord@example.com', password='pass123456', role='landlord',
+            is_verified=True,  # paying requires a verified email
         )
         LandlordProfile.objects.create(
             user=landlord_user, full_name='Resilience Landlord',
@@ -614,6 +617,8 @@ class VerifyPaymentTests(APITestCase):
         mock_data = {
             'status': 'success',
             'reference': 'T_UNLOCK_1',
+            'amount': settings.LISTING_UNLOCK_PRICE_PESEWAS,
+            'currency': 'GHS',
             'metadata': {
                 'purpose': 'listing_unlock',
                 'listing_id': self.listing.id,
@@ -681,6 +686,8 @@ class VerifyPaymentTests(APITestCase):
         mock_data = {
             'status': 'success',
             'reference': 'T_UNLOCK_2',
+            'amount': settings.LISTING_UNLOCK_PRICE_PESEWAS,
+            'currency': 'GHS',
             'metadata': {
                 'purpose': 'listing_unlock',
                 'listing_id': self.listing.id,
@@ -696,3 +703,223 @@ class VerifyPaymentTests(APITestCase):
         self.assertEqual(ListingUnlock.objects.filter(
             user=self.renter_user, listing=self.listing
         ).count(), 1)
+
+
+class ForgedChargeTests(APITestCase):
+    # Paystack transactions don't only come from our own initiate_* views:
+    # anyone with our PUBLIC Paystack key (shipped in frontend code) can
+    # start a transaction for any amount, with any metadata, and pay it.
+    # Paystack will then truthfully say "success". These tests make sure
+    # that a cheap self-made charge can't be turned into an unlock or a
+    # re-activated subscription, via either door into
+    # _handle_successful_charge: GET /payments/verify/ or the webhook.
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='forge-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Forge Renter')
+
+        self.landlord_user = User.objects.create_user(
+            email='forge-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Forge Landlord',
+            national_id_number='GHA-77', preferred_payout_method='momo'
+        )
+
+        from listings.models import Listing
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Forge listing', description='Test', listing_type='rent',
+            price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Forge Rd',
+            neighborhood='Osu', city='Accra',
+        )
+
+    def _unlock_charge(self, amount, currency='GHS', reference='T_FORGE'):
+        # Shaped like a real Paystack Transaction: amount in pesewas,
+        # currency code, and the metadata an attacker would copy from our
+        # own initiate_listing_unlock call.
+        return {
+            'status': 'success',
+            'reference': reference,
+            'amount': amount,
+            'currency': currency,
+            'metadata': {
+                'purpose': 'listing_unlock',
+                'listing_id': self.listing.id,
+                'user_id': self.renter_user.id,
+            },
+        }
+
+    def _verify(self, data):
+        self.client.force_authenticate(user=self.renter_user)
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': data}):
+            return self.client.get(f"/payments/verify/?reference={data['reference']}")
+
+    def _unlocked(self):
+        return ListingUnlock.objects.filter(user=self.renter_user, listing=self.listing).exists()
+
+    def test_underpaid_unlock_is_not_granted(self):
+        self._verify(self._unlock_charge(amount=1))
+
+        self.assertFalse(self._unlocked())
+
+    def test_one_pesewa_short_is_not_granted(self):
+        self._verify(self._unlock_charge(amount=settings.LISTING_UNLOCK_PRICE_PESEWAS - 1))
+
+        self.assertFalse(self._unlocked())
+
+    def test_wrong_currency_is_not_granted(self):
+        self._verify(self._unlock_charge(amount=settings.LISTING_UNLOCK_PRICE_PESEWAS, currency='NGN'))
+
+        self.assertFalse(self._unlocked())
+
+    def test_missing_amount_is_not_granted(self):
+        data = self._unlock_charge(amount=None)
+        del data['amount']
+
+        self._verify(data)
+
+        self.assertFalse(self._unlocked())
+
+    def test_full_price_is_granted(self):
+        self._verify(self._unlock_charge(amount=settings.LISTING_UNLOCK_PRICE_PESEWAS))
+
+        self.assertTrue(self._unlocked())
+
+    def test_underpaid_unlock_via_webhook_is_not_granted(self):
+        payload = {'event': 'charge.success', 'data': self._unlock_charge(amount=1)}
+        body = json.dumps(payload).encode('utf-8')
+
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Still 200 — we tell Paystack "received" so it stops retrying an
+        # event we will never act on.
+        self.assertFalse(self._unlocked())
+
+    def test_charge_without_plan_does_not_reactivate_subscription(self):
+        # A landlord whose renewal failed (PAST_DUE) but whose paid
+        # period hasn't ended yet. Before the fix, ANY successful charge
+        # from their email — e.g. a self-made GH¢0.01 charge with no
+        # plan — flipped them back to ACTIVE.
+        subscription = LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile,
+            tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.PAST_DUE,
+            current_period_end=timezone.now() + timedelta(days=10),
+        )
+        data = {
+            'status': 'success',
+            'reference': 'T_NO_PLAN',
+            'amount': 1,
+            'currency': 'GHS',
+            'customer': {'email': self.landlord_user.email},
+        }
+
+        self.client.force_authenticate(user=self.landlord_user)
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': data}):
+            self.client.get('/payments/verify/?reference=T_NO_PLAN')
+
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.status, LandlordSubscription.Status.PAST_DUE)
+        self.assertFalse(subscription.is_active())
+
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+    def test_plan_charge_from_user_without_landlord_profile_does_not_crash(self):
+        # A renter's email on a plan charge (odd, but possible) used to
+        # hit `user.landlordprofile`, which raises for renters — a 500,
+        # which makes Paystack keep re-sending the webhook.
+        payload = {
+            'event': 'charge.success',
+            'data': {
+                'customer': {'email': self.renter_user.email},
+                'plan_object': {'plan_code': 'PLN_agent_test'},
+            },
+        }
+        body = json.dumps(payload).encode('utf-8')
+
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(LandlordSubscription.objects.exists())
+
+
+class PaymentAccessRuleTests(APITestCase):
+    # Verified-email requirement before any payment starts, and unlocks
+    # only for live listings.
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='payrule-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Pay Rule Renter')
+        self.landlord_user = User.objects.create_user(
+            email='payrule-landlord@example.com', password='pass123456', role='landlord'
+        )
+        landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Pay Rule Landlord',
+            national_id_number='GHA-88', preferred_payout_method='momo'
+        )
+        from listings.models import Listing
+        self.Listing = Listing
+        self.listing = Listing.objects.create(
+            landlord_profile=landlord_profile,
+            title='Pay rule listing', description='Test', listing_type='rent',
+            price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Rule Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_unverified_user_cannot_start_unlock(self, mock_init):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post('/payments/unlock-listing/', {'listing_id': self.listing.id}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'email_not_verified')
+        mock_init.assert_not_called()
+        # The important part: Paystack was never contacted, so no
+        # checkout was ever created.
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_unverified_landlord_cannot_start_subscription(self, mock_init):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 25000}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'email_not_verified')
+        mock_init.assert_not_called()
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_cannot_unlock_unpublished_listing(self, mock_init):
+        self.renter_user.is_verified = True
+        self.renter_user.save()
+        self.listing.status = self.Listing.Status.DRAFT
+        self.listing.save()
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post('/payments/unlock-listing/', {'listing_id': self.listing.id}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        mock_init.assert_not_called()
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_non_numeric_listing_id_is_404_not_500(self, mock_init):
+        self.renter_user.is_verified = True
+        self.renter_user.save()
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post('/payments/unlock-listing/', {'listing_id': 'abc'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

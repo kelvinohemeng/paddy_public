@@ -94,8 +94,14 @@ class User(AbstractUser):
     # Automatically updated to "now" every time this row is saved
 
     is_verified = models.BooleanField(default=False)
-    # Our custom verification flag — meaning depends on role (staff auto-true,
-    # landlord verified by staff review, renter via KYC or unverified)
+    # "This person has proven they own this EMAIL address." Set to True
+    # either by clicking the link from send_verification_email
+    # (accounts/views.py verify_email) or at creation for Google sign-ins
+    # (Google already proved the address). Required before paying,
+    # creating listings or requesting viewings — see
+    # accounts/permissions.py require_verified_email.
+    # NOT identity/ID verification — that's LandlordProfile.id_verified,
+    # a separate staff-driven check.
 
     class SignInMethod(models.TextChoices):
         # Same pattern as Role — a namespaced set of valid values

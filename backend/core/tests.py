@@ -116,3 +116,77 @@ class CanonicalAmenitiesMigrationTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data), 11)
+
+
+class AmenityWritePermissionTests(APITestCase):
+    # Who may change the shared amenity list. Reads stay public (covered
+    # by AmenityPublicReadTests above); these cover create/edit/delete
+    # for each role.
+
+    def setUp(self):
+        self.amenity, _ = Amenity.objects.get_or_create(name='Wifi', slug='wifi')
+        self.renter = User.objects.create_user(
+            email='amenity-renter@example.com', password='pass123456', role='renter'
+        )
+        self.landlord = User.objects.create_user(
+            email='amenity-landlord@example.com', password='pass123456', role='landlord'
+        )
+        self.staff = User.objects.create_user(
+            email='amenity-staff@example.com', password='pass123456', role='staff'
+        )
+
+    def test_renter_cannot_create_amenity(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.post('/core/amenities/', {'name': 'Helipad'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(Amenity.objects.filter(name='Helipad').exists())
+
+    def test_landlord_can_create_amenity(self):
+        # The listing form's inline "add amenity" runs as the landlord.
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.post('/core/amenities/', {'name': 'Borehole'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_renter_cannot_rename_amenity(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch(
+            f'/core/amenities/{self.amenity.id}/', {'name': 'Hacked'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.amenity.refresh_from_db()
+        self.assertEqual(self.amenity.name, 'Wifi')
+
+    def test_renter_cannot_delete_amenity(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.delete(f'/core/amenities/{self.amenity.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Amenity.objects.filter(id=self.amenity.id).exists())
+
+    def test_landlord_cannot_delete_amenity(self):
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.delete(f'/core/amenities/{self.amenity.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Amenity.objects.filter(id=self.amenity.id).exists())
+
+    def test_staff_can_delete_amenity(self):
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.delete(f'/core/amenities/{self.amenity.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Amenity.objects.filter(id=self.amenity.id).exists())
+
+    def test_anonymous_cannot_delete_amenity(self):
+        response = self.client.delete(f'/core/amenities/{self.amenity.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

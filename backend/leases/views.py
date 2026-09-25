@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
 
 from accounts.models import User
 from .models import Lease, LeaseRecord
@@ -60,8 +61,16 @@ class LeaseViewSet(viewsets.ModelViewSet):
             # A landlord can't be trusted to pass their own landlord_profile
             # correctly either — force it from who's logged in, same
             # non-negotiable pattern as landlord_profile on Listing.create
-            lease = serializer.save(landlord_profile=user.landlordprofile)
-            self._mark_listing_leased(lease.listing)
+            serializer.save(landlord_profile=user.landlordprofile, status=Lease.Status.PENDING)
+            # status=PENDING — KELVIN'S DECISION (2026-09): a lease a
+            # landlord records only becomes real once the renter confirms
+            # it (see confirm() below). Passing status to save() OVERRIDES
+            # whatever the request body said, so a landlord can't skip the
+            # step by sending "status": "active".
+            #
+            # The listing is NOT flipped to "leased" yet either — that now
+            # happens in confirm(). Otherwise a landlord could take any
+            # listing off Discovery just by naming a random renter.
             return
 
         # Staff AND admin: trust the submitted landlord_profile, but it
@@ -106,11 +115,100 @@ class LeaseViewSet(viewsets.ModelViewSet):
         if user.role == User.Role.LANDLORD and lease.landlord_profile.user != user:
             raise PermissionDenied('You can only edit leases on your own listings')
 
+        for party_field in ('listing', 'renter_profile', 'landlord_profile'):
+            if party_field in serializer.validated_data and (
+                serializer.validated_data[party_field] != getattr(lease, party_field)
+            ):
+                raise PermissionDenied(
+                    'The listing, renter and landlord on a lease can\'t be changed. '
+                    'Record a new lease instead.'
+                )
+        # WHO a lease is between, and for WHICH home, is fixed once it's
+        # recorded. Before this check a landlord could PATCH an existing
+        # lease's `listing` to someone else's listing, or its
+        # `landlord_profile` to another landlord — moving the record out of
+        # their own dashboard and into a stranger's (perform_create checks
+        # ownership, but nothing re-checked it on edit). Blocked for staff
+        # too: a wrong party is fixed by recording a correct lease (and
+        # ending the wrong one), which keeps an honest history.
+        # getattr(lease, 'listing') reads the CURRENT value from the
+        # database row, so re-sending the same value is still allowed.
+
+        new_status = serializer.validated_data.get('status')
+        if new_status is not None and new_status != lease.status and user.role == User.Role.LANDLORD:
+            allowed = (
+                lease.status == Lease.Status.ACTIVE
+                and new_status in (Lease.Status.ENDED, Lease.Status.TERMINATED)
+            )
+            if not allowed:
+                raise PermissionDenied(
+                    'Landlords can only end or terminate an active lease. '
+                    'Only the renter can confirm a pending one.'
+                )
+        # A landlord's only legitimate status change is closing an active
+        # lease (it ran its term, or ended early). Anything else — most
+        # importantly PENDING -> ACTIVE — would let them skip the renter's
+        # confirmation. Staff/admins can still correct any status.
+
         serializer.save()
         # Staff and admin both fall through to the save — staff keeps
         # its existing record-keeping access (narrowing staff out of
         # leases entirely rides with the viewing-redesign brief, not
         # this change), admin gains console edit access.
+
+
+    # ---- Renter confirmation (KELVIN'S DECISION, 2026-09) ----------------
+
+    def _pending_lease_for_renter(self, request):
+        # Shared first half of confirm/decline: find the lease, make sure
+        # the person asking is ITS renter, and that it's still waiting.
+        lease = self.get_object()
+        # get_object() only searches get_queryset() — for a renter that is
+        # only their own leases, so another renter's lease id is a 404
+        # before our own checks even run.
+
+        if request.user.role != User.Role.RENTER or lease.renter_profile.user != request.user:
+            raise PermissionDenied('Only the renter on this lease can respond to it')
+        # Staff/landlords can SEE this lease too; they still can't answer
+        # on the renter's behalf.
+
+        if lease.status != Lease.Status.PENDING:
+            return lease, Response(
+                {'error': 'This lease is not waiting for your confirmation.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return lease, None
+        # Returns a pair (lease, error_response). Python lets a function
+        # return two values at once; the caller unpacks them with
+        # `lease, error = ...` and returns the error if there is one.
+
+    @action(detail=True, methods=['post'], url_path='confirm')
+    def confirm(self, request, pk=None):
+        # POST /leases/<id>/confirm/ — the renter says "yes, this is my
+        # tenancy". Only now does the lease become ACTIVE, and only now is
+        # the listing taken off Discovery as leased.
+        lease, error = self._pending_lease_for_renter(request)
+        if error:
+            return error
+
+        lease.status = Lease.Status.ACTIVE
+        lease.save(update_fields=['status', 'updated_at'])
+        # updated_at is listed because auto_now fields only refresh when
+        # they're included in update_fields.
+        self._mark_listing_leased(lease.listing)
+        return Response(self.get_serializer(lease).data)
+
+    @action(detail=True, methods=['post'], url_path='decline')
+    def decline(self, request, pk=None):
+        # POST /leases/<id>/decline/ — the renter says "this isn't mine".
+        # The row stays (as DECLINED) as a record; the listing is untouched.
+        lease, error = self._pending_lease_for_renter(request)
+        if error:
+            return error
+
+        lease.status = Lease.Status.DECLINED
+        lease.save(update_fields=['status', 'updated_at'])
+        return Response(self.get_serializer(lease).data)
 
 
 class LeaseRecordViewSet(viewsets.ModelViewSet):

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 # hashlib/hmac — Python's standard cryptography toolkit, used here to
 # verify a webhook's signature. json — needed because we verify against
 # the RAW request body bytes, before DRF parses it into request.data
@@ -15,10 +16,16 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 
-from accounts.models import User
+from accounts.models import User, LandlordProfile
+from accounts.permissions import require_verified_email
 from .models import LandlordSubscription, ListingUnlock
 from .serializers import LandlordSubscriptionSerializer
 from . import paystack
+
+logger = logging.getLogger(__name__)
+# Same module-level logger pattern as payments/paystack.py and
+# accounts/views.py — messages are tagged with this module's name
+# ("payments.views"), so they're easy to find in the server logs
 
 
 @api_view(['POST'])
@@ -36,6 +43,13 @@ def initiate_subscription(request):
         return Response(
             {'error': 'Only landlords can subscribe'}, status=status.HTTP_403_FORBIDDEN
         )
+
+    require_verified_email(user, 'start a subscription')
+    # See accounts/permissions.py — no money moves until we know the
+    # email is real (it's where Paystack sends the receipt, and the key
+    # the webhook uses to find this landlord again). This RAISES rather
+    # than returning a Response: @api_view catches DRF exceptions and
+    # turns them into the 403 response for us, same as in a ViewSet.
 
     requested_tier = request.data.get('tier')
     # 'agent' or 'lord' — which paid tier they're trying to upgrade to.
@@ -144,12 +158,25 @@ def initiate_listing_unlock(request):
     # listings/views.py already imports FROM payments, so payments
     # importing FROM listings at module load time would create a loop
 
+    require_verified_email(request.user, 'unlock a listing')
+    # See accounts/permissions.py — same "no payment before a proven
+    # email" rule as initiate_subscription above.
+
     listing_id = request.data.get('listing_id')
 
     try:
-        listing = Listing.objects.get(id=listing_id)
-    except Listing.DoesNotExist:
+        listing = Listing.objects.get(id=listing_id, status=Listing.Status.PUBLISHED)
+    except (Listing.DoesNotExist, ValueError, TypeError):
         return Response({'error': 'Listing not found'}, status=status.HTTP_404_NOT_FOUND)
+    # status=PUBLISHED — only live listings can be paid for. Before this,
+    # someone could pay to unlock a draft, a rejected listing, or a home
+    # that's already leased — paying for contact details of a place they
+    # can't actually rent (and, for drafts, revealing an address staff
+    # haven't verified yet). Treated as "not found" so we don't confirm
+    # to strangers that a hidden listing exists.
+    # ValueError/TypeError — a listing_id like "abc" makes the lookup
+    # itself fail before it can say DoesNotExist; without catching these
+    # that bad input was a 500 instead of a clean 404.
 
     if ListingUnlock.objects.filter(user=request.user, listing=listing).exists():
         return Response(
@@ -195,6 +222,59 @@ initiate_listing_unlock.throttle_scope = 'payments'
 # hammering this endpoint into repeatedly calling Paystack's real API
 
 
+UNLOCK_CURRENCY = 'GHS'
+# Every unlock is priced in Ghana cedis (LISTING_UNLOCK_PRICE_PESEWAS is
+# in pesewas, 1/100 of a cedi). Kept as a named constant rather than a
+# bare 'GHS' string inside the check below, so it's obvious what the
+# price setting is denominated in.
+
+
+def _unlock_charge_paid_in_full(data):
+    # Answers one question: "did the money that ACTUALLY moved cover the
+    # unlock price?" Returns True only if Paystack reports a charge in
+    # GHS for at least LISTING_UNLOCK_PRICE_PESEWAS.
+    #
+    # WHY THIS IS NEEDED — the attack it blocks:
+    # initiate_listing_unlock always asks Paystack for the right price,
+    # but that view is not the only way a Paystack transaction can be
+    # created. Paystack's browser checkout (Paystack Inline) lets anyone
+    # who has our PUBLIC key start a transaction with ANY amount and ANY
+    # metadata they like — and the public key is visible in frontend
+    # code by design. So someone could:
+    #   1. start their own GH¢0.01 transaction with metadata
+    #      {"purpose": "listing_unlock", "listing_id": 42, "user_id": <me>}
+    #   2. pay the pesewa
+    #   3. call GET /payments/verify/?reference=<that reference>
+    # Paystack would truthfully report "status: success", and before this
+    # check we'd grant the unlock because the metadata said so.
+    #
+    # The fix is to trust only the fields Paystack fills in itself from
+    # the real payment: `amount` (always in the smallest currency unit,
+    # i.e. pesewas) and `currency`. Metadata is still used, but only to
+    # know WHICH listing and user the payment was for — never as proof of
+    # payment.
+    #
+    # ">=" rather than "==": if someone somehow paid MORE, they still
+    # paid enough. The case that fails honestly is a price RISE between
+    # a customer starting checkout and finishing it — that's logged by
+    # the caller so staff can grant it by hand.
+    amount = data.get('amount')
+    if not isinstance(amount, int) or isinstance(amount, bool):
+        return False
+    # Paystack sends amount as a whole number (e.g. 500 = GH¢5.00).
+    # Anything else (missing, a string, a float) means we can't be sure
+    # what was paid, so we refuse. `bool` is excluded explicitly because
+    # in Python True/False count as ints (True == 1) — a quirk worth
+    # knowing.
+
+    if data.get('currency') != UNLOCK_CURRENCY:
+        return False
+    # Without this, 500 of some OTHER currency's smallest unit would
+    # pass the amount check below even if it's worth far less.
+
+    return amount >= settings.LISTING_UNLOCK_PRICE_PESEWAS
+
+
 def _handle_successful_charge(data):
     # THE shared core of "a charge genuinely succeeded" handling —
     # extracted so both the webhook's charge.success branch AND the new
@@ -230,6 +310,28 @@ def _handle_successful_charge(data):
             # payload — same "don't fail over it" reasoning as every
             # other not-found case in this file
 
+        if not _unlock_charge_paid_in_full(data):
+            logger.warning(
+                'Refusing listing unlock for reference %s: paid %s %s, expected at least %s GHS pesewas '
+                '(user id %s, listing id %s).',
+                data.get('reference', ''), data.get('amount'), data.get('currency'),
+                settings.LISTING_UNLOCK_PRICE_PESEWAS, user.id, listing.id,
+            )
+            return
+        # SECURITY — never grant an unlock based on metadata alone. See
+        # _unlock_charge_paid_in_full below for the full explanation of
+        # the attack this blocks. In short: metadata says WHAT the payer
+        # wants, but only `amount` + `currency` (filled in by Paystack
+        # itself, from the money that actually moved) say whether they
+        # PAID for it.
+        #
+        # We log a warning instead of raising an error: the caller still
+        # answers Paystack's webhook with 200 (so Paystack stops
+        # retrying an event that will never succeed), and the log line
+        # gives staff the reference to look up if a real customer ever
+        # reports "I paid but nothing unlocked" (e.g. if the price was
+        # raised between their checkout starting and finishing).
+
         ListingUnlock.objects.get_or_create(
             user=user,
             listing=listing,
@@ -247,6 +349,35 @@ def _handle_successful_charge(data):
 
         return
 
+    tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
+    # Paystack includes the plan that was charged directly in the
+    # webhook payload — this is the AUTHORITATIVE source for which
+    # tier to set, rather than us guessing based on amount (which
+    # could change) or trusting anything the frontend claimed
+    # earlier at initiate-time
+
+    if tier is None:
+        return
+    # SECURITY — only a charge made against one of OUR paid plans may
+    # touch a subscription. Previously any successful charge that wasn't
+    # an unlock fell through to here and flipped the payer's
+    # subscription to ACTIVE, even with no plan attached at all. That
+    # mattered because charges don't only come from our own
+    # initiate_* views: anyone holding our Paystack PUBLIC key (it ships
+    # in frontend code, so assume everyone has it) can start their own
+    # transaction for any amount. A landlord whose card had failed
+    # (PAST_DUE, but current_period_end still in the future) could pay
+    # GH¢0.01 with no plan and come back as ACTIVE — i.e. get their paid
+    # listing cap back for a pesewa.
+    #
+    # With a plan attached, Paystack itself enforces the plan's price
+    # (the amount can't be chosen by the payer), so "has a known plan"
+    # is the right test for "this is a genuine subscription payment".
+    #
+    # This return also happens BEFORE any user/landlord lookup, so a
+    # renter's stray non-plan charge no longer crashes on
+    # user.landlordprofile below (renters don't have one).
+
     email = data.get('customer', {}).get('email')
 
     try:
@@ -254,29 +385,28 @@ def _handle_successful_charge(data):
     except User.DoesNotExist:
         return
 
+    landlord_profile = LandlordProfile.objects.filter(user=user).first()
+    if landlord_profile is None:
+        return
+    # .filter(...).first() returns None instead of raising, unlike
+    # `user.landlordprofile`, which raises RelatedObjectDoesNotExist when
+    # the row is missing — that exception was an unhandled 500, and
+    # Paystack keeps re-sending a webhook that 500s. A plan charge from a
+    # user with no landlord profile has nothing to activate, so we just
+    # stop.
+
     subscription, _ = LandlordSubscription.objects.get_or_create(
-        landlord_profile=user.landlordprofile
+        landlord_profile=landlord_profile
     )
     subscription.status = LandlordSubscription.Status.ACTIVE
-    # ACTIVE here means "money genuinely moved" (charge.success only
-    # fires for successful charges, and verify_transaction is only
-    # trusted here when Paystack's own status says success too) — this
-    # is the ONE place a subscription becomes active, never
-    # subscription.create's webhook branch.
+    # ACTIVE here means "money genuinely moved for a real plan"
+    # (charge.success only fires for successful charges, verify_payment
+    # only calls this when Paystack's own status says success, and the
+    # tier check above guarantees a known plan) — this is the ONE place a
+    # subscription becomes active, never subscription.create's webhook
+    # branch.
 
-    tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
-    # Paystack includes the plan that was charged directly in the
-    # webhook payload — this is the AUTHORITATIVE source for which
-    # tier to set, rather than us guessing based on amount (which
-    # could change) or trusting anything the frontend claimed
-    # earlier at initiate-time
-    if tier is not None:
-        subscription.tier = tier
-    # If plan_code doesn't match either known plan (e.g. malformed
-    # event, or a plan created outside this flow), we deliberately
-    # leave `tier` untouched rather than guessing — status still
-    # updates to ACTIVE, but is_active() alone doesn't grant a
-    # cap upgrade if tier isn't also correctly set
+    subscription.tier = tier
 
     period_end = _period_end_from_paystack_data(data)
     if period_end is not None:

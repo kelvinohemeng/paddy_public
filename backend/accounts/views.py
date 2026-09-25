@@ -5,6 +5,15 @@ import requests
 from decouple import config
 from django.conf import settings
 from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+# google_requests — Google's own HTTP helper that verify_oauth2_token
+# (in google_login below) uses to fetch Google's public signing keys.
+# Imported under an ALIAS because this file also does a plain
+# `import requests` (the popular HTTP library, used to download the
+# Google profile photo) — two different modules that would otherwise
+# share the name `requests`. This line was accidentally dropped in
+# commit 0a4828b, which made every Google sign-in crash with a
+# NameError (500); GoogleLoginRoleTests in tests.py now guards it.
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, RenterProfile, LandlordProfile, StaffProfile
 from core.models import Amenity
@@ -381,6 +390,37 @@ def google_login(request):
     # onboarding screen every other auth path uses. Existing accounts
     # logging in again just ignore this value entirely (get_or_create
     # below only uses it for a brand-new user).
+
+    if role not in (None, User.Role.RENTER, User.Role.LANDLORD):
+        return Response(
+            {'error': 'role must be "renter", "landlord", or omitted.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    # SECURITY — an ALLOW-LIST of the only roles a person may pick for
+    # themselves. `role` comes straight from the request body, which the
+    # person signing in fully controls (anyone can send any JSON they
+    # like with a tool such as curl — the frontend's role picker is not
+    # a security boundary). Before this check, a first-time Google
+    # sign-in sent with {"role": "admin"} or {"role": "staff"} was saved
+    # as-is by get_or_create below, handing that stranger full staff
+    # powers across the API (approve listings, see every precise address
+    # and landlord contact, read every lease).
+    #
+    # This mirrors RegisterSerializer.validate_role on the email/password
+    # path, which already blocks staff/admin. Staff and admin accounts
+    # are only ever created by an existing admin (Django admin or the
+    # create_superuser_from_env command) — never by self-service signup.
+    #
+    # Why an allow-list ("only these are OK") instead of a block-list
+    # ("these are forbidden")? If a new privileged role is ever added to
+    # User.Role, a block-list would silently let it through; an
+    # allow-list rejects anything we haven't explicitly approved.
+    #
+    # Rejected with 400 rather than quietly dropped to None, so a buggy
+    # or malicious client gets a clear "no" instead of an account it
+    # didn't ask for. Checked BEFORE get_or_create, so a bad role never
+    # creates a user row at all.
+
     user, created = User.objects.get_or_create(
         email=email,
         defaults={
@@ -589,6 +629,58 @@ verify_email.throttle_scope = 'sensitive'
 # A real user might legitimately click an old/already-used verification
 # link a couple of times by mistake — 'sensitive' (10/min) is a looser
 # limit than login/register, while still blocking automated abuse
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
+def resend_verification_email(request: Request) -> Response:
+    # POST /accounts/verify-email/resend/ — sends a fresh verification
+    # link to the LOGGED-IN user's own address.
+    #
+    # Why this exists now: paying, creating listings and requesting
+    # viewings all require a verified email (accounts/permissions.py).
+    # The only verification email used to be the one sent at sign-up, so
+    # anyone whose email got lost, landed in spam, or whose link was used
+    # up would have been locked out for good. This gives them a way back.
+    #
+    # IsAuthenticated (logged-in only) + always emailing request.user's
+    # OWN address means nobody can use this endpoint to send emails to
+    # someone else — there's no email field in the request at all.
+    user = request.user
+
+    if user.is_verified:
+        return Response({'message': 'Your email is already verified.'})
+        # Nothing to do. 200 (not an error) so a double-click on the
+        # frontend's "Resend" button just gets a harmless answer.
+
+    try:
+        send_verification_email(user)
+        # The SAME helper register() uses above, so the email looks and
+        # works exactly like the original. Each call makes a new token;
+        # older links keep working too, until they expire
+        # (PASSWORD_RESET_TIMEOUT, 3 days by default). That's harmless:
+        # a verification link can only ever set is_verified=True on the
+        # account it was sent to.
+    except Exception:
+        logger.exception(
+            "Failed to resend verification email to %s (user id %s).",
+            user.email, user.id,
+        )
+        return Response(
+            {'error': 'We could not send the email right now. Please try again shortly.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        # Unlike register(), here sending the email IS the whole job, so
+        # a failure is reported to the person (503 = "service temporarily
+        # unavailable") instead of being quietly swallowed.
+
+    return Response({'message': 'Verification email sent. Check your inbox.'})
+
+resend_verification_email.throttle_scope = 'password_reset'
+# Reuses the strict 5-per-minute bucket from password reset — both
+# endpoints exist to send an email on demand, so both share the same
+# "don't let this be used to flood an inbox or burn email quota" limit.
 # attempts against this endpoint (e.g. trying to guess valid uid/token
 # combinations)
 

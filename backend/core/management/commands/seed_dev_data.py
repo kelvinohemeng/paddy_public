@@ -100,8 +100,20 @@ class Command(BaseCommand):
             # filter + ListingViewSet match on underscore slugs
             # (see core/choices.py). Keep seed and API in agreement.
             amenity, _ = Amenity.objects.get_or_create(
-                name=name, defaults={'slug': slugify(name).replace('-', '_')}
+                slug=slugify(name).replace('-', '_'), defaults={'name': name}
             )
+            # Looked up by SLUG, not by name. get_or_create(...) means "find
+            # a row matching these fields; if none exists, create one" —
+            # so WHICH field we match on decides what counts as "already
+            # there". Migration core/0002 already inserts the canonical
+            # amenities on every fresh database, with slightly different
+            # display names (e.g. "Walled Gated" for our "Walled & Gated").
+            # Matching on name found nothing, tried to INSERT a second
+            # row, and crashed on the slug column's unique=True constraint
+            # (IntegrityError) — so `seed_dev_data` failed on any database
+            # that had run migrations. The slug is the real identity of an
+            # amenity (it's what filters and the API match on, and it's
+            # unique), so matching on it reuses the migration's row.
             amenities.append(amenity)
         return amenities
 

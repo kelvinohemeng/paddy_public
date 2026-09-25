@@ -1,4 +1,6 @@
 from rest_framework.test import APITestCase
+
+from payments.models import ListingUnlock
 from rest_framework import status
 from django.core import mail
 # mail.outbox — Django's test runner automatically swaps EMAIL_BACKEND to
@@ -30,7 +32,8 @@ class ViewingCreateTests(APITestCase):
 
     def setUp(self):
         self.renter_user = User.objects.create_user(
-            email='renter@example.com', password='pass123456', role='renter'
+            email='renter@example.com', password='pass123456', role='renter',
+            is_verified=True,  # requesting a viewing requires a verified email
         )
         self.renter_profile = RenterProfile.objects.create(
             user=self.renter_user, full_name='Test Renter'
@@ -54,6 +57,12 @@ class ViewingCreateTests(APITestCase):
         )
         # Must be PUBLISHED — a renter can only book a viewing for a
         # listing they can actually see in the first place
+
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        # Booking a viewing now requires having unlocked the listing
+        # (Kelvin's 2026-09 decision) — these tests are about the booking
+        # itself, so the renter has already paid. The "not unlocked" case
+        # has its own test class below.
 
     def test_renter_can_request_viewing(self):
         self.client.force_authenticate(user=self.renter_user)
@@ -507,3 +516,82 @@ class ViewingActionTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertTrue(Viewing.objects.filter(id=self.viewing.id).exists())
+
+
+class ViewingAccessRuleTests(APITestCase):
+    # The rules for WHO may request a viewing of WHICH listing, added with
+    # Kelvin's 2026-09 decisions: verified email, unlocked listing, and the
+    # listing must be live.
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='rules-renter@example.com', password='pass123456', role='renter',
+            is_verified=True,
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Rules Renter')
+
+        landlord_user = User.objects.create_user(
+            email='rules-landlord@example.com', password='pass123456', role='landlord'
+        )
+        landlord_profile = LandlordProfile.objects.create(
+            user=landlord_user, full_name='Rules Landlord',
+            national_id_number='GHA-5', preferred_payout_method='momo'
+        )
+        self.listing = Listing.objects.create(
+            landlord_profile=landlord_profile,
+            title='Rules listing', description='Test',
+            listing_type='rent', price_monthly='2500.00',
+            advance_rent_period='1_year', bedrooms=2, bathrooms=1,
+            address_precise='9 Secret Close', neighborhood='Osu',
+            city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    def _request(self, listing=None):
+        self.client.force_authenticate(user=self.renter_user)
+        return self.client.post(
+            '/viewings/',
+            {'listing': (listing or self.listing).id, 'scheduled_at': future_scheduled_at()},
+            format='json',
+        )
+
+    def test_renter_without_unlock_cannot_request_viewing(self):
+        response = self._request()
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'listing_not_unlocked')
+        self.assertEqual(Viewing.objects.count(), 0)
+
+    def test_no_address_email_is_sent_without_unlock(self):
+        # The actual leak this rule closes: the confirmation email's
+        # calendar invite carries the precise address.
+        self._request()
+
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_unverified_renter_cannot_request_viewing(self):
+        self.renter_user.is_verified = False
+        self.renter_user.save()
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+
+        response = self._request()
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'email_not_verified')
+        self.assertEqual(Viewing.objects.count(), 0)
+
+    def test_cannot_request_viewing_of_unpublished_listing(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        self.listing.status = Listing.Status.DRAFT
+        self.listing.save()
+
+        response = self._request()
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Viewing.objects.count(), 0)
+
+    def test_unlocked_verified_renter_can_request_viewing(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+
+        response = self._request()
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from rest_framework.test import APITestCase
 # DRF's version of Django's TestCase, specifically built for testing API
 # endpoints — gives us a `self.client` that can make fake POST/GET requests
@@ -782,4 +784,120 @@ class OnboardingTests(APITestCase):
         response = self.client.post(
             '/accounts/onboarding/', {'role': 'renter'}, format='json'
         )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+class GoogleLoginRoleTests(APITestCase):
+    # POST /accounts/login/google/ — focused on the `role` a first-time
+    # Google user is allowed to pick for themselves.
+    #
+    # We never talk to real Google in tests. Instead we "patch" (swap
+    # out, just for the duration of one test) the function that verifies
+    # Google's token, so it returns a fake-but-realistic payload. That
+    # way these tests check OUR logic only, run offline, and don't need a
+    # real Google account. The path we patch is where the function is
+    # LOOKED UP ('accounts.views.id_token...'), not where it's defined —
+    # that's the standard rule for unittest.mock.patch.
+
+    GOOGLE_PAYLOAD = {
+        'email': 'google-person@example.com',
+        'email_verified': True,
+        'given_name': 'Ama',
+        'family_name': 'Mensah',
+        'name': 'Ama Mensah',
+        # No 'picture' key on purpose — the view would otherwise try to
+        # download the profile photo over the internet.
+    }
+
+    def _google_login(self, role=None):
+        body = {'token': 'fake-google-token'}
+        if role is not None:
+            body['role'] = role
+        with patch(
+            'accounts.views.id_token.verify_oauth2_token',
+            return_value=dict(self.GOOGLE_PAYLOAD),
+        ):
+            return self.client.post('/accounts/login/google/', body, format='json')
+
+    def test_cannot_self_assign_admin_role(self):
+        response = self._google_login(role='admin')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.GOOGLE_PAYLOAD['email']).exists())
+        # The important part: no account was created at all, so there's
+        # no half-made admin user left behind either.
+
+    def test_cannot_self_assign_staff_role(self):
+        response = self._google_login(role='staff')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.GOOGLE_PAYLOAD['email']).exists())
+
+    def test_unknown_role_is_rejected(self):
+        response = self._google_login(role='superuser')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.GOOGLE_PAYLOAD['email']).exists())
+
+    def test_landlord_role_is_allowed_and_creates_profile(self):
+        response = self._google_login(role='landlord')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.GOOGLE_PAYLOAD['email'])
+        self.assertEqual(user.role, User.Role.LANDLORD)
+        self.assertTrue(LandlordProfile.objects.filter(user=user).exists())
+        self.assertIn('access', response.data)
+
+    def test_renter_role_is_allowed_and_creates_profile(self):
+        response = self._google_login(role='renter')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.GOOGLE_PAYLOAD['email'])
+        self.assertEqual(user.role, User.Role.RENTER)
+        self.assertTrue(RenterProfile.objects.filter(user=user).exists())
+
+    def test_no_role_defers_to_onboarding(self):
+        response = self._google_login()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.GOOGLE_PAYLOAD['email'])
+        self.assertIsNone(user.role)
+        # role=None is the "send them to /onboarding" signal the frontend
+        # checks for, same as email/password sign-up without a role.
+
+
+class ResendVerificationEmailTests(APITestCase):
+    # POST /accounts/verify-email/resend/
+
+    def test_unverified_user_gets_a_new_email(self):
+        from django.core import mail
+        user = User.objects.create_user(
+            email='resend-me@example.com', password='testpass123', role='renter'
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post('/accounts/verify-email/resend/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        # mail.outbox — during tests Django swaps the real email backend
+        # for an in-memory one, so "sent" emails land in this list instead
+        # of anyone's inbox. That's how we can check an email went out.
+        self.assertEqual(mail.outbox[0].to, ['resend-me@example.com'])
+        self.assertIn('/verify-email?uid=', mail.outbox[0].body)
+
+    def test_already_verified_user_gets_no_email(self):
+        from django.core import mail
+        user = User.objects.create_user(
+            email='done@example.com', password='testpass123', role='renter', is_verified=True
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post('/accounts/verify-email/resend/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_requires_login(self):
+        response = self.client.post('/accounts/verify-email/resend/')
+
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

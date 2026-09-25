@@ -16,6 +16,7 @@ from django.db import transaction
 
 from .models import Listing, ListingPhoto, SavedListing
 from accounts.models import User, StaffProfile
+from accounts.permissions import require_verified_email
 # User — for the Role enum in the review action + admin-visibility
 # branches below. Safe as a top-level import: accounts/models.py
 # depends only on core (Amenity), never back on listings, so no
@@ -275,6 +276,11 @@ class ListingViewSet(viewsets.ModelViewSet):
             # expects errors to be raised this way, and it automatically
             # converts this into the correct 403 response for us
 
+        require_verified_email(self.request.user, 'create a listing')
+        # See accounts/permissions.py. A listing ends up in front of the
+        # public and in the staff review queue, so its owner's email must
+        # be proven (it's also the contact renters get after unlocking).
+
         landlord_profile = self.request.user.landlordprofile
 
         existing_listing_count = Listing.objects.filter(landlord_profile=landlord_profile).count()
@@ -330,13 +336,105 @@ class ListingViewSet(viewsets.ModelViewSet):
         serializer.save()
 
     def perform_destroy(self, instance):
-        # Called automatically during "delete" — same ownership check
-        # as update, since deleting is just as sensitive
+        # Called automatically during DELETE /listings/<id>/.
+        #
+        # KELVIN'S DECISION (2026-09): only ADMINS may permanently delete
+        # a listing. Landlords archive instead (see archive() below).
+        #
+        # Why this matters: deleting a database row also deletes every
+        # row that points at it with on_delete=CASCADE. For a Listing
+        # that includes ListingUnlock (proof that a renter PAID to unlock
+        # it), Lease + LeaseRecord (tenancy history), Viewing and
+        # SavedListing rows. A landlord deleting a listing would silently
+        # erase other people's payment records — the evidence support
+        # needs when someone says "I paid and lost access". Archiving
+        # just hides the listing and keeps all of that history.
+        #
+        # Admins keep hard delete for genuine clean-up (spam, test data,
+        # legal takedowns), where erasing everything is the point.
 
-        if instance.landlord_profile.user != self.request.user:
-            raise PermissionDenied("You can only delete your own listings")
+        if self.request.user.role != User.Role.ADMIN:
+            raise PermissionDenied({
+                'detail': 'Listings can\'t be deleted. Archive it instead to take it off paddy.',
+                'code': 'use_archive',
+            })
+            # `code` lets the frontend offer its Archive button instead of
+            # just showing an error.
 
         instance.delete()
+
+    ARCHIVABLE_STATUSES = (
+        Listing.Status.DRAFT,
+        Listing.Status.PENDING_REVIEW,
+        Listing.Status.PUBLISHED,
+        Listing.Status.REJECTED,
+    )
+    # Which statuses a listing may be archived FROM. Deliberately missing:
+    # LEASED — someone lives there under an active Lease, and the listing
+    # page is how that renter reaches their lease; end the lease first.
+    # (And ARCHIVED itself, since that would be a no-op.)
+
+    @action(detail=True, methods=['post'], url_path='archive')
+    def archive(self, request, pk=None):
+        # POST /listings/<id>/archive/ — the landlord-facing replacement
+        # for delete. Sets status to ARCHIVED, which the public queryset
+        # in get_queryset() already excludes (only PUBLISHED is public),
+        # so the listing disappears from Discovery immediately while every
+        # related record (unlocks, leases, viewings) stays intact.
+        listing = self.get_object()
+        # get_object() only finds listings inside get_queryset(), so a
+        # landlord can't even reach someone else's draft — the explicit
+        # owner check below then covers other landlords' PUBLISHED
+        # listings, which are in the public part of the queryset.
+
+        is_owner = listing.landlord_profile.user == request.user
+        is_staff_or_admin = request.user.role in (User.Role.STAFF, User.Role.ADMIN)
+        if not (is_owner or is_staff_or_admin):
+            raise PermissionDenied('You can only archive your own listings')
+        # Staff/admins can archive too — e.g. to pull a listing that turns
+        # out to be misleading after a site visit, without destroying it.
+
+        if listing.status not in self.ARCHIVABLE_STATUSES:
+            return Response(
+                {'error': f'A {listing.get_status_display().lower()} listing can\'t be archived.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # get_status_display() — Django gives every field with
+            # `choices` this helper, returning the human label ("Leased")
+            # instead of the stored value ("leased").
+
+        listing.status = Listing.Status.ARCHIVED
+        listing.save(update_fields=['status'])
+        # update_fields — only write the `status` column, not the whole
+        # row. Safer when other requests might be editing different
+        # fields of the same listing at the same moment.
+
+        return Response(self.get_serializer(listing).data)
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        # POST /listings/<id>/restore/ — undo an archive. The listing goes
+        # back to DRAFT, NOT straight to published: it may have sat
+        # archived for months (price, photos, availability all stale), so
+        # it has to go through submit-for-review and staff verification
+        # again before the public can see it — the "every listing is
+        # staff-verified" promise applies every time it goes live.
+        listing = self.get_object()
+
+        if listing.landlord_profile.user != request.user and request.user.role not in (
+            User.Role.STAFF, User.Role.ADMIN
+        ):
+            raise PermissionDenied('You can only restore your own listings')
+
+        if listing.status != Listing.Status.ARCHIVED:
+            return Response(
+                {'error': 'Only archived listings can be restored.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        listing.status = Listing.Status.DRAFT
+        listing.save(update_fields=['status'])
+        return Response(self.get_serializer(listing).data)
 
     @action(detail=True, methods=['post'], url_path='submit-for-review')
     # @action = same tool as upload_photos below — detail=True means one
@@ -534,6 +632,24 @@ class ListingViewSet(viewsets.ModelViewSet):
             return Response({'error': 'No images provided'}, status=status.HTTP_400_BAD_REQUEST)
 
         existing_count = listing.photos.count()
+
+        if existing_count + len(images) > MAX_PHOTOS_PER_LISTING:
+            return Response(
+                {'error': f'A listing can have at most {MAX_PHOTOS_PER_LISTING} photos '
+                          f'({existing_count} already uploaded).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # A cap on how many photos one listing can hold. Every photo is
+        # stored on (and served from) Cloudflare R2, so an unlimited
+        # endpoint would let one account fill the bucket.
+
+        errors = _photo_upload_errors(images)
+        if errors:
+            return Response({'error': ' '.join(errors)}, status=status.HTTP_400_BAD_REQUEST)
+        # EVERY file is checked BEFORE any is saved, so one bad file
+        # rejects the whole batch instead of leaving half of it uploaded.
+        # See _photo_upload_errors at the bottom of this file for why
+        # these checks are needed at all.
         # How many photos this listing already has — needed so a second
         # upload batch continues the `order` sequence instead of
         # restarting at 0 and colliding
@@ -740,3 +856,58 @@ class ListingPhotoViewSet(viewsets.ModelViewSet):
                 # listing, and upload_photos' first-ever auto-cover
                 # logic re-establishes a cover on the next upload
                 # without any special-casing here.
+
+MAX_PHOTOS_PER_LISTING = 20
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+# 10 MB per photo — generous for a modern phone photo (typically 2–6 MB),
+# small enough that one upload can't tie up the server or the bucket.
+ALLOWED_PHOTO_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp']
+# Same list as ListingPhoto.image's FileExtensionValidator in models.py.
+
+
+def _photo_upload_errors(images):
+    # Returns a list of human-readable problems with the uploaded files
+    # (an empty list means every file is fine).
+    #
+    # WHY THIS EXISTS: upload_photos saves files with
+    # ListingPhoto.objects.create(...). A surprising Django fact is that
+    # create() does NOT run a model field's `validators` — those only run
+    # through a form/serializer or an explicit full_clean(). So the
+    # extension rule on ListingPhoto.image was never enforced here, and
+    # nothing checked the file was really an image or how big it was.
+    # Any file (an .html page, a script, a 2 GB video) went straight into
+    # our PUBLIC-read R2 bucket, served from our own media domain — a
+    # classic way to host phishing pages or malware on someone else's
+    # trusted domain.
+    from django import forms
+    from django.core.validators import FileExtensionValidator
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
+    image_field = forms.ImageField(
+        validators=[FileExtensionValidator(allowed_extensions=ALLOWED_PHOTO_EXTENSIONS)]
+    )
+    # forms.ImageField is Django's form-level image checker. Its clean()
+    # method runs the extension validator above AND opens the file with
+    # Pillow (the image library in our Pipfile) to confirm it really is
+    # an image. That second part is what matters: the extension is just
+    # part of the file NAME, which the uploader chooses freely — renaming
+    # evil.html to evil.jpg fools an extension check, but not Pillow.
+
+    errors = []
+    for image in images:
+        if image.size > MAX_PHOTO_BYTES:
+            errors.append(f'"{image.name}" is larger than 10 MB.')
+            continue
+            # Size first: cheap to check, and there's no point asking
+            # Pillow to open a file we're going to reject anyway.
+        try:
+            image_field.clean(image)
+        except DjangoValidationError:
+            errors.append(f'"{image.name}" is not a JPG, PNG or WebP image.')
+        finally:
+            image.seek(0)
+            # Pillow READ the file to check it, which moves the file's
+            # internal "cursor" to the end. seek(0) rewinds it, so when
+            # the file is saved to R2 afterwards the whole image is
+            # written — not an empty file.
+    return errors

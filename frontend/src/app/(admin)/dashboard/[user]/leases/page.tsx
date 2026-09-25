@@ -9,6 +9,7 @@ import { CalendarDays, MapPin } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { LEASE_STATUS_META } from "./lease-status";
 
 // Active Leases dashboard (AGENTS.md build-priority #4). Read-only by
 // design: leases are entered by staff/landlords in Django admin once a
@@ -19,17 +20,7 @@ import { Badge } from "@/components/ui/badge";
 // enforced by LeaseViewSet.get_queryset, so this page renders whatever
 // arrives with zero role branching on the data itself.
 
-// Lease.status display only — the backend owns the values
-// (active/ended/terminated); terminated stays distinct from ended
-// (stopped early vs. ran its full term).
-const LEASE_STATUS_META: Record<
-  string,
-  { label: string; variant: "default" | "secondary" | "outline" }
-> = {
-  active: { label: "Active", variant: "default" },
-  ended: { label: "Ended", variant: "secondary" },
-  terminated: { label: "Terminated", variant: "outline" },
-};
+// Status labels live in ./lease-status (shared with the detail page).
 
 export default function LeasesPage() {
   const params = useParams<{ user: string }>();

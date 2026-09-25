@@ -42,7 +42,19 @@ class Lease(models.Model):
     end_date = models.DateField()
 
     class Status(models.TextChoices):
+        PENDING = 'pending', 'Awaiting renter confirmation'
+        # KELVIN'S DECISION (2026-09): a lease a LANDLORD records against
+        # a renter isn't real until that renter confirms it. Landlord-made
+        # leases start here; the renter then confirms (-> ACTIVE) or
+        # declines (-> DECLINED) via POST /leases/<id>/confirm|decline/.
+        # Without this, any landlord could attach any renter to a
+        # "tenancy" (renter ids are just numbers) and it would show up on
+        # that renter's dashboard as fact.
         ACTIVE = 'active', 'Active'
+        DECLINED = 'declined', 'Declined by renter'
+        # Kept as a row (not deleted) so there's a record that the landlord
+        # asserted a lease and the renter said no — useful if a dispute
+        # ever comes up.
         ENDED = 'ended', 'Ended'
         TERMINATED = 'terminated', 'Terminated'
         # TERMINATED kept separate from ENDED — ENDED means the lease ran
@@ -51,6 +63,11 @@ class Lease(models.Model):
         # any future reporting, even though nothing branches on it yet
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    # The DEFAULT stays ACTIVE on purpose: that's what a lease entered by
+    # staff (API or Django admin) should be — staff have verified it.
+    # Landlord-created leases are forced to PENDING in
+    # LeaseViewSet.perform_create instead, so the rule lives in the one
+    # place that knows WHO is creating the lease.
 
     created_by = models.ForeignKey(
         'accounts.User', on_delete=models.SET_NULL, null=True, blank=True,

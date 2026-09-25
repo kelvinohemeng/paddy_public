@@ -9,7 +9,7 @@ from django.db import transaction
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.throttling import ScopedRateThrottle
 
 from datetime import timedelta
@@ -27,7 +27,10 @@ from django.core.mail import EmailMessage
 
 from .models import Viewing
 from .serializers import ViewingSerializer
-from accounts.models import User
+from accounts.models import User, RenterProfile
+from accounts.permissions import require_verified_email
+from listings.models import Listing
+from payments.models import ListingUnlock
 
 logger = logging.getLogger(__name__)
 # Same per-module logger pattern as accounts/views.py
@@ -200,7 +203,54 @@ class ViewingViewSet(viewsets.ModelViewSet):
             # Only renters may CREATE a viewing request — staff/landlords
             # never book viewings themselves through this endpoint
 
-        viewing = serializer.save(renter_profile=self.request.user.renterprofile)
+        require_verified_email(self.request.user, 'request a viewing')
+        # See accounts/permissions.py — viewing requests send real emails
+        # and put a real visit in a staff member's diary, so the
+        # requester's email must be proven first.
+
+        renter_profile = RenterProfile.objects.filter(user=self.request.user).first()
+        if renter_profile is None:
+            raise ValidationError({'detail': 'Finish setting up your renter profile first.'})
+        # .filter(...).first() returns None when the row is missing,
+        # instead of `request.user.renterprofile`, which RAISES
+        # (RelatedObjectDoesNotExist) and would surface as a 500 error.
+        # ValidationError is DRF's "400 Bad Request" exception.
+
+        listing = serializer.validated_data['listing']
+        # serializer.validated_data = the request body AFTER DRF has
+        # checked and converted it. For a ForeignKey field like `listing`,
+        # DRF has already looked the id up in the database, so this is a
+        # real Listing object (a bad id would have been rejected with 400
+        # before we ever got here).
+
+        if listing.status != Listing.Status.PUBLISHED:
+            raise ValidationError({'detail': 'This listing is not open for viewings.'})
+        # Only live listings can be viewed. Before this, the listing
+        # field accepted ANY listing id — a draft, a rejected one, or an
+        # already-leased home — and the confirmation email then leaked
+        # that listing's precise address.
+
+        if not ListingUnlock.objects.filter(user=self.request.user, listing=listing).exists():
+            raise PermissionDenied({
+                'detail': 'Unlock this listing to book a viewing.',
+                'code': 'listing_not_unlocked',
+            })
+        # KELVIN'S DECISION (2026-09): viewings stay, but only for renters
+        # who have unlocked the listing. Two reasons this matters:
+        #   1. The confirmation email's calendar invite includes the
+        #      precise address (build_ics_content above). Without this
+        #      check, "request a viewing" was a free way around the
+        #      pay-to-unlock fee — request, read the address in the
+        #      email, never pay.
+        #   2. It keeps staff visit time for renters who are serious
+        #      enough to have paid.
+        # `code` lets the frontend show its "Unlock first" button instead
+        # of a generic error (same idea as EMAIL_NOT_VERIFIED_CODE).
+        # .exists() asks the database "is there at least one matching
+        # row?" without loading the row itself — the cheapest way to ask
+        # a yes/no question.
+
+        viewing = serializer.save(renter_profile=renter_profile)
         # renter_profile always comes from whoever's logged in, never from
         # the request body — same non-negotiable pattern as
         # landlord_profile on ListingSerializer.save()

@@ -83,7 +83,11 @@ export const BookingCard = forwardRef<
         </div>
 
         <div className="space-y-2.5">
-          <ViewingSlotPicker listingId={listingId} />
+          <ViewingSlotPicker
+            listingId={listingId}
+            isUnlocked={isUnlocked}
+            onUnlock={startUnlock}
+          />
 
           <button
             type="button"
@@ -205,7 +209,19 @@ const SLOT_TIMES = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00
 // "Reserve a viewing slot" — POST /viewings/ {listing, scheduled_at}.
 // Renter-only on the backend (perform_create 403s everyone else), and
 // the backend emails the renter a confirmation with an .ics invite.
-function ViewingSlotPicker({ listingId }: { listingId: number | string }) {
+// Viewings require an unlocked listing (Kelvin's 2026-09 decision — the
+// invite contains the precise address), so a locked listing offers the
+// unlock checkout instead of the calendar. The backend enforces this too
+// (403 code "listing_not_unlocked"); this just avoids a dead-end click.
+function ViewingSlotPicker({
+  listingId,
+  isUnlocked,
+  onUnlock,
+}: {
+  listingId: number | string;
+  isUnlocked: boolean;
+  onUnlock: () => void;
+}) {
   const router = useRouter();
   const { data: me } = useMe();
   const [open, setOpen] = useState(false);
@@ -230,6 +246,13 @@ function ViewingSlotPicker({ listingId }: { listingId: number | string }) {
       toast("Only renter accounts can book viewings.");
       return;
     }
+    if (next && !isUnlocked) {
+      toast("Unlock this home to book a viewing", {
+        description: "Viewings include the exact address, so they open up once you unlock.",
+        action: { label: "Unlock", onClick: onUnlock },
+      });
+      return;
+    }
     setOpen(next);
   }
 
@@ -238,7 +261,8 @@ function ViewingSlotPicker({ listingId }: { listingId: number | string }) {
     const [h, m] = time.split(":").map(Number);
     const when = new Date(day);
     when.setHours(h, m, 0, 0);
-    // Frontend-only guard: the backend doesn't reject past dates yet.
+    // Quick client-side check for a nicer message; the backend also
+    // rejects past times (ViewingSerializer.validate_scheduled_at).
     if (when.getTime() <= Date.now()) {
       toast.error("Pick a time in the future.");
       return;

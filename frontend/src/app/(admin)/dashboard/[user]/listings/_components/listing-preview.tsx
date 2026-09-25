@@ -1,11 +1,13 @@
 "use client";
 
-import { useApiDelete, useApiList, useApiOne } from "@/hooks/use-api";
+import { useApiInvalidate, useApiList, useApiOne } from "@/hooks/use-api";
+import { apiPost } from "@/lib/api-client";
+import { errorMessage } from "@/lib/api";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
-import { MapPin, Bed, Bath, BadgeCheck, ExternalLink, Trash2 } from "lucide-react";
+import { MapPin, Bed, Bath, BadgeCheck, ExternalLink, Archive, ArchiveRestore } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,7 +52,6 @@ function getPhotoUrl(photo: any): string | null {
 }
 
 export function ListingPreview({ listingId, onEdit }: ListingPreviewProps) {
-  const router = useRouter();
   const params = useParams<{ user: string }>();
   const userId = params.user;
 
@@ -59,23 +60,35 @@ export function ListingPreview({ listingId, onEdit }: ListingPreviewProps) {
     listingId,
   );
 
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const { mutate: deleteListing, isPending: isDeleting } =
-    useApiDelete("listings");
+  // Landlords ARCHIVE instead of deleting (Kelvin's 2026-09 decision):
+  // DELETE /listings/<id>/ is admin-only on the backend, because deleting
+  // a listing would also erase renters' paid unlock records and leases.
+  // Archiving takes it off Discovery and keeps that history; Restore puts
+  // it back as a draft that must be re-submitted for staff review.
+  const invalidate = useApiInvalidate();
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
+  const [statusBusy, setStatusBusy] = useState(false);
 
-  function handleDelete() {
-    // Two-tap confirm in place of the old Refine DeleteButton's
-    // popover — first tap arms, second tap fires. No extra component.
-    if (!confirmingDelete) {
-      setConfirmingDelete(true);
+  async function changeLifecycle(action: "archive" | "restore") {
+    if (action === "archive" && !confirmingArchive) {
+      // Two-tap confirm — first tap arms, second tap fires.
+      setConfirmingArchive(true);
       return;
     }
-    deleteListing(listingId, {
-      onSuccess: () => router.push(`/dashboard/${userId}/listings`),
-      // router.push (not router.back()): after a delete there's no
-      // "back" state worth returning to — always land on the real list.
-      onError: (err) => toast.error(err.message),
-    });
+    setStatusBusy(true);
+    try {
+      await apiPost(`/listings/${listingId}/${action}/`);
+      await invalidate("listings");
+      toast.success(action === "archive" ? "Listing archived" : "Listing restored as a draft");
+      // No navigation: the refetch shows the new status badge and swaps
+      // Archive/Restore in place. Archived listings stay in the owner's
+      // own list (they're only hidden from the public).
+    } catch (err) {
+      toast.error(errorMessage(err, "Could not update this listing"));
+    } finally {
+      setStatusBusy(false);
+      setConfirmingArchive(false);
+    }
   }
 
   // Amenities come back from the current backend serializer in TWO
@@ -285,28 +298,29 @@ export function ListingPreview({ listingId, onEdit }: ListingPreviewProps) {
             </Button>
           </Link>
         )}
-        <Button
-          type="button"
-          variant={confirmingDelete ? "destructive" : "outline"}
-          disabled={isDeleting}
-          onClick={handleDelete}
-        >
-          {isDeleting ? (
-            "Deleting…"
-          ) : confirmingDelete ? (
-            <>
-              <Trash2 className="size-4" /> Confirm delete
-            </>
-          ) : (
-            <>
-              <Trash2 className="size-4" /> Delete
-            </>
-          )}
-        </Button>
-        {/* Without the push above, a successful delete leaves whichever
-            panel/page was showing THIS listing still mounted — it just
-            refetches and falls into the "Couldn't load this listing"
-            error state instead of actually closing. */}
+        {listing.status === "archived" ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={statusBusy}
+            onClick={() => changeLifecycle("restore")}
+          >
+            <ArchiveRestore className="size-4" />
+            {statusBusy ? "Restoring…" : "Restore"}
+          </Button>
+        ) : listing.status !== "leased" ? (
+          // No archive while leased: the backend refuses it (someone
+          // lives there under an active lease — end the lease first).
+          <Button
+            type="button"
+            variant={confirmingArchive ? "destructive" : "outline"}
+            disabled={statusBusy}
+            onClick={() => changeLifecycle("archive")}
+          >
+            <Archive className="size-4" />
+            {statusBusy ? "Archiving…" : confirmingArchive ? "Confirm archive" : "Archive"}
+          </Button>
+        ) : null}
       </div>
     </div>
   );

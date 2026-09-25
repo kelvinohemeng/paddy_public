@@ -1,17 +1,18 @@
 // Single source of truth for Listing.status rendering — mirrors
 // Listing.Status in backend/listings/models.py exactly:
-//   DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED
+//   DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED / LEASED
 
 import { BadgeCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { Clock, FileEdit, Archive, CircleX } from "lucide-react";
+import { Clock, FileEdit, Archive, CircleX, KeyRound } from "lucide-react";
 
 export type ListingStatus =
   | "draft"
   | "pending_review"
   | "published"
   | "rejected"
-  | "archived";
+  | "archived"
+  | "leased";
 
 type StatusMeta = {
   label: string;
@@ -32,6 +33,8 @@ export const STATUS_META: Record<ListingStatus, StatusMeta> = {
   published: { label: "Live", icon: BadgeCheck, badgeVariant: "default" },
   rejected: { label: "Rejected", icon: CircleX, badgeVariant: "destructive" },
   archived: { label: "Archived", icon: Archive, badgeVariant: "outline" },
+  // Set by the backend when a renter confirms a lease on the listing.
+  leased: { label: "Leased", icon: KeyRound, badgeVariant: "secondary" },
 };
 
 // The two statuses a landlord can (once the backend's submit-for-review

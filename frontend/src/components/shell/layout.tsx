@@ -5,6 +5,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import type { PropsWithChildren } from "react";
 import { Sidebar } from "./sidebar";
+import { VerifyEmailBanner } from "./verify-email-banner";
 
 // Dashboard chrome: sidebar + header + content. Plain shadcn
 // SidebarProvider — no framework layout, no theme wrapper (paddy is
@@ -32,6 +33,7 @@ export function Layout({ children }: PropsWithChildren) {
             "lg:pt-6"
           )}
         >
+          <VerifyEmailBanner />
           {children}
         </main>
       </SidebarInset>

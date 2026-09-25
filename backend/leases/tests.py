@@ -297,3 +297,176 @@ class LeaseAdminVisibilityTests(APITestCase):
         }, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class LeaseConfirmationTests(APITestCase):
+    # Kelvin's 2026-09 decision: a lease a LANDLORD records needs the
+    # renter's confirmation before it's active.
+
+    def setUp(self):
+        LeaseTests.setUp(self)
+        # Borrow LeaseTests' setUp (same landlord / renter / listing /
+        # payload) by calling it directly, WITHOUT inheriting from
+        # LeaseTests — inheriting would also re-run all of LeaseTests'
+        # own tests inside this class.
+
+    def _landlord_records_lease(self):
+        self.client.force_authenticate(user=self.landlord_user)
+        response = self.client.post('/leases/', self.lease_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return Lease.objects.get(id=response.data['id'])
+
+    def test_landlord_recorded_lease_starts_pending(self):
+        lease = self._landlord_records_lease()
+
+        self.assertEqual(lease.status, Lease.Status.PENDING)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.PUBLISHED)
+        # Still on Discovery — nothing changes until the renter says yes.
+
+    def test_landlord_cannot_skip_confirmation_by_sending_status(self):
+        self.client.force_authenticate(user=self.landlord_user)
+        payload = dict(self.lease_payload, status='active')
+
+        response = self.client.post('/leases/', payload, format='json')
+
+        self.assertEqual(Lease.objects.get(id=response.data['id']).status, Lease.Status.PENDING)
+
+    def test_renter_confirm_activates_lease_and_marks_listing_leased(self):
+        lease = self._landlord_records_lease()
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(f'/leases/{lease.id}/confirm/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, Lease.Status.ACTIVE)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.LEASED)
+
+    def test_renter_decline_keeps_listing_live(self):
+        lease = self._landlord_records_lease()
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(f'/leases/{lease.id}/decline/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, Lease.Status.DECLINED)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.PUBLISHED)
+
+    def test_landlord_cannot_confirm_on_renters_behalf(self):
+        lease = self._landlord_records_lease()
+
+        response = self.client.post(f'/leases/{lease.id}/confirm/')
+        # still logged in as the landlord from _landlord_records_lease
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, Lease.Status.PENDING)
+
+    def test_another_renter_cannot_confirm(self):
+        lease = self._landlord_records_lease()
+        stranger = User.objects.create_user(
+            email='stranger-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=stranger, full_name='Stranger')
+        self.client.force_authenticate(user=stranger)
+
+        response = self.client.post(f'/leases/{lease.id}/confirm/')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        # 404, not 403: the stranger's queryset doesn't contain this lease
+        # at all, so they can't even learn that it exists.
+
+    def test_confirming_twice_is_rejected(self):
+        lease = self._landlord_records_lease()
+        self.client.force_authenticate(user=self.renter_user)
+        self.client.post(f'/leases/{lease.id}/confirm/')
+
+        response = self.client.post(f'/leases/{lease.id}/confirm/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_landlord_cannot_patch_pending_lease_to_active(self):
+        lease = self._landlord_records_lease()
+
+        response = self.client.patch(f'/leases/{lease.id}/', {'status': 'active'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, Lease.Status.PENDING)
+
+    def test_landlord_can_end_an_active_lease(self):
+        lease = self._landlord_records_lease()
+        lease.status = Lease.Status.ACTIVE
+        lease.save()
+
+        response = self.client.patch(f'/leases/{lease.id}/', {'status': 'ended'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_staff_recorded_lease_is_active_immediately(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post('/leases/', self.lease_payload, format='json')
+
+        lease = Lease.objects.get(id=response.data['id'])
+        self.assertEqual(lease.status, Lease.Status.ACTIVE)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.LEASED)
+
+
+class LeasePartiesAreFixedTests(APITestCase):
+    # A lease's listing / renter / landlord can't be changed by PATCH.
+
+    def setUp(self):
+        LeaseTests.setUp(self)
+        # Same borrowing trick as LeaseConfirmationTests: LeaseTests' users
+        # and listing, then our own extras below.
+        self.lease = Lease.objects.create(
+            listing=self.listing, renter_profile=self.renter_profile,
+            landlord_profile=self.landlord_profile, rent_amount_monthly='2000.00',
+            deposit_amount='24000.00', advance_rent_period='1_year',
+            start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+        )
+        self.other_listing = Listing.objects.create(
+            landlord_profile=self.other_landlord_profile,
+            title='Someone else\'s listing', description='Test', listing_type='rent',
+            price_monthly='3000.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='20 Other Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    def test_landlord_cannot_move_lease_onto_someone_elses_listing(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.patch(
+            f'/leases/{self.lease.id}/', {'listing': self.other_listing.id}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.lease.refresh_from_db()
+        self.assertEqual(self.lease.listing, self.listing)
+
+    def test_landlord_cannot_hand_lease_to_another_landlord(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.patch(
+            f'/leases/{self.lease.id}/', {'landlord_profile': self.other_landlord_profile.id}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.lease.refresh_from_db()
+        self.assertEqual(self.lease.landlord_profile, self.landlord_profile)
+
+    def test_resending_the_same_listing_is_fine(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.patch(
+            f'/leases/{self.lease.id}/', {'listing': self.listing.id, 'deposit_amount': '20000.00'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)

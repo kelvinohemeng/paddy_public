@@ -5,22 +5,21 @@
 // GET+POST with perform_create restricted to staff/landlords, and no
 // update/delete at all: a logged receipt is a historical fact).
 
-import { useApiOne } from "@/hooks/use-api";
+import { useState } from "react";
+import { toast } from "sonner";
+import { useApiInvalidate, useApiOne } from "@/hooks/use-api";
+import { useMe } from "@/hooks/use-auth";
+import { apiPost } from "@/lib/api-client";
+import { errorMessage } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { FileText, Receipt } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { LEASE_STATUS_META } from "../lease-status";
 
-const LEASE_STATUS_META: Record<
-  string,
-  { label: string; variant: "default" | "secondary" | "outline" }
-> = {
-  active: { label: "Active", variant: "default" },
-  ended: { label: "Ended", variant: "secondary" },
-  terminated: { label: "Terminated", variant: "outline" },
-};
 
 function Term({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -123,6 +122,8 @@ export default function LeaseDetailPage() {
         </Badge>
       </div>
 
+      {lease.status === "pending" && <PendingLeaseNotice lease={lease} />}
+
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Tenancy terms</CardTitle>
@@ -215,5 +216,61 @@ export default function LeaseDetailPage() {
         )}
       </div>
     </div>
+  );
+}
+
+// Shown while a landlord-recorded lease waits for the renter
+// (Lease.status "pending"). The renter gets Confirm / Decline; everyone
+// else who can see the lease (the landlord, staff) gets an explanation.
+// The backend enforces who may answer — these buttons are convenience,
+// not the security boundary.
+function PendingLeaseNotice({ lease }: { lease: any }) {
+  const { data: me } = useMe();
+  const invalidate = useApiInvalidate();
+  const [busy, setBusy] = useState<"confirm" | "decline" | null>(null);
+
+  const isRenter = me?.role === "renter";
+
+  async function respond(action: "confirm" | "decline") {
+    setBusy(action);
+    try {
+      await apiPost(`/leases/${lease.id}/${action}/`);
+      // Leases AND listings are refreshed: confirming flips the listing
+      // to "leased" on the backend.
+      await invalidate(["leases", "listings"]);
+      toast.success(action === "confirm" ? "Lease confirmed" : "Lease declined");
+    } catch (err) {
+      toast.error(errorMessage(err, "Could not update this lease"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!isRenter) {
+    return (
+      <p className="rounded-md border border-dashed px-4 py-3 text-sm text-muted-foreground">
+        Waiting for {lease.renter_name || "the renter"} to confirm this lease. It
+        becomes active, and the listing is marked as leased, once they do.
+      </p>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 py-4">
+        <p className="text-sm">
+          {lease.landlord_name || "Your landlord"} recorded this lease with you as the
+          renter. Please check the terms below, then confirm it if it&apos;s right.
+        </p>
+        <div className="flex gap-2">
+          <Button onClick={() => respond("confirm")} disabled={busy !== null}>
+            {busy === "confirm" ? "Confirming…" : "Confirm lease"}
+          </Button>
+          <Button variant="outline" onClick={() => respond("decline")} disabled={busy !== null}>
+            {busy === "decline" ? "Declining…" : "This isn’t mine"}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

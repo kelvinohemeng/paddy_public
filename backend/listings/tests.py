@@ -19,7 +19,11 @@ class ListingCreateTests(APITestCase):
         # MeEndpointTests.setUp in accounts/tests.py
 
         self.landlord_user = User.objects.create_user(
-            email='landlord@example.com', password='pass123456', role='landlord'
+            email='landlord@example.com', password='pass123456', role='landlord',
+            is_verified=True,
+            # is_verified — creating a listing now requires a verified
+            # email (accounts/permissions.py); these tests are about the
+            # create/cap rules, so the landlord starts verified.
         )
         self.landlord_profile = LandlordProfile.objects.create(
             user=self.landlord_user, full_name='Test Landlord',
@@ -1302,8 +1306,11 @@ class ListingSerializerExpandedFieldsTests(APITestCase):
         self.client.force_authenticate(user=self.landlord_user)
 
         image = SimpleUploadedFile(
-            'test.jpg', b'fake-image-bytes', content_type='image/jpeg'
+            'test.jpg', _real_jpeg_bytes(), content_type='image/jpeg'
         )
+        # A REAL (tiny) JPEG — upload_photos now opens every file with
+        # Pillow to confirm it's genuinely an image, so the old
+        # b'fake-image-bytes' placeholder is (correctly) rejected.
 
         # Force an in-memory storage backend for JUST this test —
         # without this, ImageField.save() goes through whatever
@@ -1327,6 +1334,18 @@ class ListingSerializerExpandedFieldsTests(APITestCase):
 
         self.assertEqual(len(response.data['photos']), 1)
         self.assertTrue(response.data['photos'][0]['is_cover'])
+
+
+def _real_jpeg_bytes(size=(8, 8), color=(200, 30, 60)):
+    # Builds a genuine JPEG in memory with Pillow — no file on disk.
+    # Used by every test that uploads a listing photo, because the
+    # upload endpoint verifies files really are images.
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new('RGB', size, color).save(buffer, format='JPEG')
+    return buffer.getvalue()
 
 
 def _titles_from_list_response(response):
@@ -1475,7 +1494,8 @@ class ListingSubmitForReviewTests(APITestCase):
 
     def setUp(self):
         self.owner = User.objects.create_user(
-            email='review-owner@example.com', password='pass123456', role='landlord'
+            email='review-owner@example.com', password='pass123456', role='landlord',
+            is_verified=True,  # creating a listing requires a verified email
         )
         self.owner_profile = LandlordProfile.objects.create(
             user=self.owner, full_name='Review Owner', national_id_number='GHA-R1',
@@ -1614,7 +1634,8 @@ class ListingSubmitForReviewTests(APITestCase):
         # five rows, so its free-tier cap (1 listing) is long spent and
         # any further POST would 403 on the cap, not on status handling.
         fresh = User.objects.create_user(
-            email='review-fresh@example.com', password='pass123456', role='landlord'
+            email='review-fresh@example.com', password='pass123456', role='landlord',
+            is_verified=True,  # creating a listing requires a verified email
         )
         LandlordProfile.objects.create(
             user=fresh, full_name='Review Fresh', national_id_number='GHA-R9',
@@ -2046,3 +2067,197 @@ class AdminVisibilityTests(APITestCase):
         self.assertEqual(response.data['address_precise'], '7 Oversight Rd')
         self.assertEqual(response.data['landlord_contact']['phone'], '0201112222')
         self.assertTrue(response.data['is_unlocked'])
+
+IN_MEMORY_STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.memory.InMemoryStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
+# Same trick as test_photos_field_reflects_uploaded_photos above: keep
+# uploaded test files in memory instead of sending them to real R2.
+
+
+class ListingLifecycleRuleTests(APITestCase):
+    # Kelvin's 2026-09 decisions for listings: verified email to create,
+    # archive instead of delete (hard delete is admin-only), and photo
+    # uploads must be real, reasonably-sized images.
+
+    def setUp(self):
+        self.landlord_user = User.objects.create_user(
+            email='life-landlord@example.com', password='pass123456', role='landlord',
+            is_verified=True,
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Life Landlord',
+            national_id_number='GHA-L1', preferred_payout_method='momo'
+        )
+        self.other_landlord = User.objects.create_user(
+            email='life-other@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=self.other_landlord, full_name='Life Other',
+            national_id_number='GHA-L2', preferred_payout_method='momo'
+        )
+        self.admin_user = User.objects.create_user(
+            email='life-admin@example.com', password='pass123456', role='admin'
+        )
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title='Lifecycle listing', description='Test', listing_type='rent',
+            price_monthly='1500.00', advance_rent_period='1_year',
+            bedrooms=2, bathrooms=1, address_precise='3 Life Rd',
+            neighborhood='Osu', city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    # ---- verified email to create -----------------------------------------
+
+    def test_unverified_landlord_cannot_create_listing(self):
+        self.landlord_user.is_verified = False
+        self.landlord_user.save()
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/listings/', {
+            'title': 'New', 'description': 'Test', 'listing_type': 'rent',
+            'price_monthly': '1000.00', 'advance_rent_period': '1_year',
+            'bedrooms': 1, 'bathrooms': 1, 'address_precise': '1 New Rd',
+            'neighborhood': 'Osu', 'city': 'Accra',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'email_not_verified')
+
+    # ---- archive instead of delete ----------------------------------------
+
+    def test_landlord_cannot_delete_own_listing(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.delete(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'use_archive')
+        self.assertTrue(Listing.objects.filter(id=self.listing.id).exists())
+
+    def test_admin_can_delete_listing(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.delete(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Listing.objects.filter(id=self.listing.id).exists())
+
+    def test_archive_hides_listing_from_public(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/archive/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.ARCHIVED)
+
+        self.client.force_authenticate(user=None)
+        public = self.client.get(f'/listings/{self.listing.id}/')
+        self.assertEqual(public.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_landlord_cannot_archive(self):
+        self.client.force_authenticate(user=self.other_landlord)
+
+        response = self.client.post(f'/listings/{self.listing.id}/archive/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.PUBLISHED)
+
+    def test_leased_listing_cannot_be_archived(self):
+        self.listing.status = Listing.Status.LEASED
+        self.listing.save()
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/archive/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_restore_returns_archived_listing_to_draft(self):
+        self.listing.status = Listing.Status.ARCHIVED
+        self.listing.save()
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/restore/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.DRAFT)
+        # Draft, not published — it must be re-verified before going live.
+
+    def test_restore_only_works_on_archived_listings(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post(f'/listings/{self.listing.id}/restore/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ---- photo upload validation ------------------------------------------
+
+    def _upload(self, *files):
+        from django.test import override_settings
+        self.client.force_authenticate(user=self.landlord_user)
+        with override_settings(STORAGES=IN_MEMORY_STORAGES):
+            return self.client.post(
+                f'/listings/{self.listing.id}/photos/', {'images': list(files)}, format='multipart'
+            )
+
+    def test_real_image_is_accepted(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        response = self._upload(SimpleUploadedFile('ok.jpg', _real_jpeg_bytes(), content_type='image/jpeg'))
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(self.listing.photos.count(), 1)
+
+    def test_html_renamed_to_jpg_is_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        fake = SimpleUploadedFile(
+            'evil.jpg', b'<html><script>alert(1)</script></html>', content_type='image/jpeg'
+        )
+
+        response = self._upload(fake)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.listing.photos.count(), 0)
+
+    def test_wrong_extension_is_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        response = self._upload(SimpleUploadedFile('photo.gif', _real_jpeg_bytes(), content_type='image/gif'))
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_one_bad_file_rejects_the_whole_batch(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        good = SimpleUploadedFile('good.jpg', _real_jpeg_bytes(), content_type='image/jpeg')
+        bad = SimpleUploadedFile('bad.jpg', b'not an image', content_type='image/jpeg')
+
+        response = self._upload(good, bad)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.listing.photos.count(), 0)
+
+    def test_oversized_file_is_rejected(self):
+        from unittest.mock import patch
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        with patch('listings.views.MAX_PHOTO_BYTES', 100):
+            # Temporarily lower the limit to 100 bytes instead of building
+            # a real 10 MB file — the check is the same either way.
+            response = self._upload(SimpleUploadedFile('big.jpg', _real_jpeg_bytes(), content_type='image/jpeg'))
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_photo_count_is_capped(self):
+        from unittest.mock import patch
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        files = [SimpleUploadedFile(f'p{i}.jpg', _real_jpeg_bytes(), content_type='image/jpeg') for i in range(3)]
+
+        with patch('listings.views.MAX_PHOTOS_PER_LISTING', 2):
+            response = self._upload(*files)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.listing.photos.count(), 0)

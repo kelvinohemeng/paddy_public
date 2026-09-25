@@ -4,26 +4,79 @@ from django.utils.text import slugify
 # anything not URL-safe). No need to hand-write this logic yourself.
 
 from rest_framework import viewsets, status
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, BasePermission
 from rest_framework.response import Response
 
+from accounts.models import User
 from .models import Amenity
 from .serializers import AmenitySerializer
+
+
+class CanCreateAmenity(BasePermission):
+    # A DRF "permission class" — a tiny object DRF asks "is this request
+    # allowed?" BEFORE the view method (create/update/...) runs at all.
+    # has_permission() returning False makes DRF answer 403 Forbidden for
+    # us, so the view code never has to remember to check.
+    #
+    # Who may ADD an amenity: landlords (the listing create/edit form
+    # lets a landlord type a new amenity like "Borehole" inline, which
+    # POSTs here while they're logged in), plus staff and admins.
+    # Renters can't — they only ever pick from the existing list.
+    message = 'Only landlords, staff, or admins can add amenities.'
+
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated
+            and request.user.role in (User.Role.LANDLORD, User.Role.STAFF, User.Role.ADMIN)
+        )
+        # is_authenticated is checked FIRST: an anonymous visitor is an
+        # AnonymousUser object, which has no `role` attribute at all, so
+        # reading .role on it would crash. Python's `and` stops at the
+        # first False, so .role is never touched for anonymous users.
+
+
+class CanEditAmenity(BasePermission):
+    # Who may RENAME or DELETE an existing amenity: staff and admins only.
+    # Amenities are shared by every listing on the site, so one edit
+    # changes what every renter sees; deleting one silently strips it
+    # from every listing that had it (the many-to-many link rows go with
+    # it). That's a site-wide change, not something a single landlord
+    # (or, before this fix, ANY logged-in renter) should be able to make.
+    message = 'Only staff or admins can edit or delete amenities.'
+
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated
+            and request.user.role in (User.Role.STAFF, User.Role.ADMIN)
+        )
 
 
 class AmenityViewSet(viewsets.ModelViewSet):
     queryset = Amenity.objects.all()
     serializer_class = AmenitySerializer
     permission_classes = [IsAuthenticated]
-    # Default for writes (create/update/delete) — stays login-gated.
-    # Reads are opened to everyone via get_permissions() below, so the
-    # public Discovery Hub can load the amenity list for its filter UI
-    # without logging in. Same pattern ListingViewSet already uses for
-    # list/retrieve (browsing is free; only writes stay gated).
+    # Fallback only — get_permissions() below decides every action this
+    # viewset actually has. Kept so any action added later without a
+    # rule still requires login rather than being public by accident.
 
     def get_permissions(self):
+        # DRF calls this on every request and sets self.action to which
+        # kind of request it is: 'list' (GET /core/amenities/),
+        # 'retrieve' (GET /core/amenities/<id>/), 'create' (POST),
+        # 'update' (PUT), 'partial_update' (PATCH) or 'destroy' (DELETE).
         if self.action in ('list', 'retrieve'):
             return [AllowAny()]
+            # READS STAY PUBLIC — the Discovery Hub shows amenity filter
+            # chips to anonymous visitors, so reading the list must never
+            # need a login. Same pattern ListingViewSet uses for
+            # list/retrieve (browsing is free; only writes are gated).
+        if self.action == 'create':
+            return [CanCreateAmenity()]
+        if self.action in ('update', 'partial_update', 'destroy'):
+            return [CanEditAmenity()]
+            # Before this fix, these three fell through to plain
+            # IsAuthenticated — meaning any logged-in user, renters
+            # included, could PATCH an amenity's name or DELETE it.
         return super().get_permissions()
 
     def create(self, request, *args, **kwargs):
