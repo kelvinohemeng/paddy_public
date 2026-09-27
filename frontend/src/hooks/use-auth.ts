@@ -22,6 +22,8 @@ import { useRouter } from "next/navigation";
 import Cookies from "js-cookie";
 import { toast } from "sonner";
 
+import { authedFetch } from "@/lib/api";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 export type Me = {
@@ -49,12 +51,14 @@ export function clearTokens() {
 }
 
 async function fetchMe(): Promise<Me> {
-  const token = localStorage.getItem("access_token");
-  if (!token) return null;
+  if (!localStorage.getItem("access_token")) return null;
 
-  const res = await fetch(`${API_URL}/accounts/me/`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  // authedFetch, not plain fetch: access tokens live 5 minutes, and
+  // proxy.ts only refreshes them on dashboard navigations. On the
+  // public pages a plain fetch 401'd once the token expired, so a
+  // signed-in renter read as logged out (the heart asked them to sign
+  // in). authedFetch refreshes once on 401 and retries.
+  const res = await authedFetch("/accounts/me/");
   if (!res.ok) return null;
   return (await res.json()) as Me;
 }

@@ -11,6 +11,11 @@ import { useConsent } from "@/providers/consent-provider";
 import { MapPreviewCard } from "./map-preview-card";
 
 const USER_LOCATION_ZOOM = 12;
+// Fallback when the visitor's location isn't available.
+const ACCRA_CENTER = { lat: 5.6037, lng: -0.187 };
+// How long to wait on the location permission prompt before falling
+// back to Accra.
+const LOCATION_WAIT_MS = 10_000;
 const SEARCH_FOCUS_ZOOM = 11;
 // How much wider than the searched place's own viewport to frame —
 // ~1.5 zoom levels out, so listings around the area stay in view
@@ -111,6 +116,13 @@ export function DiscoveryMap({
   searchFocus,
 }: DiscoveryMapProps) {
   const [isCentering, setIsCentering] = useState(true);
+  // Mirrors isCentering for callbacks: fallbacks only move the camera
+  // while the map is still hidden, never once the visitor can see it.
+  const centeredRef = useRef(false);
+  const finishCentering = () => {
+    centeredRef.current = true;
+    setIsCentering(false);
+  };
 
   const mapDivRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<any>(null);
@@ -205,50 +217,53 @@ export function DiscoveryMap({
   }, []);
 
   // --- 2. User Location ---
+  // The map stays behind the skeleton until it has somewhere to be:
+  // the visitor's location if they allow it, Accra if they deny it,
+  // it errors, or the browser has no geolocation.
+  //
   // Yields to an explicit search: if the visitor submitted a Where
-  // query, the search-focus effect below owns the camera — centering
-  // on the user here would immediately fight (and lose to) it.
+  // query, the search-focus effect below owns the camera (and clears
+  // the skeleton) — centering on the user here would fight it.
   useEffect(() => {
     const map = mapRef.current;
-    if (!mapReady || !map) return;
-    if (searchFocus?.trim()) {
-      // Deferred so the skeleton clears without a synchronous
-      // setState-in-effect cascade; the search-focus effect owns the
-      // camera from here.
-      const t = setTimeout(() => setIsCentering(false), 0);
-      return () => clearTimeout(t);
-    }
-    if (typeof window === "undefined" || !navigator.geolocation) {
-      const t = setTimeout(() => setIsCentering(false), 0);
+    if (!mapReady || !map || searchFocus?.trim()) return;
+
+    let settled = false;
+    const settle = (center: { lat: number; lng: number }) => {
+      if (settled) return;
+      settled = true;
+      map.setCenter(center);
+      map.setZoom(USER_LOCATION_ZOOM);
+      finishCentering();
+    };
+    const fallbackToAccra = () => settle(ACCRA_CENTER);
+
+    if (!navigator.geolocation) {
+      // Deferred: no synchronous setState inside the effect body.
+      const t = setTimeout(fallbackToAccra, 0);
       return () => clearTimeout(t);
     }
 
-    console.log("DiscoveryMap: Requesting user location...");
+    // The browser's own `timeout` only starts once permission is
+    // granted — a visitor who ignores the prompt would otherwise sit
+    // on the skeleton forever. After this long, show Accra; a late
+    // "Allow" is ignored so the map never jumps while they browse.
+    const guard = setTimeout(fallbackToAccra, LOCATION_WAIT_MS);
 
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        const location = { lat: coords.latitude, lng: coords.longitude };
-        console.log("DiscoveryMap: Found user location:", location);
-
-        // Force an immediate layout projection update
-        map.panTo(location);
-        map.setCenter(location);
-        map.setZoom(USER_LOCATION_ZOOM);
-
-        // Turn off the skeleton screen now that the map is exactly where it needs to be
-        setIsCentering(false);
-      },
-      (error) => {
-        console.error("DiscoveryMap: Geolocation error:", error.message);
-        // Turn off the skeleton on error so the user can still use the fallback map view
-        setIsCentering(false);
-      },
+      ({ coords }) => settle({ lat: coords.latitude, lng: coords.longitude }),
+      fallbackToAccra, // denied, unavailable, or timed out
       {
-        enableHighAccuracy: true,
-        maximumAge: 0,
+        enableHighAccuracy: false, // area-level is plenty for a map view
+        maximumAge: 5 * 60 * 1000, // a recent fix is fine; skips the wait
         timeout: 8000,
       },
     );
+
+    return () => {
+      settled = true;
+      clearTimeout(guard);
+    };
   }, [mapReady, searchFocus]);
 
   // --- 2b. Search focus — pan/zoom to the submitted Where query ---
@@ -265,15 +280,25 @@ export function DiscoveryMap({
     if (!mapReady || !map || !query) return;
 
     let cancelled = false;
+    // Whatever happens below, the skeleton must come down; a lookup
+    // that finds nothing (or fails) lands on Accra rather than leaving
+    // the map at its whole-world starting view.
+    const fallbackToAccra = () => {
+      if (centeredRef.current) return;
+      map.setCenter(ACCRA_CENTER);
+      map.setZoom(USER_LOCATION_ZOOM);
+    };
     void (async () => {
       const google = (window as any).google;
-      if (!google?.maps) return;
       try {
-        const placesLib = google.maps.importLibrary
+        const placesLib = google?.maps?.importLibrary
           ? await google.maps.importLibrary("places")
-          : google.maps.places;
-        const PlaceCtor = placesLib?.Place ?? google.maps.places?.Place;
-        if (!PlaceCtor?.searchByText) return;
+          : google?.maps?.places;
+        const PlaceCtor = placesLib?.Place ?? google?.maps?.places?.Place;
+        if (!PlaceCtor?.searchByText) {
+          fallbackToAccra();
+          return;
+        }
 
         const { places } = await PlaceCtor.searchByText({
           textQuery: query,
@@ -282,7 +307,10 @@ export function DiscoveryMap({
         });
         if (cancelled) return;
         const top = places?.[0];
-        if (!top) return;
+        if (!top) {
+          fallbackToAccra();
+          return;
+        }
         if (top.viewport) {
           // Padded fit: the raw viewport hugs the place itself, so
           // frame a wider area around it — nearby listings stay
@@ -323,11 +351,12 @@ export function DiscoveryMap({
           map.setCenter(top.location);
           map.setZoom(SEARCH_FOCUS_ZOOM);
         }
-        setIsCentering(false);
       } catch {
-        // Lookup failures (quota, network blip, no match) stay silent
-        // — the visitor keeps the current viewport and the grid they
-        // already had instead of an error state.
+        // Lookup failures (quota, network blip) stay silent — no error
+        // state, just the Accra view.
+        if (!cancelled) fallbackToAccra();
+      } finally {
+        if (!cancelled) finishCentering();
       }
     })();
 
@@ -559,37 +588,29 @@ export function DiscoveryMap({
     );
 
   return (
-    <div className="relative w-full h-full">
-      {/*The Map Container*/}
+    <div className="relative h-full w-full">
       <div ref={mapDivRef} className="h-full w-full"></div>
-      {/* 2. The Loading Skeleton Overlay */}
+      {/* Skeleton until the map knows where to be (see effect 2). It
+          covers the live map, so the whole-world starting view is never
+          seen. */}
       {isCentering && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-100 dark:bg-zinc-900 animate-pulse">
-          <div className="flex flex-col items-center space-y-3">
-            {/* Compass/Map Pin Loading Visual Anchor */}
-            <svg
-              className="w-8 h-8 text-gray-400 animate-spin"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              />
-            </svg>
-            <span className="text-sm font-medium text-gray-500">
-              Finding properties near you...
-            </span>
+        <div
+          role="status"
+          aria-live="polite"
+          className="bg-surface absolute inset-0 z-10 overflow-hidden"
+        >
+          {/* Faint road-like strokes so it reads as "a map is coming". */}
+          <div className="absolute inset-0 animate-pulse">
+            <div className="absolute top-[30%] -left-10 h-3 w-[70%] -rotate-6 rounded-full bg-black/5" />
+            <div className="absolute top-[62%] left-[20%] h-3 w-[90%] rotate-3 rounded-full bg-black/5" />
+            <div className="absolute top-0 left-[45%] h-full w-3 rotate-12 rounded-full bg-black/5" />
+            <div className="absolute top-[18%] left-[62%] h-7 w-16 rounded-full bg-black/[0.07]" />
+            <div className="absolute top-[48%] left-[22%] h-7 w-14 rounded-full bg-black/[0.07]" />
+            <div className="absolute top-[72%] left-[58%] h-7 w-16 rounded-full bg-black/[0.07]" />
           </div>
+          <p className="font-label absolute inset-x-0 bottom-6 text-center text-xs font-medium text-black/60">
+            Finding homes near you…
+          </p>
         </div>
       )}
     </div>

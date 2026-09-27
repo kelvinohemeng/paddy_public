@@ -42,42 +42,138 @@
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 6px);
 
-  --font-sans: "Inter", sans-serif;
+  /* ── Typography (Figma, 2026-09-27) ─────────────────────────────
+     Variables come from next/font in src/lib/fonts.ts.
+     font-sans    → Inter: body / UI
+     font-display → Clash Display: headings, prices, card titles
+     font-label   → Plus Jakarta Sans: small meta labels */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-clash), var(--font-inter), ui-sans-serif, sans-serif;
+  --font-label: var(--font-jakarta), var(--font-inter), ui-sans-serif, sans-serif;
+
+  /* ── Brand ramps: Figma Tokens page → Colors ─────────────────────
+     Red is the brand ramp (the only one saved as Figma color styles:
+     "Foundation/Red"). Usage: bg-paddy-red-500, text-paddy-green-700… */
+  --color-paddy-red-50: #fce7eb;
+  --color-paddy-red-100: #f5b5c0;
+  --color-paddy-red-200: #f092a2;
+  --color-paddy-red-300: #e96078;
+  --color-paddy-red-400: #e5415d;
+  --color-paddy-red-500: #de1135;
+  --color-paddy-red-600: #ca0f30;
+  --color-paddy-red-700: #9e0c26;
+  --color-paddy-red-800: #7a091d;
+  --color-paddy-red-900: #5d0716;
+
+  --color-paddy-blue-50: #e9f1fe;
+  --color-paddy-blue-100: #bcd2fb;
+  --color-paddy-blue-200: #9cbcf9;
+  --color-paddy-blue-300: #6e9ef6;
+  --color-paddy-blue-400: #528bf4;
+  --color-paddy-blue-500: #276ef1;
+  --color-paddy-blue-600: #2364db;
+  --color-paddy-blue-700: #1c4eab;
+  --color-paddy-blue-800: #153d85;
+  --color-paddy-blue-900: #102e65;
+
+  --color-paddy-yellow-50: #fef8ea;
+  --color-paddy-yellow-100: #fceabf;
+  --color-paddy-yellow-200: #fbe09f;
+  --color-paddy-yellow-300: #f9d274;
+  --color-paddy-yellow-400: #f8c959;
+  --color-paddy-yellow-500: #f6bc2f;
+  --color-paddy-yellow-600: #e0ab2b;
+  --color-paddy-yellow-700: #af8521;
+  --color-paddy-yellow-800: #87671a;
+  --color-paddy-yellow-900: #674f14;
+
+  --color-paddy-green-50: #e7f3ec;
+  --color-paddy-green-100: #b4d9c5;
+  --color-paddy-green-200: #90c6a9;
+  --color-paddy-green-300: #5eac82;
+  --color-paddy-green-400: #3e9c6a;
+  --color-paddy-green-500: #0e8345;
+  --color-paddy-green-600: #0d773f;
+  --color-paddy-green-700: #0a5d31;
+  --color-paddy-green-800: #084826;
+  --color-paddy-green-900: #06371d;
+
+  /* Figma color styles "Gray/Dark/1–12". */
+  --color-paddy-gray-1: #111111;
+  --color-paddy-gray-2: #191919;
+  --color-paddy-gray-3: #222222;
+  --color-paddy-gray-4: #2a2a2a;
+  --color-paddy-gray-5: #313131;
+  --color-paddy-gray-6: #3a3a3a;
+  --color-paddy-gray-7: #484848;
+  --color-paddy-gray-8: #606060;
+  --color-paddy-gray-9: #6e6e6e;
+  --color-paddy-gray-10: #7b7b7b;
+  --color-paddy-gray-11: #b3b3b3;
+  --color-paddy-gray-12: #eeeeee;
+
+  /* Semantic swatches (Tokens → Colors: Success / Warning / Danger /
+     Info / Brand Accent). */
+  --color-success: #0e8345;
+  --color-warning: #f6bc2f;
+  --color-danger: #de1135;
+  --color-info: #276ef1;
+  --color-brand-accent: #af1624;
+
+  /* Surfaces the screens repeat constantly: photo placeholders, detail
+     pills, the favorite chip (#f2f2f2) and hairline card borders
+     (#d9d9d9). */
+  --color-surface: #f2f2f2;
+  --color-hairline: #d9d9d9;
+
+  /* Figma effect style "Cards" + the search pill's drop shadow. */
+  --shadow-card: 0 4px 27.6px 3px rgb(0 0 0 / 0.1);
+  --shadow-pill: 0 8px 12px 6px rgb(0 0 0 / 0.15);
 }
 
+/* Role Card "Selected" fill: #dc2027 (top) → #761115 (bottom). */
+@utility bg-brand-gradient {
+  background-image: linear-gradient(180deg, #dc2027 0%, #761115 100%);
+}
+
+/* shadcn semantic tokens, re-pointed at the Figma values (Handoff →
+   Button / Badge, which follow a zinc-based UI palette). The old
+   --primary was a generic shadcn blue that isn't in the designs;
+   Figma's primary action is the near-black #27272a button. */
 :root {
   --radius: 0.375rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(54.6% 0.245 262.881);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --background: #ffffff;
+  --foreground: #18181b;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #27272a;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --accent: #f4f4f5;
+  --accent-foreground: #18181b;
+  --destructive: #e11d48;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  /* Figma's Focus state: a 2px white gap then a #3b82f6 ring. */
+  --ring: #3b82f6;
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(54.6% 0.245 262.881);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #fafafa;
+  --sidebar-foreground: #18181b;
+  --sidebar-primary: #27272a;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f9f9f9;
+  --sidebar-accent-foreground: #18181b;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: #3b82f6;
 }
 
 @layer base {
@@ -86,6 +182,11 @@
     outline-color: var(--ring);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+  /* Set once on <html> and inherited (Tailwind's preflight makes form
+     controls inherit too). Declaring it on `*` — as before — would
+     re-apply Inter to every child and override a font-display parent. */
+  html {
     font-family: var(--font-sans);
   }
   body {

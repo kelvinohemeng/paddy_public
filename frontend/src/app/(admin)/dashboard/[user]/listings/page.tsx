@@ -9,29 +9,21 @@ import { useApiList } from "@/hooks/use-api";
 import { useMe } from "@/hooks/use-auth";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Bed, Bath, MapPin } from "lucide-react";
 // Link, not <a> — Next.js's client-side navigation component. Using
 // it (instead of a plain anchor tag) is what makes the intercepting
 // routes below actually trigger as MODALS instead of full page
 // reloads. A hard navigation (typing the URL directly, or a plain <a>)
 // bypasses interception entirely and renders the real full page.
 
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { ListingCard } from "@/components/listing-card";
+import { listingCardProps } from "@/lib/listing-card-data";
+import { ListingGrid } from "@/components/listing-grid";
 import { SubscriptionCard } from "./_components/subscription-card";
-import { STATUS_META, parseStatus } from "@/lib/listing-status";
-
-// Same lifecycle flag as listing-preview.tsx — LIVE since backend PR #16
-// exposed `status` on ListingSerializer. Duplicated literal, deliberate:
-// importing a flag from a component file would couple list page ->
-// preview component for one boolean.
-const LIFECYCLE_UI_ENABLED = true;
-
-// Same defensive photo-field reading as listing-preview.tsx — backend
-// shape for ListingPhoto isn't pinned down from the frontend alone.
-function getPhotoUrl(photo: any): string | null {
-  return photo?.image ?? photo?.image_url ?? photo?.url ?? null;
-}
+import {
+  STATUS_BADGE_STATE,
+  STATUS_META,
+  parseStatus,
+} from "@/lib/listing-status";
 
 export default function ListingsPage() {
   const params = useParams<{ user: string }>();
@@ -142,90 +134,36 @@ export default function ListingsPage() {
           No listings yet — create your first one to get started.
         </p>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <ListingGrid>
           {listings.map((listing: any) => {
-            const photos: any[] = Array.isArray(listing.photos)
-              ? listing.photos
-              : [];
-            const coverUrl =
-              photos.length > 0 ? getPhotoUrl(photos[0]) : null;
-
+            const status = parseStatus(listing.status);
             return (
-              // Link, not onClick — clicking the WHOLE card navigates
-              // to /dashboard/[user]/listings/[id], which the
+              // Same card as the Discovery Hub, in its Property state
+              // (the landlord's own listing: no heart, lifecycle badge).
+              // No action button — the whole card links to
+              // /dashboard/[user]/listings/[id], which the
               // @modal/(.)dashboard/[user]/listings/[id] intercepted
-              // route turns into the docked preview panel (same
-              // interception pattern "New Listing" above relies on).
-              // A direct visit/refresh instead lands on the real
-              // full-page fallback at listings/[id]/page.tsx.
-              <Link
+              // route opens in the preview drawer (Update / Archive /
+              // Submit live there); a direct visit or refresh lands on
+              // the full-page listings/[id]/page.tsx.
+              <ListingCard
                 key={listing.id}
+                {...listingCardProps(listing)}
+                state="property"
                 href={`/dashboard/${userId}/listings/${listing.id}`}
-              >
-                <Card className="cursor-pointer overflow-hidden py-0 transition hover:shadow-md">
-                  <div className="bg-muted aspect-video w-full overflow-hidden">
-                    {coverUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={coverUrl}
-                        alt={listing.title}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <div className="text-muted-foreground flex h-full items-center justify-center text-xs">
-                        No photo yet
-                      </div>
-                    )}
-                  </div>
-                  <CardContent className="space-y-2 py-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="truncate font-medium">{listing.title}</p>
-                      {/* Was a dead {listing.status && <Badge>...} — the
-                          serializer excludes status so the key never
-                          arrives. Flag-gated StatusBadge now; lights up
-                          with the preview's when Task 2a lands. */}
-                      {LIFECYCLE_UI_ENABLED &&
-                        (() => {
-                          const status = parseStatus(listing.status);
-                          if (!status) return null;
-                          const meta = STATUS_META[status];
-                          const Icon = meta.icon;
-                          return (
-                            <Badge
-                              variant={meta.badgeVariant}
-                              className="shrink-0 gap-1"
-                            >
-                              <Icon className="size-3" />
-                              {meta.label}
-                            </Badge>
-                          );
-                        })()}
-                    </div>
-
-                    <p className="text-muted-foreground flex items-center gap-1 truncate text-xs">
-                      <MapPin className="size-3 shrink-0" />
-                      {listing.neighborhood || listing.city || "No location yet"}
-                    </p>
-
-                    <div className="text-muted-foreground flex items-center gap-3 text-xs">
-                      <span className="flex items-center gap-1">
-                        <Bed className="size-3" /> {listing.bedrooms}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Bath className="size-3" /> {listing.bathrooms}
-                      </span>
-                      {listing.price_monthly && (
-                        <span className="text-foreground ml-auto font-medium">
-                          GHS {listing.price_monthly}/mo
-                        </span>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                status={
+                  status
+                    ? {
+                        label: STATUS_META[status].label,
+                        state: STATUS_BADGE_STATE[status],
+                      }
+                    : undefined
+                }
+                action={null}
+              />
             );
           })}
-        </div>
+        </ListingGrid>
       )}
     </div>
   );

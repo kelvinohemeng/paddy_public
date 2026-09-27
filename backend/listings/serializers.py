@@ -135,31 +135,18 @@ class ListingSerializer(serializers.ModelSerializer):
             # they wrote the address themselves, paying to see it again
             # would be absurd
 
-        if user.role == user.Role.LANDLORD:
-            from payments.models import LandlordSubscription
-            # Imported here, not at the top of the file — same
-            # deliberate scoping reason as listings/views.py's
-            # perform_create: avoids a circular import risk between
-            # listings and payments, which already reference each
-            # other in both directions (ListingUnlock.listing is a
-            # string reference to Listing for the same reason)
-
-            subscription = LandlordSubscription.objects.filter(
-                landlord_profile=user.landlordprofile
-            ).first()
-
-            if subscription is not None and subscription.is_active():
-                return True
-            # A landlord with an ACTIVE paid subscription (any tier) —
-            # per the actual product decision, this is a genuine perk
-            # of paying for a subscription at all, not just a higher
-            # listing cap. A FREE-tier landlord (no active subscription)
-            # does NOT get a free pass here — they pay per-listing like
-            # anyone else, same as a renter would
+        # NOTE: there is deliberately NO landlord-subscription branch
+        # here any more. A paid plan used to unlock EVERY other
+        # landlord's address + contact as a perk; that was removed
+        # (Kelvin, 2026-09-27) — it handed competing landlords/agents
+        # each other's direct lines for the price of one subscription.
+        # A subscription now only raises the listing cap. A landlord
+        # sees another landlord's details only by paying to unlock that
+        # one listing, exactly like a renter (the check below).
 
         return listing.unlocks.filter(user=user).exists()
-        # The fallback for everyone else (renters, and landlords without
-        # an active subscription): have THEY specifically paid to
+        # The fallback for everyone else (renters, and landlords looking
+        # at someone else's listing): have THEY specifically paid to
         # unlock THIS listing? .exists() rather than .first() — we only
         # need a yes/no, no need to fetch the actual row's data here
 

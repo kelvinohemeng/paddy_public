@@ -53,12 +53,19 @@ export type DetailListing = {
 // Deliberately omitted for now (no backend data yet): Take Live Tour
 // (photosphere — build-priority #2, separate component), the landlord's
 // response rate and photo, and the map's "Find Places" search.
+//
+// ownerView: the landlord's own preview in the dashboard drawer. Same
+// page renters see, minus the renter-only actions (save, unlock, book a
+// viewing, message the landlord) — those make no sense on your own
+// listing, and the backend would refuse most of them anyway.
 export function ListingDetail({
   listing,
   isAuthenticated,
+  ownerView = false,
 }: {
   listing: DetailListing;
   isAuthenticated: boolean;
+  ownerView?: boolean;
 }) {
   const bookingRef = useRef<HTMLDivElement>(null);
   const [contactOpen, setContactOpen] = useState(false);
@@ -71,7 +78,7 @@ export function ListingDetail({
   const rawPrice =
     listing.listing_type === "buy" ? listing.price_one_time : listing.price_monthly;
   // Figma: "GHC 4,000/ month". Card and detail both say GHC to match
-  // the design (the ISO code is GHS — see discovery-listing-card.tsx).
+  // the design (the ISO code is GHS — see lib/listing-card-data.ts).
   const priceLabel = rawPrice
     ? `GHC ${formatPrice(rawPrice)}${listing.listing_type === "rent" ? "/ month" : ""}`
     : null;
@@ -128,8 +135,9 @@ export function ListingDetail({
           {listing.title}
         </h1>
         <div className="flex shrink-0 items-center gap-1">
-          {favoriteMode !== "hidden" && (
+          {!ownerView && favoriteMode !== "hidden" && (
             <FavoriteButton
+              appearance="bare"
               saved={isSaved(listing.id)}
               onToggle={() => toggle(listing.id)}
             />
@@ -220,13 +228,15 @@ export function ListingDetail({
                     </p>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={messageLandlord}
-                  className="rounded-md bg-zinc-800 px-2.5 py-1 text-[13px] font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b] transition hover:bg-zinc-900 active:scale-[0.97]"
-                >
-                  Message landlord
-                </button>
+                {!ownerView && (
+                  <button
+                    type="button"
+                    onClick={messageLandlord}
+                    className="rounded-md bg-zinc-800 px-2.5 py-1 text-[13px] font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b] transition hover:bg-zinc-900 active:scale-[0.97]"
+                  >
+                    Message landlord
+                  </button>
+                )}
               </div>
             </div>
           </section>
@@ -245,6 +255,7 @@ export function ListingDetail({
             contact={listing.landlord_contact ?? null}
             contactOpen={contactOpen}
             onMessageLandlord={messageLandlord}
+            showRenterActions={!ownerView}
           />
         </aside>
       </div>

@@ -3,8 +3,9 @@ import { expect } from "storybook/test";
 
 import { RoleCard } from "./role-card";
 
-// Mirrors Figma "Role Card" component set (242:3862): Selected /
-// Default / Muted.
+// Mirrors Figma Handoff → "Role Card" (242:3862): Selected (red
+// gradient + white seal) / Default (plain white) / Muted (50% opacity,
+// not clickable).
 
 const meta: Meta<typeof RoleCard> = {
   title: "Primitives/RoleCard",

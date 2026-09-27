@@ -1,28 +1,31 @@
-import { Loader2 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import type { ComponentType } from "react";
 
-import { Button } from "@/components/ui/button";
+import { PaddySpinnerIcon } from "@/components/paddy-icons";
 import { cn } from "@/lib/utils";
 
-// paddy button primitive — Medusa-referenced, shadcn-built.
-// Spec: Primitive Handoff → Button set 239:142144
-// (Style × Size × State × Radius=Rounded, full 60-variant read
-// 2026-09-22 — sizes are Small 28h / Base 32h / Large 36h).
+// paddy button primitive.
+// Spec: Figma Handoff → "Button" component set (239:142144), full
+// 100-variant read 2026-09-27 via the Figma plugin API:
+//   Style  Primary | Secondary | Danger | Transparent | Transparent Muted
+//   Size   Small 28 | Base 32 | Large 36 | Xlarge 40
+//   State  Default | Hover | Pressed | Focus | Disabled
+// Radius is always 6px ("Rounded" is the only option in the set).
 //
-// One component, five styles, three sizes. Composes shadcn's
-// Button (a11y, asChild, form props) and overrides its visuals
-// via className — tailwind-merge keeps these later classes over
-// the base variants. shadcn/ui stays upgradeable; Figma values
-// live here.
+// Every value below is copied from the component, not approximated.
+// The fills follow Tailwind's zinc (neutral) and rose (danger) scales,
+// so the hex values here are the same ones Tailwind ships.
 //
-// Improv decisions (flagged, per handoff answers):
-// - Radius fixed 6px (rounded-md) — the set only ships Rounded.
-// - Secondary border: 1px border-input (strokes invisible to relay).
-// - No custom focus ring (explicit). shadcn's base focus-visible
-//   treatment is left untouched, not extended.
-// - Light theme only (paddy has no dark mode) — no dark: fallbacks.
-// - Secondary/Danger Large hover+pressed+disabled: the set only
-//   ships Default for those — derived from the Small/Base ramps.
+// The depth comes from box-shadows, not borders:
+// - a 1px ring (0 0 0 1px) acts as the outline, so it never changes
+//   the button's size;
+// - Primary/Danger add a 0.75px white inner highlight at the top.
+// Focus (keyboard only, :focus-visible) prepends a 2px white gap and
+// a 4px blue ring (#3b82f6 at 60%) to the style's own shadow.
+//
+// Figma's "Pressed" state shows the Pressed fill with the label
+// hidden and a spinner centered in its place, so it doubles as the
+// loading state: `isLoading` renders exactly that. A plain :active
+// press gets the Pressed fill only.
 
 export type PaddyButtonStyle =
   | "primary"
@@ -31,37 +34,87 @@ export type PaddyButtonStyle =
   | "transparent-muted"
   | "danger";
 
-export type PaddyButtonSize = "sm" | "base" | "lg";
+export type PaddyButtonSize = "sm" | "base" | "lg" | "xl";
+
+// Shadow stacks (Tailwind arbitrary values use _ for spaces).
+const SHADOW = {
+  primary:
+    "shadow-[0_0_0_1px_#18181b,0_1px_2px_0_rgb(0_0_0/0.4),inset_0_0.75px_0_0_rgb(255_255_255/0.2)]",
+  danger:
+    "shadow-[0_0_0_1px_#be123c,0_1px_2px_0_rgb(190_18_60/0.4),inset_0_0.75px_0_0_rgb(255_255_255/0.2)]",
+  secondary:
+    "shadow-[0_0_0_1px_rgb(0_0_0/0.08),0_1px_2px_0_rgb(0_0_0/0.12)]",
+};
+const FOCUS = {
+  primary:
+    "focus-visible:shadow-[0_0_0_4px_rgb(59_130_246/0.6),0_0_0_2px_#fff,0_0_0_1px_#18181b,0_1px_2px_0_rgb(0_0_0/0.4),inset_0_0.75px_0_0_rgb(255_255_255/0.2)]",
+  danger:
+    "focus-visible:shadow-[0_0_0_4px_rgb(59_130_246/0.6),0_0_0_2px_#fff,0_0_0_1px_#be123c,0_1px_2px_0_rgb(190_18_60/0.4),inset_0_0.75px_0_0_rgb(255_255_255/0.2)]",
+  // Secondary and both Transparent styles share one focus look: white
+  // fill + the secondary outline + the ring.
+  neutral:
+    "focus-visible:bg-white focus-visible:shadow-[0_0_0_4px_rgb(59_130_246/0.6),0_0_0_2px_#fff,0_0_0_1px_rgb(0_0_0/0.08),0_1px_2px_0_rgb(0_0_0/0.12)]",
+};
 
 const STYLE_CLASSES: Record<PaddyButtonStyle, string> = {
-  // Primary ramp: #262629 → hover #404044 → pressed #52525C,
-  // label white at 88%. hover:text is explicit (not inherit) so the
-  // label stays light on the dark fill — shadcn ghost's
-  // hover:text-accent-foreground would otherwise turn it dark.
-  primary:
-    "bg-[#262629] text-white/90 shadow-xs hover:bg-[#404044] hover:text-white/90 active:bg-[#52525C]",
-  // Secondary: white, 1px border; hover #F5F5F5, pressed #E3E3E6.
-  secondary:
-    "border border-input bg-white text-[#17171C] shadow-xs hover:bg-[#F5F5F5] hover:text-[#17171C] active:bg-[#E3E3E6]",
-  // Transparent: no fill until hover; muted variant dims the label.
-  transparent:
-    "bg-transparent text-[#17171C] hover:bg-[#F5F5F5] hover:text-[#17171C] active:bg-[#E3E3E6]",
-  "transparent-muted":
-    "bg-transparent text-[#70707A] hover:bg-[#F5F5F5] hover:text-[#70707A] active:bg-[#E3E3E6]",
-  // Danger ramp: #E01C47 → hover #BF123D → pressed #9E1238.
-  danger:
-    "bg-[#E01C47] text-white shadow-xs hover:bg-[#BF123D] hover:text-white active:bg-[#9E1238]",
+  // #27272a → hover #3f3f46 → pressed #52525b; label white at 88%.
+  primary: cn(
+    "bg-[#27272a] text-white/[0.88] hover:bg-[#3f3f46] active:bg-[#52525b] data-[loading]:bg-[#52525b]",
+    SHADOW.primary,
+    FOCUS.primary,
+  ),
+  // #e11d48 → hover #be123c → pressed #9f1239; label solid white.
+  danger: cn(
+    "bg-[#e11d48] text-white hover:bg-[#be123c] active:bg-[#9f1239] data-[loading]:bg-[#9f1239]",
+    SHADOW.danger,
+    FOCUS.danger,
+  ),
+  // White → hover #f4f4f5 → pressed #e4e4e7; label #18181b.
+  secondary: cn(
+    "bg-white text-[#18181b] hover:bg-[#f4f4f5] active:bg-[#e4e4e7] data-[loading]:bg-[#e4e4e7]",
+    SHADOW.secondary,
+    FOCUS.neutral,
+  ),
+  // No fill or shadow until hover; same hover/pressed ramp as Secondary.
+  transparent: cn(
+    "bg-transparent text-[#18181b] hover:bg-[#f4f4f5] active:bg-[#e4e4e7] data-[loading]:bg-[#e4e4e7]",
+    FOCUS.neutral,
+  ),
+  // As Transparent, with the muted zinc-500 label.
+  "transparent-muted": cn(
+    "bg-transparent text-[#71717a] hover:bg-[#f4f4f5] active:bg-[#e4e4e7] data-[loading]:bg-[#e4e4e7]",
+    FOCUS.neutral,
+  ),
 };
 
+// Padding is the set's (vertical, horizontal); height is fixed so an
+// icon-only or empty button keeps the row height.
 const SIZE_CLASSES: Record<PaddyButtonSize, string> = {
-  sm: "h-7 px-3.5 text-[13px]",
-  base: "h-8 px-4 text-[13px]",
-  lg: "h-9 px-5 text-[13px]",
+  sm: "h-7 px-2 py-1 text-[13px]",
+  base: "h-8 px-2.5 py-1.5 text-[13px]",
+  lg: "h-9 px-3 py-2 text-sm",
+  xl: "h-10 px-4 py-2.5 text-sm",
 };
 
-// Single Disabled treatment across all five styles.
-const DISABLED_CLASSES =
-  "disabled:border-transparent disabled:bg-[#F5F5F5] disabled:text-[#A1A1AA] disabled:shadow-none disabled:opacity-100";
+// Disabled differs by family: the filled styles become a flat grey
+// chip with a #e4e4e7 outline; the transparent styles keep no fill but
+// pick up the secondary outline. Label #a1a1aa everywhere.
+const DISABLED: Record<PaddyButtonStyle, string> = {
+  primary:
+    "disabled:bg-[#f4f4f5] disabled:text-[#a1a1aa] disabled:shadow-[0_0_0_1px_#e4e4e7]",
+  secondary:
+    "disabled:bg-[#f4f4f5] disabled:text-[#a1a1aa] disabled:shadow-[0_0_0_1px_#e4e4e7]",
+  danger:
+    "disabled:bg-[#f4f4f5] disabled:text-[#a1a1aa] disabled:shadow-[0_0_0_1px_#e4e4e7]",
+  // Written out in full (not built from SHADOW.secondary): Tailwind
+  // only generates classes it can find literally in the source.
+  transparent:
+    "disabled:bg-transparent disabled:text-[#a1a1aa] disabled:shadow-[0_0_0_1px_rgb(0_0_0/0.08),0_1px_2px_0_rgb(0_0_0/0.12)]",
+  "transparent-muted":
+    "disabled:bg-transparent disabled:text-[#a1a1aa] disabled:shadow-[0_0_0_1px_rgb(0_0_0/0.08),0_1px_2px_0_rgb(0_0_0/0.12)]",
+};
+
+type IconComponent = ComponentType<{ className?: string }>;
 
 export function PaddyButton({
   variant = "primary",
@@ -70,6 +123,7 @@ export function PaddyButton({
   rightIcon: RightIcon,
   isLoading = false,
   disabled = false,
+  type = "button",
   onClick,
   children,
   className,
@@ -77,50 +131,59 @@ export function PaddyButton({
 }: Omit<React.ComponentProps<"button">, "onClick"> & {
   variant?: PaddyButtonStyle;
   size?: PaddyButtonSize;
-  leftIcon?: LucideIcon;
-  rightIcon?: LucideIcon;
-  /** Manual override: spinner + interaction suppressed, style kept. */
+  /** Figma "IconSlot - Left" (15px). Any component taking className. */
+  leftIcon?: IconComponent;
+  /** Figma "Icon Slot - Right" (15px). */
+  rightIcon?: IconComponent;
+  /** Figma Pressed state: spinner over a hidden label, clicks ignored. */
   isLoading?: boolean;
   onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
-  const busy = isLoading;
   return (
-    <Button
-      variant="ghost"
+    <button
+      type={type}
       data-style={variant}
+      data-loading={isLoading || undefined}
       disabled={disabled}
-      aria-busy={busy || undefined}
-      aria-disabled={busy || undefined}
+      aria-busy={isLoading || undefined}
       onClick={(e) => {
-        if (busy) {
+        // Loading keeps focus and the Pressed look but swallows clicks
+        // (not `disabled`, which would drop focus and grey it out).
+        if (isLoading) {
           e.preventDefault();
           return;
         }
         onClick?.(e);
       }}
       className={cn(
-        // No hover:text here on purpose: each style above owns its
-        // hover label color explicitly, which neutralizes shadcn
-        // ghost's hover:text-accent-foreground (it merges earlier, so
-        // tailwind-merge keeps the style's later class). A blanket
-        // hover:text-inherit here would turn the primary/danger label
-        // dark on hover while the fill stays dark.
-        "rounded-md font-medium whitespace-nowrap",
+        "relative inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md leading-5 font-medium whitespace-nowrap outline-none transition-[background-color,box-shadow,color] select-none",
+        "disabled:pointer-events-none data-[loading]:cursor-progress",
         STYLE_CLASSES[variant],
         SIZE_CLASSES[size],
-        DISABLED_CLASSES,
+        DISABLED[variant],
         className,
       )}
       {...props}
     >
-      {busy && <Loader2 className="size-[15px] animate-spin" aria-hidden />}
-      {!busy && LeftIcon && (
-        <LeftIcon className="size-[15px]" aria-hidden />
+      {/* Content stays in the layout while loading so the button never
+          changes width mid-request. opacity-0 (Figma's own treatment),
+          not `invisible`: visibility:hidden would also drop the label
+          from the button's accessible name. */}
+      <span
+        className={cn(
+          "inline-flex items-center gap-1.5",
+          isLoading && "opacity-0",
+        )}
+      >
+        {LeftIcon && <LeftIcon className="size-[15px] shrink-0" aria-hidden />}
+        {children}
+        {RightIcon && (
+          <RightIcon className="size-[15px] shrink-0" aria-hidden />
+        )}
+      </span>
+      {isLoading && (
+        <PaddySpinnerIcon className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-spin" />
       )}
-      {children}
-      {!busy && RightIcon && (
-        <RightIcon className="size-[15px]" aria-hidden />
-      )}
-    </Button>
+    </button>
   );
 }

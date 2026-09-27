@@ -4,6 +4,7 @@
 
 import { BadgeCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { PaddyBadgeState } from "@/components/paddy-badge";
 import { Clock, FileEdit, Archive, CircleX, KeyRound } from "lucide-react";
 
 export type ListingStatus =
@@ -43,6 +44,18 @@ export const STATUS_META: Record<ListingStatus, StatusMeta> = {
 export const OWNER_ACTIONABLE: ReadonlySet<ListingStatus> = new Set<
   ListingStatus
 >(["draft", "rejected"]);
+
+// Colour of the status chip on the paddy listing card (dashboard
+// Listings grid): grey for not-live states, amber while waiting on
+// staff, green when live, red when action is needed, blue once leased.
+export const STATUS_BADGE_STATE: Record<ListingStatus, PaddyBadgeState> = {
+  draft: "neutral",
+  pending_review: "warning",
+  published: "success",
+  rejected: "error",
+  archived: "neutral",
+  leased: "information",
+};
 
 // Defensive cast helper — the backend currently excludes `status` from
 // ListingSerializer (docs/backend-listing-tasks.md Task 2a), so responses

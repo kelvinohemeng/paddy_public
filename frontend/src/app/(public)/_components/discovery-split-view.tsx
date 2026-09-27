@@ -7,9 +7,11 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useSavedListings } from "@/hooks/use-saved-listings";
 import { cn } from "@/lib/utils";
 import { DiscoveryMap } from "./discovery-map";
+import { ListingGrid } from "@/components/listing-grid";
 import { DiscoveryResultsBar } from "./discovery-results-bar";
 import { sheetOffset, useSheetDrag } from "./use-sheet-drag";
-import { DiscoveryListingCard, type PublicListing } from "./discovery-listing-card";
+import { ListingCard } from "@/components/listing-card";
+import { listingCardProps, type PublicListing } from "@/lib/listing-card-data";
 import type { MapPlacePreview } from "./discovery-map";
 
 type DiscoverySplitViewProps = {
@@ -136,33 +138,37 @@ export function DiscoverySplitView({ listings, notice, city, listingType, focusL
             <DiscoveryResultsBar count={count} city={city} variant="icon" />
           </div>
         </div>
-        {/* Auto-scaling columns: each card at least 16rem, so the
-            half-width pane gets Figma's 2 columns at 1440px and 3 on
-            wider screens; a narrow pane falls back to 1.
+        {/* Scroll area for the shared 3-column ListingGrid (columns
+            follow this pane's width, not the screen's).
             Bottom padding on mobile clears the floating Grid/Map switch. */}
-        <div className="grid min-h-0 flex-1 grid-cols-1 content-start gap-6 overflow-y-auto p-5 pb-28 [scrollbar-width:none] md:grid-cols-[repeat(auto-fill,minmax(16rem,1fr))] md:p-10 [&::-webkit-scrollbar]:hidden">
-          {count === 0
-            ? emptyMessage
-            : visibleListings.map((listing) => (
-                <div
-                  key={listing.id}
-                  className="w-full max-w-[28rem] min-w-0 justify-self-center"
-                >
-                  <DiscoveryListingCard
-                    listing={listing}
-                    isHovered={hoveredId === listing.id}
-                    onHover={setHoveredId}
-                    favorite={
-                      favoriteMode === "hidden"
-                        ? undefined
-                        : {
-                            saved: isSaved(listing.id),
-                            onToggle: () => toggleSaved(listing.id),
-                          }
-                    }
-                  />
-                </div>
-              ))}
+        <div className="min-h-0 flex-1 overflow-y-auto p-5 pb-28 [scrollbar-width:none] md:p-10 [&::-webkit-scrollbar]:hidden">
+          <ListingGrid>
+            {count === 0
+              ? emptyMessage
+              : visibleListings.map((listing) => (
+                  <div
+                    key={listing.id}
+                    className="w-full max-w-[28rem] min-w-0 justify-self-center"
+                  >
+                    <ListingCard
+                      {...listingCardProps(listing)}
+                      state={isSaved(listing.id) ? "saved" : "default"}
+                      href={`/homes/${listing.slug ?? listing.id}`}
+                      id={`listing-card-${listing.id}`}
+                      // Hovering the card or its map pin lifts the card.
+                      highlighted={hoveredId === listing.id}
+                      onMouseEnter={() => setHoveredId(listing.id)}
+                      onMouseLeave={() => setHoveredId(null)}
+                      // No heart for landlords/staff (they can't save).
+                      onToggleFavorite={
+                        favoriteMode === "hidden"
+                          ? undefined
+                          : () => toggleSaved(listing.id)
+                      }
+                    />
+                  </div>
+                ))}
+          </ListingGrid>
         </div>
       </div>
 

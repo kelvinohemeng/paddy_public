@@ -45,6 +45,9 @@ export const BookingCard = forwardRef<
     contact: LandlordContact;
     contactOpen: boolean;
     onMessageLandlord: () => void;
+    /** false = price and commitment only — the landlord previewing their
+     *  own listing in the dashboard has nothing to unlock or book. */
+    showRenterActions?: boolean;
   }
 >(function BookingCard(
   {
@@ -56,6 +59,7 @@ export const BookingCard = forwardRef<
     contact,
     contactOpen,
     onMessageLandlord,
+    showRenterActions = true,
   },
   ref,
 ) {
@@ -82,58 +86,60 @@ export const BookingCard = forwardRef<
           <p className="text-xs font-medium text-black/70">{commitment}</p>
         </div>
 
-        <div className="space-y-2.5">
-          <ViewingSlotPicker
-            listingId={listingId}
-            isUnlocked={isUnlocked}
-            onUnlock={startUnlock}
-          />
+        {showRenterActions && (
+          <div className="space-y-2.5">
+            <ViewingSlotPicker
+              listingId={listingId}
+              isUnlocked={isUnlocked}
+              onUnlock={startUnlock}
+            />
 
-          <button
-            type="button"
-            onClick={onMessageLandlord}
-            aria-expanded={contactOpen}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 shadow-[0_1px_2px_rgba(0,0,0,0.12),0_0_0_1px_rgba(0,0,0,0.08)] transition hover:bg-zinc-200 active:scale-[0.98]"
-          >
-            <MessageCircle className="size-4" />
-            Message Landlord
-          </button>
-
-          {isUnlocked ? (
-            <p className="flex items-center justify-center gap-1.5 rounded-md bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-800 ring-1 ring-emerald-200">
-              <Check className="size-4" />
-              Contact & address unlocked
-            </p>
-          ) : isAuthenticated ? (
             <button
               type="button"
-              onClick={startUnlock}
-              disabled={starting}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b,inset_0_0.75px_0_rgba(255,255,255,0.2)] transition hover:bg-zinc-900 active:scale-[0.98] disabled:opacity-70"
+              onClick={onMessageLandlord}
+              aria-expanded={contactOpen}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 shadow-[0_1px_2px_rgba(0,0,0,0.12),0_0_0_1px_rgba(0,0,0,0.08)] transition hover:bg-zinc-200 active:scale-[0.98]"
             >
-              {starting ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
+              <MessageCircle className="size-4" />
+              Message Landlord
+            </button>
+
+            {isUnlocked ? (
+              <p className="flex items-center justify-center gap-1.5 rounded-md bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-800 ring-1 ring-emerald-200">
+                <Check className="size-4" />
+                Contact & address unlocked
+              </p>
+            ) : isAuthenticated ? (
+              <button
+                type="button"
+                onClick={startUnlock}
+                disabled={starting}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b,inset_0_0.75px_0_rgba(255,255,255,0.2)] transition hover:bg-zinc-900 active:scale-[0.98] disabled:opacity-70"
+              >
+                {starting ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <LockKeyhole className="size-4" />
+                )}
+                {starting ? "Starting checkout…" : "Unlock contact & address"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => router.push("/login")}
+                // No return-to-listing after login yet: login always lands
+                // on /dashboard (see useLogin in hooks/use-auth.ts).
+                className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b] transition hover:bg-zinc-900 active:scale-[0.98]"
+              >
                 <LockKeyhole className="size-4" />
-              )}
-              {starting ? "Starting checkout…" : "Unlock contact & address"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => router.push("/login")}
-              // No return-to-listing after login yet: login always lands
-              // on /dashboard (see useLogin in hooks/use-auth.ts).
-              className="flex w-full items-center justify-center gap-1.5 rounded-md bg-zinc-800 px-4 py-2.5 text-sm font-medium text-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.4),0_0_0_1px_#18181b] transition hover:bg-zinc-900 active:scale-[0.98]"
-            >
-              <LockKeyhole className="size-4" />
-              Sign in to unlock
-            </button>
-          )}
-          {startError && <p className="text-destructive text-xs">{startError}</p>}
+                Sign in to unlock
+              </button>
+            )}
+            {startError && <p className="text-destructive text-xs">{startError}</p>}
 
-          {contactOpen && isUnlocked && <ContactReveal contact={contact} />}
-        </div>
+            {contactOpen && isUnlocked && <ContactReveal contact={contact} />}
+          </div>
+        )}
       </div>
 
       <TrustNote />

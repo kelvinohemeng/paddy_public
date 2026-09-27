@@ -1,10 +1,10 @@
 import { Suspense } from "react";
 
-import { DiscoveryHeader, RentBuyToggle } from "./../_components/discovery-header";
-import { SearchPill } from "./../_components/search-pill";
+import { DiscoveryHeader } from "./../_components/discovery-header";
+import { DHSearchPill } from "./../_components/dh-search-pill";
 import { DiscoverySplitView } from "./../_components/discovery-split-view";
 import { DiscoveryFallbackNotice } from "./../_components/discovery-fallback-notice";
-import type { PublicListing } from "./../_components/discovery-listing-card";
+import type { PublicListing } from "@/lib/listing-card-data";
 import { DISCOVERY_PATH } from "./../_components/discovery-path";
 
 // Discovery Hub at /homes — the Figma "Default State" build: branded
@@ -94,14 +94,11 @@ export default async function HomesHubPage({
       <header className="shrink-0 border-b p-3 md:p-4">
         <div className="mx-auto max-w-6xl space-y-3 md:space-y-4">
           <DiscoveryHeader />
-          <div className="flex flex-col items-center justify-center">
-            <Suspense fallback={<div className="h-9" />}>
-              <RentBuyToggle />
-            </Suspense>
-          <Suspense fallback={<div className="h-12" />}>
-            <SearchPill basePath={DISCOVERY_PATH} />
+          {/* Figma "DH_Search Pill": Rent/Buy tabs + Where / Duration /
+              Budget in one component. */}
+          <Suspense fallback={<div className="h-[116px]" />}>
+            <DHSearchPill basePath={DISCOVERY_PATH} />
           </Suspense>
-          </div>
         </div>
       </header>
 

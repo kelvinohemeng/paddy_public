@@ -5,6 +5,7 @@ import { QueryProvider } from "@/providers/query-provider";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ConsentProvider } from "@/providers/consent-provider";
 import { CookieConsentBanner } from "@/components/cookie-consent-banner";
+import { fontVariables } from "@/lib/fonts";
 
 export const metadata: Metadata = {
   title: "paddy — verified rentals in Ghana",
@@ -21,7 +22,7 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className={fontVariables}>
       <body>
         <Suspense>
           <GoogleOAuthProvider

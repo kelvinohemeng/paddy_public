@@ -1,31 +1,37 @@
-import { ChevronRight } from "lucide-react";
-
+import { VerifiedSealIcon } from "@/components/paddy-icons";
 import { cn } from "@/lib/utils";
 
-// paddy role card primitive — Medusa-referenced, shadcn-built.
-// Spec: Handoff → "Role Card" component set (242:3862), 3 states:
-// Selected / Default / Muted. Used for the auth "who are you"
-// picker (Landlord / Renter / Agent...).
+// paddy role card primitive — the "who are you" picker on onboarding
+// (Landlord / Renter).
+// Spec: Figma Handoff → "Role Card" component set (242:3862), 3 states,
+// read 2026-09-27 via the Figma plugin API:
 //
-// Improv decision, confirmed with Kelvin 2026-09-23: Figma's Selected
-// state uses a GRADIENT_LINEAR fill the relay snapshot can't resolve
-// to real color stops (structure-only read, no image export token
-// available per figma-plugin AGENT.md). Rather than guess stops,
-// Selected renders as a solid brand-primary fill (bg-primary / the
-// app's `--primary` token, same blue used everywhere else) — confirm
-// against Figma again if/when the plugin gains image-export.
+//            fill                         seal   shadow      opacity
+//  Selected  gradient #dc2027 → #761115   white  Cards       1
+//  Default   white                        none   none        1
+//  Muted     white                        black  Cards       0.5
 //
-// Muted renders identically to Default except for a dimmed label +
-// disabled interaction (Figma's two variants read the same fills in
-// the snapshot; muted = lower-opacity + non-interactive is the
-// standard reading of "muted" elsewhere in this set).
+// All three: 178x106, 20px padding, 12px radius, 1px #d9d9d9 outline
+// drawn OUTSIDE the box (Figma stroke align "outside" — a ring shadow
+// here, so it doesn't eat into the padding). "Cards" is the file's
+// effect style: 0 4px 27.6px 3px black at 10% (`shadow-card`).
+//
+// Type: "You are" is Plus Jakarta Sans Medium 10 at 80% opacity; the
+// role is Clash Display Medium 18. Both at -2% letter spacing.
+//
+// The corner mark is the verified seal (Phosphor SealCheck). An
+// earlier version guessed a solid blue for Selected because the old
+// Figma relay couldn't read gradients; this is the real fill.
 
 export type RoleCardState = "selected" | "default" | "muted";
 
 const STATE_CLASSES: Record<RoleCardState, string> = {
-  selected: "bg-primary text-primary-foreground border-transparent",
-  default: "bg-white text-[#111111] border-input hover:border-[#262629]/40",
-  muted: "bg-white text-[#A1A1AA] border-input opacity-60",
+  selected:
+    "bg-brand-gradient text-white shadow-[0_0_0_1px_#d9d9d9,var(--shadow-card)]",
+  default:
+    "bg-white text-black shadow-[0_0_0_1px_#d9d9d9] hover:shadow-[0_0_0_1px_#d9d9d9,var(--shadow-card)]",
+  muted:
+    "bg-white text-black opacity-50 shadow-[0_0_0_1px_#d9d9d9,var(--shadow-card)]",
 };
 
 export function RoleCard({
@@ -34,7 +40,7 @@ export function RoleCard({
   onSelect,
   className,
 }: {
-  /** e.g. "Landlord", "Renter", "Agent" */
+  /** e.g. "Landlord", "Renter" */
   role: string;
   state?: RoleCardState;
   onSelect?: () => void;
@@ -48,21 +54,24 @@ export function RoleCard({
       aria-pressed={state === "selected"}
       onClick={onSelect}
       className={cn(
-        // w-[178px] is the Figma component-library default; auth
-        // screens (Signup, 145px cards side by side) override via
-        // className — kept flexible instead of hardcoded so both
-        // contexts get their real Figma proportions.
-        "flex h-[106px] w-[178px] flex-col justify-between rounded-xl border p-5 text-left shadow-xs transition",
+        // w-[178px] is the Figma component default; screens that lay
+        // two cards side by side override it via className.
+        "flex h-[106px] w-[178px] cursor-pointer flex-col justify-between rounded-xl p-5 text-left transition-[box-shadow,background-color] outline-none",
+        "focus-visible:ring-2 focus-visible:ring-[#3b82f6]/60 focus-visible:ring-offset-2",
         STATE_CLASSES[state],
         muted && "cursor-not-allowed",
         className,
       )}
     >
-      <span className="flex items-center justify-between text-[10px] font-medium tracking-wide uppercase opacity-80">
-        You are
-        <ChevronRight className="size-2.5" aria-hidden />
+      <span className="flex items-center justify-between gap-2">
+        <span className="font-label text-[10px] font-medium tracking-[-0.02em] opacity-80">
+          You are
+        </span>
+        {state !== "default" && <VerifiedSealIcon className="shrink-0" />}
       </span>
-      <span className="text-lg font-semibold">{role}</span>
+      <span className="font-display text-lg leading-[22px] font-medium tracking-[-0.02em]">
+        {role}
+      </span>
     </button>
   );
 }

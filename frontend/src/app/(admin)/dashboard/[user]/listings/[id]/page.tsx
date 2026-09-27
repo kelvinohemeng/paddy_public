@@ -15,7 +15,12 @@
 "use client";
 
 import { use, useState } from "react";
-import { ListingPreview } from "../_components/listing-preview";
+import {
+  ListingOwnerActions,
+  ListingPreview,
+  listingStatusHint,
+  useListingStatus,
+} from "../_components/listing-preview";
 import { ListingCreateForm } from "../_components/listing-create-form";
 
 export default function ListingShowPage({
@@ -25,9 +30,10 @@ export default function ListingShowPage({
 }) {
   const { id } = use(params);
   const [mode, setMode] = useState<"view" | "edit">("view");
+  const status = useListingStatus(id);
 
   return (
-    <div className="mx-auto max-w-2xl p-6">
+    <div className={mode === "edit" ? "mx-auto max-w-2xl p-6" : "mx-auto max-w-[845px] p-6"}>
       {mode === "edit" ? (
         <>
           <h1 className="mb-6 text-2xl font-bold">Update Listing</h1>
@@ -42,8 +48,24 @@ export default function ListingShowPage({
         </>
       ) : (
         <>
-          <h1 className="mb-6 text-2xl font-bold">Listing Preview</h1>
-          <ListingPreview listingId={id} onEdit={() => setMode("edit")} />
+          {/* Same layout as the drawer: title left, owner actions at
+              the right end of the top row, the Discovery view below. */}
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="font-display text-2xl font-medium tracking-[-0.02em]">
+                Listing preview
+              </h1>
+              {listingStatusHint(status) && (
+                <p className="font-label text-xs font-medium text-black/60">
+                  {listingStatusHint(status)}
+                </p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <ListingOwnerActions listingId={id} onEdit={() => setMode("edit")} />
+            </div>
+          </div>
+          <ListingPreview listingId={id} />
         </>
       )}
     </div>

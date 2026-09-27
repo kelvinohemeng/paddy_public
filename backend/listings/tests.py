@@ -689,7 +689,7 @@ class ListingUnlockGatingTests(APITestCase):
         self.assertIsNone(response.data['landlord_contact'])
         self.assertFalse(response.data['is_unlocked'])
 
-    def test_landlord_with_active_subscription_sees_unlocked(self):
+    def test_landlord_with_active_subscription_stays_locked(self):
         from payments.models import LandlordSubscription
         from django.utils import timezone
         from datetime import timedelta
@@ -705,11 +705,12 @@ class ListingUnlockGatingTests(APITestCase):
 
         response = self.client.get(f'/listings/{self.listing.id}/')
 
-        self.assertEqual(response.data['address_precise'], '42 Secret Ave')
-        self.assertTrue(response.data['is_unlocked'])
-        # An ACTIVE paid subscription is a genuine platform-wide perk —
-        # unlocks OTHER landlords' listings too, not just raising their
-        # own listing cap
+        self.assertIsNone(response.data['address_precise'])
+        self.assertIsNone(response.data['landlord_contact'])
+        self.assertFalse(response.data['is_unlocked'])
+        # A paid plan only raises the landlord's own listing cap — it
+        # does NOT unlock other landlords' listings (perk removed
+        # 2026-09-27; see ListingSerializer._has_access)
 
     def test_landlord_with_expired_subscription_stays_locked(self):
         from payments.models import LandlordSubscription

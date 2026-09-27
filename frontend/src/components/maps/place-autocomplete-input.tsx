@@ -44,6 +44,14 @@ type PlaceAutocompleteInputProps = {
   onPlaceSelect?: (place: PlaceDetails) => void;
   placeholder?: string;
   className?: string;
+  /** Extra classes for the <input> itself (the wrapper gets className). */
+  inputClassName?: string;
+  /** "field" (default): a normal bordered form input. "bare": no border,
+   *  padding or ring — for hosts that draw their own frame (the search
+   *  pill). */
+  appearance?: "field" | "bare";
+  /** Forwarded to the <input>, so a <label htmlFor> can point at it. */
+  id?: string;
   // Optional Places (New) restrictions. Omit entirely for worldwide
   // results — the search pill intentionally passes none.
   includedRegionCodes?: string[];
@@ -56,6 +64,9 @@ export function PlaceAutocompleteInput({
   onPlaceSelect,
   placeholder,
   className,
+  inputClassName,
+  appearance = "field",
+  id,
   includedRegionCodes,
   includedPrimaryTypes,
 }: PlaceAutocompleteInputProps) {
@@ -375,8 +386,9 @@ export function PlaceAutocompleteInput({
 
   return (
     <div ref={containerRef} className={cn("relative w-full", className)}>
-      {/* Bare text input — zero icons by design (Figma pill). */}
+      {/* Plain text input — zero icons by design (Figma pill). */}
       <Input
+        id={id}
         value={value}
         onChange={(e) => {
           onChangeRef.current(e.target.value);
@@ -408,7 +420,11 @@ export function PlaceAutocompleteInput({
         role="combobox"
         aria-expanded={open}
         aria-autocomplete="list"
-        className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+        className={cn(
+          appearance === "bare" &&
+            "border-0 bg-transparent px-0 shadow-none focus-visible:ring-0",
+          inputClassName,
+        )}
       />
 
       {open && (suggestions.length > 0 || loading) && (

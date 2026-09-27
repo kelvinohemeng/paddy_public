@@ -584,9 +584,101 @@ export const ListingCreateForm = ({
     }
   }
 
+  const existingPhotoCount = isEditMode
+    ? (((recordData as any)?.photos as ManagedPhoto[] | undefined)?.length ?? 0)
+    : 0;
+
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-7">
+        {/* Photos first: they're what sells a listing, and uploading
+            them is the step landlords most often forget. Same section
+            styling as the rest of the form. */}
+        <section className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold tracking-tight">Photos</h3>
+            <span className="text-muted-foreground text-xs">
+              {photoCountLabel(existingPhotoCount, selectedFiles.length)}
+            </span>
+          </div>
+
+          {/* Gallery management for ALREADY-UPLOADED photos — only
+              meaningful in edit mode (create mode has no listing id yet,
+              so no photos can exist). Reads the photos nested on this
+              form's own record query; cover/reorder/delete requests go
+              through photo-manager.tsx's PATCH/DELETE contract
+              (backend PR #16). Freshly-picked-but-unuploaded files are
+              NOT here — they remain in the picker grid below until the
+              next save uploads them. */}
+          {isEditMode &&
+            (recordData as any)?.photos &&
+            ((recordData as any).photos as ManagedPhoto[]).length > 0 && (
+              <PhotoManager
+                listingId={listingId!}
+                photos={(recordData as any).photos as ManagedPhoto[]}
+              />
+            )}
+
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="hover:bg-muted/50 flex w-full cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border border-dashed px-4 py-7 text-center transition"
+          >
+            <ImagePlus className="text-muted-foreground size-6" />
+            <span className="text-sm font-medium">
+              Click to select photos
+            </span>
+            <span className="text-muted-foreground text-xs">
+              JPG, PNG or WEBP — pick once or add more in batches
+            </span>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept="image/jpeg,image/png,image/webp"
+            // The "accept" attribute is a UI HINT ONLY — it filters
+            // what the OS file picker shows/allows by default, but a
+            // user can often still bypass it (e.g. "All Files" in the
+            // picker dialog). It is NOT real validation, which is why
+            // handleFileChange above re-checks every file's actual
+            // .type regardless of what this attribute suggests.
+            onChange={handleFileChange}
+            className="hidden"
+          />
+
+          {previews.length > 0 && (
+            <div className="grid grid-cols-3 gap-3">
+              {previews.map((src, i) => (
+                <div
+                  key={`${selectedFiles[i]?.name}-${i}`}
+                  className="bg-muted group relative aspect-square overflow-hidden rounded-md border"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={src}
+                    alt={selectedFiles[i]?.name ?? `Photo ${i + 1}`}
+                    className="h-full w-full object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeFile(i)}
+                    aria-label={`Remove ${selectedFiles[i]?.name ?? "photo"}`}
+                    className="absolute right-1.5 top-1.5 rounded-full bg-black/70 p-1 text-white transition hover:bg-black focus-visible:opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                  <p className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-1 text-[11px] text-white">
+                    {selectedFiles[i]?.name}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {uploadError && <p className="text-destructive text-sm">{uploadError}</p>}
+        </section>
+
         <section className="space-y-4">
           <h3 className="text-sm font-semibold tracking-tight">Basics</h3>
           <FormField
@@ -750,12 +842,12 @@ export const ListingCreateForm = ({
               autoComplete="off"
             />
             {coordsError ? (
-              <p className="text-xs text-red-500">{coordsError}</p>
+              <p className="text-destructive text-xs">{coordsError}</p>
             ) : (
               <p className="text-muted-foreground text-xs">
-                Paste "latitude, longitude" (e.g. from Google Maps' share
-                link) to drop the pin exactly — handy when the address
-                doesn't resolve cleanly via autocomplete.
+                Paste &ldquo;latitude, longitude&rdquo; (e.g. from Google
+                Maps&rsquo; share link) to drop the pin exactly — handy when
+                the address doesn&rsquo;t resolve cleanly via autocomplete.
               </p>
             )}
           </div>
@@ -994,93 +1086,6 @@ export const ListingCreateForm = ({
           />
         </section>
 
-        <section className="space-y-3 rounded-lg border p-4">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-medium leading-none">Photos</p>
-            <span className="text-muted-foreground text-xs">
-              {selectedFiles.length === 0
-                ? "No photos yet"
-                : `${selectedFiles.length} selected`}
-            </span>
-          </div>
-
-          {/* Gallery management for ALREADY-UPLOADED photos — only
-              meaningful in edit mode (create mode has no listing id yet,
-              so no photos can exist). Reads the photos nested on this
-              form's own record query; cover/reorder/delete requests go
-              through photo-manager.tsx's PATCH/DELETE contract
-              (backend PR #16). Freshly-picked-but-unuploaded files are
-              NOT here — they remain in the picker grid below until the
-              next save uploads them. */}
-          {isEditMode &&
-            (recordData as any)?.photos &&
-            ((recordData as any).photos as ManagedPhoto[]).length > 0 && (
-              <PhotoManager
-                listingId={listingId!}
-                photos={(recordData as any).photos as ManagedPhoto[]}
-              />
-            )}
-
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="hover:bg-muted/50 flex w-full cursor-pointer flex-col items-center justify-center gap-1.5 rounded-md border border-dashed px-4 py-7 text-center transition"
-          >
-            <ImagePlus className="text-muted-foreground size-6" />
-            <span className="text-sm font-medium">
-              Click to select photos
-            </span>
-            <span className="text-muted-foreground text-xs">
-              JPG, PNG or WEBP — pick once or add more in batches
-            </span>
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/jpeg,image/png,image/webp"
-            // The "accept" attribute is a UI HINT ONLY — it filters
-            // what the OS file picker shows/allows by default, but a
-            // user can often still bypass it (e.g. "All Files" in the
-            // picker dialog). It is NOT real validation, which is why
-            // handleFileChange above re-checks every file's actual
-            // .type regardless of what this attribute suggests.
-            onChange={handleFileChange}
-            className="hidden"
-          />
-
-          {previews.length > 0 && (
-            <div className="grid grid-cols-3 gap-3">
-              {previews.map((src, i) => (
-                <div
-                  key={`${selectedFiles[i]?.name}-${i}`}
-                  className="bg-muted group relative aspect-square overflow-hidden rounded-md border"
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={src}
-                    alt={selectedFiles[i]?.name ?? `Photo ${i + 1}`}
-                    className="h-full w-full object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeFile(i)}
-                    aria-label={`Remove ${selectedFiles[i]?.name ?? "photo"}`}
-                    className="absolute right-1.5 top-1.5 rounded-full bg-black/70 p-1 text-white transition hover:bg-black focus-visible:opacity-100 lg:opacity-0 lg:group-hover:opacity-100"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                  <p className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-1 text-[11px] text-white">
-                    {selectedFiles[i]?.name}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {uploadError && <p className="text-sm text-red-500">{uploadError}</p>}
-        </section>
-
         <div className="flex gap-2 border-t pt-5">
           <Button type="submit" disabled={formLoading} className="flex-1">
             {formLoading
@@ -1109,3 +1114,14 @@ export const ListingCreateForm = ({
     </Form>
   );
 };
+
+// "3 uploaded · 2 to upload" — counts photos already on the listing
+// (edit mode) as well as freshly picked ones, so an edit form with a
+// full gallery no longer says "No photos yet".
+function photoCountLabel(uploaded: number, picked: number): string {
+  if (uploaded === 0 && picked === 0) return "No photos yet";
+  const parts = [];
+  if (uploaded > 0) parts.push(`${uploaded} uploaded`);
+  if (picked > 0) parts.push(`${picked} to upload`);
+  return parts.join(" · ");
+}
