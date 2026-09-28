@@ -1,11 +1,23 @@
 // Single source of truth for Listing.status rendering — mirrors
 // Listing.Status in backend/listings/models.py exactly:
-//   DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED / LEASED
+//   DRAFT / PENDING_REVIEW / PUBLISHED / REJECTED / ARCHIVED / LEASED /
+//   PAUSED
+// PAUSED is set by the backend only (payments/limits.py, PR #34): when a
+// landlord's plan lapses or is downgraded, their newest live listings
+// above the new limit are paused — hidden from renters, restored on their
+// own once the landlord pays again.
 
 import { BadgeCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { PaddyBadgeState } from "@/components/paddy-badge";
-import { Clock, FileEdit, Archive, CircleX, KeyRound } from "lucide-react";
+import {
+  Clock,
+  FileEdit,
+  Archive,
+  CircleX,
+  CirclePause,
+  KeyRound,
+} from "lucide-react";
 
 export type ListingStatus =
   | "draft"
@@ -13,7 +25,8 @@ export type ListingStatus =
   | "published"
   | "rejected"
   | "archived"
-  | "leased";
+  | "leased"
+  | "paused";
 
 type StatusMeta = {
   label: string;
@@ -36,18 +49,25 @@ export const STATUS_META: Record<ListingStatus, StatusMeta> = {
   archived: { label: "Archived", icon: Archive, badgeVariant: "outline" },
   // Set by the backend when a renter confirms a lease on the listing.
   leased: { label: "Leased", icon: KeyRound, badgeVariant: "secondary" },
+  // Set by the backend when the plan's live limit drops below this
+  // listing (see the header comment).
+  paused: { label: "Paused", icon: CirclePause, badgeVariant: "outline" },
 };
 
-// The two statuses a landlord can (once the backend's submit-for-review
-// action exists) transition themselves: draft → pending_review, and
-// rejected → pending_review (fix & resubmit). The CTA keys off this.
+// The two statuses a landlord can transition themselves: draft →
+// pending_review, and rejected → pending_review (fix & resubmit). The
+// Submit CTA keys off this. Paused is deliberately NOT here: a paused
+// listing was already verified and comes back on its own when the
+// landlord pays — submitting it again would put it back in the staff
+// queue for nothing. It can still be archived.
 export const OWNER_ACTIONABLE: ReadonlySet<ListingStatus> = new Set<
   ListingStatus
 >(["draft", "rejected"]);
 
 // Colour of the status chip on the paddy listing card (dashboard
 // Listings grid): grey for not-live states, amber while waiting on
-// staff, green when live, red when action is needed, blue once leased.
+// staff or paused by the plan (both need a look, neither is an error),
+// green when live, red when action is needed, blue once leased.
 export const STATUS_BADGE_STATE: Record<ListingStatus, PaddyBadgeState> = {
   draft: "neutral",
   pending_review: "warning",
@@ -55,6 +75,7 @@ export const STATUS_BADGE_STATE: Record<ListingStatus, PaddyBadgeState> = {
   rejected: "error",
   archived: "neutral",
   leased: "information",
+  paused: "warning",
 };
 
 // Defensive cast helper — the backend currently excludes `status` from

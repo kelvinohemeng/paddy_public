@@ -66,6 +66,11 @@ export function listingStatusHint(status: ListingStatus | null): string | undefi
       return "Archived — hidden from renters. Restore to edit and resubmit.";
     case "leased":
       return "Leased — off the market.";
+    case "paused":
+      // Set by the backend (payments/limits.py) when the landlord's plan
+      // lapses or drops below their live listings. It comes back on its
+      // own when they pay — no resubmitting.
+      return "Paused — over your plan's live-listing limit. Upgrade to bring it back.";
     default:
       return undefined;
   }
@@ -117,7 +122,9 @@ export function ListingOwnerActions({
     setStatusBusy(true);
     try {
       await apiPost(`/listings/${listingId}/${action}/`);
-      await invalidate("listings");
+      // "payments" too: archiving frees a live slot (and may bring a
+      // paused listing back), so the subscription card's numbers change.
+      await invalidate(["listings", "payments"]);
       toast.success(action === "archive" ? "Listing archived" : "Listing restored as a draft");
     } catch (err) {
       toast.error(errorMessage(err, "Could not update this listing"));
@@ -140,7 +147,9 @@ export function ListingOwnerActions({
           variant="secondary"
           leftIcon={SendHorizontal}
           isLoading={isSubmitting}
-          onClick={submit}
+          // Wrapped: submit(id?) takes an optional id, and a bare
+          // onClick={submit} would pass the click event as that id.
+          onClick={() => void submit()}
           title={status === "rejected" ? "Resubmit for review" : "Submit for review"}
         >
           {label(status === "rejected" ? "Resubmit" : "Submit for review")}

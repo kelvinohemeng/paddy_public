@@ -5,7 +5,7 @@
 // is open, or a search engine crawls it. Same pattern as
 // listings/create/page.tsx's relationship to its own intercepted panel.
 
-import { ListingCreateForm } from "../../_components/listing-create-form";
+import { ListingFormStepper } from "../../_components/listing-form-stepper";
 
 export default async function ListingEditPage({
   params,
@@ -15,9 +15,9 @@ export default async function ListingEditPage({
   const { id } = await params;
 
   return (
-    <div className="max-w-xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">Edit Listing</h1>
-      <ListingCreateForm listingId={id} />
+    <div className="mx-auto max-w-3xl p-6">
+      <h1 className="font-display mb-6 text-2xl font-medium tracking-[-0.02em]">Edit listing</h1>
+      <ListingFormStepper listingId={id} />
     </div>
   );
 }

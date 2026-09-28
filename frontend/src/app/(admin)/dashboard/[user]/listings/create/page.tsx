@@ -11,13 +11,13 @@
 // gets the plain full-page form instead of the modal, which is a
 // completely reasonable, working experience either way.
 
-import { ListingCreateForm } from "../_components/listing-create-form";
+import { ListingFormStepper } from "../_components/listing-form-stepper";
 
 export default function ListingCreatePage() {
   return (
-    <div className="max-w-xl mx-auto p-6">
-      <h1 className="text-2xl font-bold mb-6">Create Listing</h1>
-      <ListingCreateForm />
+    <div className="mx-auto max-w-3xl p-6">
+      <h1 className="font-display mb-6 text-2xl font-medium tracking-[-0.02em]">Create listing</h1>
+      <ListingFormStepper />
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { use } from "react";
 import { SideDrawer } from "@/components/side-drawer";
-import { ListingCreateForm } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-create-form";
+import { ListingFormStepper } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-form-stepper";
 
 // Drawer for EDITING a listing directly (client-side nav to
 // /dashboard/[user]/listings/[id]/edit — e.g. the "Edit Listing" link on
@@ -24,11 +24,11 @@ export default function InterceptedListingEditPanel({
     <SideDrawer
       title="Edit listing"
       showTitle
-      subtitle="Update details — the list refreshes once saved."
+      subtitle="Jump to any step — Save changes is on the last one."
       dismissOnOutsideClick={false}
       bodyClassName="px-5 pb-8 md:px-8"
     >
-      <ListingCreateForm listingId={id} />
+      <ListingFormStepper listingId={id} />
     </SideDrawer>
   );
 }

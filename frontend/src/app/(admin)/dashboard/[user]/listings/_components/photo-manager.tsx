@@ -37,7 +37,7 @@ import { authedFetch, errorMessage } from "@/lib/api";
 // whole gallery — deliberately deferred until the UI graduates from
 // skeleton-first (AGENTS.md: focus is functionality, not polish).
 //
-// Rendering context: mounted ONLY inside ListingCreateForm's edit mode
+// Rendering context: mounted ONLY by the listing form's PhotosSection in edit mode
 // (create mode has no photos yet — they attach to a listing id that
 // doesn't exist until first save). Existing photos come from the form's
 // own record query; NEWLY picked files (not yet uploaded) stay fully

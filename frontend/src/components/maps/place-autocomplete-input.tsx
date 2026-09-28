@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 // talks to the Places suggestion APIs directly, then Place.fetchFields
 // (or Geocoder as fallback) for details on pick. Same onChange /
 // onPlaceSelect contract as before, so existing callers (search pill,
-// listing-create-form) don't change.
+// the listing form's LocationSection) don't change.
 //
 // Worldwide by default: no region/type restrictions unless the caller
 // passes includedRegionCodes / includedPrimaryTypes explicitly.
@@ -52,6 +52,12 @@ type PlaceAutocompleteInputProps = {
   appearance?: "field" | "bare";
   /** Forwarded to the <input>, so a <label htmlFor> can point at it. */
   id?: string;
+  /** Forwarded as aria-invalid / aria-describedby, so a form can mark the
+   *  input invalid and point it at its error message. */
+  invalid?: boolean;
+  describedBy?: string;
+  /** Forwarded to the <input> (e.g. to validate when it loses focus). */
+  onBlur?: () => void;
   // Optional Places (New) restrictions. Omit entirely for worldwide
   // results — the search pill intentionally passes none.
   includedRegionCodes?: string[];
@@ -67,6 +73,9 @@ export function PlaceAutocompleteInput({
   inputClassName,
   appearance = "field",
   id,
+  invalid,
+  describedBy,
+  onBlur,
   includedRegionCodes,
   includedPrimaryTypes,
 }: PlaceAutocompleteInputProps) {
@@ -415,11 +424,14 @@ export function PlaceAutocompleteInput({
             setActiveIndex(-1);
           }
         }}
+        onBlur={onBlur}
         placeholder={placeholder}
         autoComplete="off"
         role="combobox"
         aria-expanded={open}
         aria-autocomplete="list"
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
         className={cn(
           appearance === "bare" &&
             "border-0 bg-transparent px-0 shadow-none focus-visible:ring-0",

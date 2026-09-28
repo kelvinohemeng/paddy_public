@@ -8,7 +8,7 @@ import {
   listingStatusHint,
   useListingStatus,
 } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-preview";
-import { ListingCreateForm } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-create-form";
+import { ListingFormStepper } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-form-stepper";
 
 // Drawer for the listing PREVIEW — the shared right-hand drawer, same
 // slide-in and expand as Discovery's listing preview, and the same body:
@@ -41,10 +41,12 @@ export default function InterceptedListingShowPanel({
       showTitle
       subtitle={
         editing
-          ? "Update details — the preview refreshes once saved."
+          ? "Jump to any step — Save changes is on the last one."
           : listingStatusHint(status)
       }
       dismissOnOutsideClick={!editing}
+      // While editing, the stepper fills the header's actions slot with
+      // its own Back / Next, so nothing is passed here.
       actions={
         editing ? undefined : (
           <ListingOwnerActions listingId={id} onEdit={() => setMode("edit")} />
@@ -55,7 +57,7 @@ export default function InterceptedListingShowPanel({
       bodyClassName={editing ? "px-5 pb-8 md:px-8" : undefined}
     >
       {editing ? (
-        <ListingCreateForm
+        <ListingFormStepper
           listingId={id}
           onSuccess={() => setMode("preview")}
           onCancel={() => setMode("preview")}

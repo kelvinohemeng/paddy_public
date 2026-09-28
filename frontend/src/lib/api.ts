@@ -3,7 +3,7 @@
 // Shared authenticated-fetch helper — ONE home for the
 // Bearer-from-localStorage + one-silent-refresh + replay dance that was
 // previously copied inline in three places (dataProvider/index.ts's
-// customFetch, listing-create-form.tsx's uploadPhotos, and the first
+// customFetch, the old listing-create-form.tsx's uploadPhotos, and the first
 // lifecycle CTA). The dataProvider keeps its own copy for now (refactoring
 // the core data path mid-stream wasn't worth the risk this pass);
 // payments.ts ALSO deliberately keeps its own paymentsFetch — AGENTS.md
@@ -16,7 +16,7 @@
 //   - pass `formData` → body is the FormData and NO Content-Type is set —
 //     the browser must generate the multipart boundary itself; setting
 //     Content-Type manually breaks multipart uploads (see the comment on
-//     the photo upload in listing-create-form.tsx)
+//     uploadPhotos in listing-form-stepper.tsx)
 //   - pass neither → request with no body (GET, DELETE, no-payload POST)
 //
 // On a 401 (SimpleJWT's 5-minute default access lifetime), refreshes ONCE

@@ -1,94 +1,119 @@
 "use client";
 
 // The landlord-facing subscription surface — the minimal MVP piece AGENTS.md
-// calls out as needed "sooner than post-MVP" now that subscriptions gate
-// listing creation directly (free = 1 listing, so the SECOND create attempt
-// otherwise hits a bare 403 toast with no upgrade path anywhere in the UI).
+// calls out as needed "sooner than post-MVP" now that plans gate how many
+// listings can be live.
 //
-// Shows: current tier, listing usage against that tier's cap, period end for
-// paid tiers, and an upgrade CTA per paid tier. Reads everything from
-// GET /payments/subscription/ (backend/payments/views.py my_subscription)
-// except the usage count, which comes from the listings the landlord already
-// has (same count the backend's perform_create enforces the cap against —
-// every listing regardless of status).
+// Every number here comes from GET /payments/subscription/ (backend
+// payments/views.py my_subscription + payments/limits.py usage_for) — the
+// SAME code that enforces the limits. The card never counts listings
+// itself: that's how the old card came to say "3 of 1 — limit reached"
+// while the backend (which counts only live listings) disagreed.
+//
+// Shows:
+// - the plan whose limits apply now (effective_tier), and the stored tier
+//   as "ended" when a paid plan has lapsed (tier !== effective_tier);
+// - live listings used against the live limit (published + in review);
+// - paused listings ("N paused — upgrade to bring them back");
+// - on Free, the 10-listing total ("X of 10 listings");
+// - renewal / cancelled / past-due dates;
+// - upgrade or switch buttons for every paid plan the landlord isn't on,
+//   and Cancel plan (with a confirm dialog) on a paid plan.
+//
+// Split in two: SubscriptionCard fetches and runs the actions;
+// SubscriptionCardView only draws, so Storybook can show every state.
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Crown, Loader2, Rocket } from "lucide-react";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { PaddyBadge, type PaddyBadgeState } from "@/components/paddy-badge";
+import { PaddyButton } from "@/components/paddy-button";
 import {
-  fetchMySubscription,
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useApiInvalidate } from "@/hooks/use-api";
+import { useMySubscription, useSetMySubscription } from "@/hooks/use-subscription";
+import {
+  cancelSubscription,
+  PaymentsError,
   startSubscriptionCheckout,
   TIER_META,
   type LandlordSubscription,
+  type SubscriptionTier,
 } from "@/lib/payments";
+import { cn } from "@/lib/utils";
 
-// TS strict-mode catch narrowing: thrown values are `unknown`, and the
-// errors from lib/payments are plain `new Error(message)` — read `.message`
-// through this guard rather than `any`-casting at every catch site.
-function errorMessage(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message;
-  return "";
+type PaidTier = Exclude<SubscriptionTier, "free">;
+const PAID_TIERS: PaidTier[] = ["agent", "lord"];
+
+// Friendly text for the backend's machine-readable codes — never a raw
+// error. Anything uncoded falls back to the backend's own message, which
+// is already written for people.
+function checkoutErrorText(err: unknown): string {
+  if (err instanceof PaymentsError) {
+    switch (err.code) {
+      case "already_on_plan":
+        return "You're already on that plan.";
+      case "plan_change_pending":
+        return "Your last plan change is still being finalised. Please try again in a few minutes.";
+      case "email_not_verified":
+        return "Verify your email before upgrading — the banner at the top of the page can resend the link.";
+    }
+    return err.message;
+  }
+  return "Couldn't start the upgrade. Please try again.";
 }
 
-// Usage count is derived client-side from the landlord's own listings —
-// deliberately NOT a separate backend field (mirrors AGENTS.md's
-// "perks are derived from tier at read time" rule).
-export function SubscriptionCard({
-  userId,
-  listingsUsed,
-  refreshKey = 0,
-}: {
-  userId: string;
-  listingsUsed: number;
-  // Bump to refetch after an upgrade completes on the callback page
-  refreshKey?: number;
-}) {
-  const router = useRouter();
-  const [subscription, setSubscription] = useState<LandlordSubscription | null>(
-    null,
-  );
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [upgradingTo, setUpgradingTo] = useState<string | null>(null);
-  const [upgradeError, setUpgradeError] = useState<string | null>(null);
+function cancelErrorText(err: unknown): string {
+  if (err instanceof PaymentsError) {
+    if (err.status === 502) {
+      return "We couldn't reach Paystack, so nothing has changed. Please try again.";
+    }
+    switch (err.code) {
+      case "already_cancelled":
+        return "Your plan is already cancelled.";
+      case "no_paid_plan":
+        return "You're not on a paid plan, so there's nothing to cancel.";
+    }
+    return err.message;
+  }
+  return "Couldn't cancel your plan. Please try again.";
+}
 
-  // NOTE: isLoading starts true and is only ever cleared (async, in the
-  // fetch callbacks below) — never re-set synchronously inside the effect
-  // (react-hooks/set-state-in-effect). On a refreshKey bump the card
-  // silently refetches without the spinner, which is the nicer behavior
-  // anyway (no flash of skeleton after a successful upgrade).
-  useEffect(() => {
-    let cancelled = false;
-    fetchMySubscription()
-      .then((sub) => {
-        if (cancelled) return;
-        setSubscription(sub);
-        setLoadError(null);
-      })
-      .catch((err) => {
-        if (!cancelled) setLoadError(errorMessage(err) || "Couldn't load subscription.");
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+function formatDate(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
 
-  // Callback URL back into THIS dashboard after Paystack checkout. Must be
+export function SubscriptionCard({ className }: { className?: string }) {
+  const { data: subscription, isLoading, error, refetch } = useMySubscription();
+  const setSubscription = useSetMySubscription();
+  const invalidate = useApiInvalidate();
+
+  const [upgradingTo, setUpgradingTo] = useState<PaidTier | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+
+  // Callback URL back into the dashboard after Paystack checkout. Must be
   // absolute — Paystack redirects the browser there from their domain.
   function buildCallbackUrl(): string {
     if (typeof window === "undefined") return "";
     return `${window.location.origin}/payments/callback?purpose=subscription`;
   }
 
-  async function handleUpgrade(tier: "agent" | "lord") {
+  async function handleUpgrade(tier: PaidTier) {
     setUpgradingTo(tier);
+    setActionError(null);
     try {
       const init = await startSubscriptionCheckout({
         tier,
@@ -101,174 +126,343 @@ export function SubscriptionCard({
       window.location.assign(init.authorization_url);
     } catch (err) {
       setUpgradingTo(null);
-      // Surface the backend's actual reason (invalid tier, plan code not
-      // configured in .env, Paystack rejected the init, etc.) inline,
-      // matching how UnlockCta reports its own start-checkout failures.
-      setUpgradeError(errorMessage(err));
+      setActionError(checkoutErrorText(err));
+    }
+  }
+
+  // Resolves true when the plan was cancelled, so the dialog knows to
+  // close; on failure it stays open with the reason inside it.
+  async function handleCancel(): Promise<boolean> {
+    setCancelling(true);
+    setActionError(null);
+    try {
+      // The endpoint returns the updated subscription — put it straight
+      // into the cache instead of refetching.
+      setSubscription(await cancelSubscription());
+      return true;
+    } catch (err) {
+      setActionError(cancelErrorText(err));
+      // no_paid_plan / already_cancelled mean our copy is out of date.
+      if (err instanceof PaymentsError && err.status === 400) {
+        void invalidate("payments");
+      }
+      return false;
+    } finally {
+      setCancelling(false);
     }
   }
 
   if (isLoading) {
     return (
-      <Card>
-        <CardContent className="flex items-center justify-center py-8">
-          <Loader2 className="text-muted-foreground size-5 animate-spin" />
-        </CardContent>
-      </Card>
+      <div
+        className={cn(
+          "border-hairline flex items-center justify-center rounded-lg border bg-white py-10",
+          className,
+        )}
+      >
+        <Loader2 className="text-muted-foreground size-5 animate-spin" />
+      </div>
     );
   }
 
-  if (loadError || !subscription) {
+  if (error || !subscription) {
     return (
-      <Card>
-        <CardContent className="py-4 text-sm text-red-500">
-          {loadError ?? "Couldn't load subscription."}
-        </CardContent>
-      </Card>
+      <div
+        className={cn(
+          "border-hairline flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-white p-5 text-sm",
+          className,
+        )}
+      >
+        <p className="text-destructive">Couldn&apos;t load your plan.</p>
+        <PaddyButton size="sm" variant="secondary" onClick={() => void refetch()}>
+          Try again
+        </PaddyButton>
+      </div>
     );
   }
-
-  const tierMeta = TIER_META[subscription.tier] ?? TIER_META.free;
-  const cap = tierMeta.cap;
-  const isPastDue = subscription.status === "past_due";
-  // An active paid subscription = current tier perks apply. FREE tier rows
-  // are never "active" per the backend model's own comment.
-  const isPaidActive =
-    subscription.status === "active" && subscription.tier !== "free";
-
-  const usage =
-    cap === null
-      ? `${listingsUsed} listings`
-      : `${listingsUsed} of ${cap} listing${cap === 1 ? "" : "s"}`;
-  const usagePct =
-    cap === null ? 0 : Math.min(100, Math.round((listingsUsed / cap) * 100));
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Crown className="size-4" />
-            Subscription
-          </CardTitle>
-          {isPastDue && <Badge variant="destructive">Past due</Badge>}
-          {isPaidActive && <Badge>Active</Badge>}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-baseline justify-between gap-2">
-          <div>
-            <p className="text-2xl font-bold leading-none">{tierMeta.label}</p>
-            <p className="text-muted-foreground mt-1 text-xs">
-              {tierMeta.priceGhs !== null
-                ? `GHS ${tierMeta.priceGhs}/mo`
-                : "Default tier"}
-            </p>
-          </div>
-          <p className="text-muted-foreground text-xs">
-            {usage}
-            {cap !== null && listingsUsed >= cap && (
-              <span className="text-destructive ml-1 font-medium">
-                — limit reached
-              </span>
-            )}
+    <SubscriptionCardView
+      subscription={subscription}
+      className={className}
+      upgradingTo={upgradingTo}
+      cancelling={cancelling}
+      actionError={actionError}
+      onUpgrade={handleUpgrade}
+      onCancel={handleCancel}
+      onDismissError={() => setActionError(null)}
+    />
+  );
+}
+
+export function SubscriptionCardView({
+  subscription,
+  className,
+  upgradingTo = null,
+  cancelling = false,
+  actionError = null,
+  onUpgrade,
+  onCancel,
+  onDismissError,
+}: {
+  subscription: LandlordSubscription;
+  className?: string;
+  upgradingTo?: PaidTier | null;
+  cancelling?: boolean;
+  actionError?: string | null;
+  onUpgrade?: (tier: PaidTier) => void;
+  onCancel?: () => Promise<boolean>;
+  onDismissError?: () => void;
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const effective = subscription.effective_tier;
+  const effectiveMeta = TIER_META[effective];
+  const isPaid = effective !== "free";
+  // A paid plan that ran out: the stored tier still names it, but Free's
+  // limits apply now.
+  const lapsed = subscription.tier !== "free" && subscription.tier !== effective;
+  const cancelled = isPaid && subscription.cancel_at_period_end;
+  const pastDue = isPaid && subscription.status === "past_due";
+
+  const badge: { label: string; state: PaddyBadgeState } | null = lapsed
+    ? { label: "Ended", state: "neutral" }
+    : cancelled
+      ? { label: "Cancelled", state: "warning" }
+      : pastDue
+        ? { label: "Past due", state: "error" }
+        : isPaid
+          ? { label: "Active", state: "success" }
+          : null;
+
+  const cap = subscription.listing_cap;
+  const used = subscription.listings_used;
+  const atCap = cap !== null && used >= cap;
+  const usagePct = cap === null || cap === 0 ? 0 : Math.min(100, Math.round((used / cap) * 100));
+
+  const totalCap = subscription.listing_total_cap;
+  const total = subscription.listings_total;
+  const atTotalCap = totalCap !== null && total !== null && total >= totalCap;
+
+  const paused = subscription.listings_paused;
+
+  // Every paid plan except the one whose limits apply now: re-buying that
+  // one is refused by the backend (already_on_plan), and a cancelled plan
+  // can't be resumed yet — once it runs out, buying it again works.
+  const offers = PAID_TIERS.filter((t) => t !== effective);
+
+  return (
+    <section
+      aria-labelledby="subscription-title"
+      className={cn("border-hairline rounded-lg border bg-white p-5", className)}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h2
+          id="subscription-title"
+          className="text-subtle-foreground flex items-center gap-2 text-[13px] leading-5 font-medium"
+        >
+          <Crown className="size-4" aria-hidden />
+          Your plan
+        </h2>
+        {badge && <PaddyBadge state={badge.state}>{badge.label}</PaddyBadge>}
+      </div>
+
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-display text-[22px] leading-tight font-medium tracking-[-0.02em] text-black/80">
+            {effectiveMeta.label}
+          </p>
+          <p className="text-muted-foreground mt-0.5 text-xs">
+            {effectiveMeta.priceGhs !== null
+              ? `GHS ${effectiveMeta.priceGhs.toLocaleString()}/mo`
+              : "No monthly fee"}
           </p>
         </div>
+        <p className="text-muted-foreground shrink-0 text-right text-xs">
+          <span className="text-foreground font-medium">
+            {cap === null ? `${used} live` : `${used} of ${cap} live`}
+          </span>
+          {cap === null ? " · unlimited" : ` listing${cap === 1 ? "" : "s"}`}
+          {atCap && <span className="text-destructive block font-medium">Limit reached</span>}
+        </p>
+      </div>
 
-        {/* Simple usage bar — deliberately plain (skeleton-first philosophy) */}
-        {cap !== null && (
-          <div className="bg-muted h-1.5 w-full overflow-hidden rounded-full">
-            <div
-              className="bg-primary h-full rounded-full transition-all"
-              style={{ width: `${usagePct}%` }}
+      {cap !== null && (
+        <div
+          className="bg-muted mt-3 h-1.5 w-full overflow-hidden rounded-full"
+          role="progressbar"
+          aria-label="Live listings used"
+          aria-valuenow={used}
+          aria-valuemin={0}
+          aria-valuemax={cap}
+        >
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              atCap ? "bg-destructive" : "bg-primary",
+            )}
+            style={{ width: `${usagePct}%` }}
+          />
+        </div>
+      )}
+      <p className="text-muted-foreground mt-2 text-xs">
+        Live = published or in review. Drafts don&apos;t count until you submit them.
+      </p>
+
+      <ul className="mt-3 space-y-1.5 text-xs">
+        {lapsed && (
+          <li className="text-foreground">
+            Your {TIER_META[subscription.tier].label} plan has ended — Free limits apply now.
+          </li>
+        )}
+        {paused > 0 && (
+          <li className="text-foreground">
+            <span className="font-medium">
+              {paused} listing{paused === 1 ? "" : "s"} paused
+            </span>{" "}
+            — upgrade to bring {paused === 1 ? "it" : "them"} back. Paused listings
+            return on their own once you pay.
+          </li>
+        )}
+        {totalCap !== null && total !== null && (
+          <li className={atTotalCap ? "text-destructive font-medium" : "text-muted-foreground"}>
+            {total} of {totalCap} listings on the Free plan
+            {atTotalCap
+              ? " — archive one or upgrade to create more."
+              : " (archived and leased ones don't count)."}
+          </li>
+        )}
+        {isPaid && !cancelled && !pastDue && subscription.current_period_end && (
+          <li className="text-muted-foreground">
+            Renews on {formatDate(subscription.current_period_end)}.
+          </li>
+        )}
+        {cancelled && (
+          <li className="text-foreground">
+            Cancelled — your plan ends on {formatDate(subscription.paid_access_ends_at)}.
+          </li>
+        )}
+        {pastDue && !cancelled && (
+          <li className="text-destructive">
+            Your last renewal failed. Paystack is retrying the card; your plan
+            stays active until {formatDate(subscription.paid_access_ends_at)}.
+          </li>
+        )}
+      </ul>
+
+      {actionError && (
+        <p role="alert" className="text-destructive mt-3 text-xs">
+          {actionError}
+        </p>
+      )}
+
+      {(offers.length > 0 || (isPaid && !cancelled)) && (
+        <div className="border-hairline mt-4 flex flex-col gap-2 border-t pt-4">
+          {offers.map((tier) => (
+            <UpgradeRow
+              key={tier}
+              tier={tier}
+              // Lord → agent is a switch down, anything else an upgrade.
+              verb={effective === "lord" ? "Switch to" : "Upgrade to"}
+              busy={upgradingTo === tier}
+              disabled={upgradingTo !== null && upgradingTo !== tier}
+              onUpgrade={(t) => onUpgrade?.(t)}
             />
-          </div>
-        )}
+          ))}
+          {effective === "lord" && (
+            <p className="text-muted-foreground text-xs">
+              Switching to paddy agent pauses your newest live listings above 10.
+            </p>
+          )}
+          {isPaid && !cancelled && (
+            <PaddyButton
+              variant="transparent-muted"
+              size="sm"
+              className="self-start"
+              onClick={() => {
+                onDismissError?.();
+                setConfirmOpen(true);
+              }}
+            >
+              Cancel plan
+            </PaddyButton>
+          )}
+        </div>
+      )}
 
-        {isPaidActive && subscription.current_period_end && (
-          <p className="text-muted-foreground text-xs">
-            Renews/period ends{" "}
-            {new Date(subscription.current_period_end).toLocaleDateString()}
-          </p>
-        )}
-
-        {isPastDue && (
-          <p className="text-destructive text-xs">
-            Your last renewal failed — renew to restore your tier&apos;s listing
-            cap and unlock perks.
-          </p>
-        )}
-
-        {/* Upgrade CTA — the next tier up from the current one. From free
-            that's agent; from agent that's lord; from lord there's nothing. */}
-        {!isPaidActive && (
-          <div className="flex flex-col gap-2 border-t pt-3">
-            {upgradeError && (
-              <p className="text-destructive text-xs">{upgradeError}</p>
-            )}
-            {subscription.tier === "free" && (
-              <>
-                <UpgradeRow
-                  tier="agent"
-                  busy={upgradingTo === "agent"}
-                  onUpgrade={handleUpgrade}
-                />
-                <UpgradeRow
-                  tier="lord"
-                  busy={upgradingTo === "lord"}
-                  onUpgrade={handleUpgrade}
-                />
-              </>
-            )}
-            {subscription.tier === "agent" && (
-              <UpgradeRow
-                tier="lord"
-                busy={upgradingTo === "lord"}
-                onUpgrade={handleUpgrade}
-              />
-            )}
-          </div>
-        )}
-        {subscription.tier === "lord" && isPaidActive && (
-          <p className="text-muted-foreground border-t pt-3 text-xs">
-            Top tier — unlimited listings, every perk unlocked.
-          </p>
-        )}
-      </CardContent>
-    </Card>
+      <AlertDialog open={confirmOpen} onOpenChange={(next) => !cancelling && setConfirmOpen(next)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-display font-medium tracking-[-0.02em]">
+              Cancel {effectiveMeta.label}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              It won&apos;t renew. You keep it until{" "}
+              {formatDate(subscription.current_period_end)}, then move to Free:
+              3 live listings, and your newest live listings above that are
+              paused until you upgrade again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {actionError && (
+            <p role="alert" className="text-destructive text-sm">
+              {actionError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <PaddyButton variant="secondary" size="lg" disabled={cancelling}>
+                Keep my plan
+              </PaddyButton>
+            </AlertDialogCancel>
+            <PaddyButton
+              variant="danger"
+              size="lg"
+              isLoading={cancelling}
+              onClick={async () => {
+                if (await onCancel?.()) setConfirmOpen(false);
+              }}
+            >
+              Cancel plan
+            </PaddyButton>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   );
 }
 
 function UpgradeRow({
   tier,
+  verb,
   busy,
+  disabled,
   onUpgrade,
 }: {
-  tier: "agent" | "lord";
+  tier: PaidTier;
+  verb: string;
   busy: boolean;
-  onUpgrade: (tier: "agent" | "lord") => void;
+  disabled: boolean;
+  onUpgrade: (tier: PaidTier) => void;
 }) {
   const meta = TIER_META[tier];
   return (
-    <Button
-      type="button"
-      variant={tier === "lord" ? "default" : "outline"}
-      className="justify-between"
-      disabled={busy}
+    <PaddyButton
+      variant={tier === "lord" ? "primary" : "secondary"}
+      size="lg"
+      // PaddyButton wraps its content in one inline span; stretch it so
+      // the price can sit at the right end.
+      className="[&>span:first-child]:w-full"
+      leftIcon={Rocket}
+      isLoading={busy}
+      disabled={disabled}
       onClick={() => onUpgrade(tier)}
     >
-      <span className="flex items-center gap-2">
-        {busy ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <Rocket className="size-4" />
-        )}
-        Upgrade to {meta.label}
+      <span className="flex-1 text-left">
+        {verb} {meta.label}
       </span>
-      <span className="text-xs">
-        GHS {meta.priceGhs}/mo · {meta.cap === null ? "unlimited" : meta.cap}{" "}
-        listings
+      <span className="text-xs opacity-80">
+        GHS {meta.priceGhs?.toLocaleString()}/mo · {meta.cap === null ? "unlimited" : meta.cap} live
       </span>
-    </Button>
+    </PaddyButton>
   );
 }

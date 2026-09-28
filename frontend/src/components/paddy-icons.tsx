@@ -291,7 +291,86 @@ export function PaddySpinnerIcon({
         opacity="0.13"
         d="M7.66663 1.05505V3.27757"
         stroke="currentColor"
-       
+
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// The three 15px glyphs below are exported as SVG straight from the
+// Figma components page (2026-09-28), so they're the exact shapes.
+
+// Figma "plus-mini" (11:1354): the two accessory marks on the Dashboard
+// Button. A plus sign: 10px strokes, 1.5 wide, round caps.
+export function PlusMiniIcon({
+  className,
+  ...props
+}: React.ComponentProps<"svg">) {
+  return (
+    <svg
+      viewBox="0 0 15 15"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("size-[15px]", className)}
+      aria-hidden
+      {...props}
+    >
+      <path
+        d="M7.5 2.5V12.5M2.5 7.5H12.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Figma "information-circle-solid" (11:1074): the Label's tooltip mark.
+export function InformationCircleSolidIcon({
+  className,
+  ...props
+}: React.ComponentProps<"svg">) {
+  return (
+    <svg
+      viewBox="0 0 15 15"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("size-[15px]", className)}
+      aria-hidden
+      {...props}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M14.61 7.5C14.61 9.39 13.86 11.19 12.53 12.53C11.19 13.86 9.39 14.61 7.5 14.61C5.61 14.61 3.81 13.86 2.47 12.53C1.14 11.19 0.39 9.39 0.39 7.5C0.39 5.61 1.14 3.81 2.47 2.47C3.81 1.14 5.61 0.39 7.5 0.39C9.39 0.39 11.19 1.14 12.53 2.47C13.86 3.81 14.61 5.61 14.61 7.5ZM8.39 3.94C8.39 4.18 8.3 4.41 8.13 4.57C7.96 4.74 7.74 4.83 7.5 4.83C7.26 4.83 7.04 4.74 6.87 4.57C6.7 4.41 6.61 4.18 6.61 3.94C6.61 3.71 6.7 3.48 6.87 3.32C7.04 3.15 7.26 3.06 7.5 3.06C7.74 3.06 7.96 3.15 8.13 3.32C8.3 3.48 8.39 3.71 8.39 3.94ZM6.61 6.61C6.43 6.61 6.26 6.68 6.14 6.81C6.01 6.93 5.94 7.1 5.94 7.28C5.94 7.45 6.01 7.62 6.14 7.75C6.26 7.87 6.43 7.94 6.61 7.94H6.84C6.87 7.94 6.9 7.95 6.93 7.97C6.96 7.98 6.99 8 7.01 8.03C7.03 8.05 7.04 8.08 7.05 8.12C7.06 8.15 7.06 8.18 7.05 8.21L6.65 10.05C6.59 10.28 6.6 10.51 6.65 10.74C6.7 10.97 6.8 11.18 6.95 11.36C7.1 11.54 7.28 11.69 7.49 11.79C7.7 11.89 7.93 11.94 8.16 11.94H8.39C8.57 11.94 8.74 11.87 8.86 11.75C8.99 11.62 9.06 11.45 9.06 11.28C9.06 11.1 8.99 10.93 8.86 10.81C8.74 10.68 8.57 10.61 8.39 10.61H8.16C8.13 10.61 8.1 10.6 8.07 10.59C8.04 10.57 8.01 10.55 7.99 10.53C7.97 10.5 7.96 10.47 7.95 10.44C7.94 10.41 7.94 10.37 7.95 10.34L8.35 8.5C8.41 8.28 8.4 8.04 8.35 7.81C8.3 7.59 8.2 7.37 8.05 7.19C7.9 7.01 7.72 6.86 7.51 6.76C7.3 6.66 7.07 6.61 6.84 6.61H6.61Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+// Figma "arrow-down-tray" (19:6515): the File Upload Area's
+// "Import Files" mark.
+export function ArrowDownTrayIcon({
+  className,
+  ...props
+}: React.ComponentProps<"svg">) {
+  return (
+    <svg
+      viewBox="0 0 15 15"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={cn("size-[15px]", className)}
+      aria-hidden
+      {...props}
+    >
+      <path
+        d="M13.0556 9.94444V11.2778C13.0556 12.26 12.26 13.0556 11.2778 13.0556H3.72222C2.74 13.0556 1.94444 12.26 1.94444 11.2778V9.94444M4.38889 5.5L7.5 8.61111L10.6111 5.5M7.5 8.61111V1.94444"
+        stroke="currentColor"
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"

@@ -15,11 +15,31 @@ import { authedFetch } from "@/lib/api";
 
 export class ApiError extends Error {
   statusCode: number;
+  // The backend's machine-readable reason, when it sends one — e.g.
+  // "email_not_verified" (accounts/permissions.py) or
+  // "listing_total_limit_reached" (ListingViewSet.perform_create). Callers
+  // branch on THIS, never on the wording of the message, which the
+  // backend may reword.
+  code?: string;
+  // The parsed error body, for the few callers that need an extra field
+  // (e.g. listings_used / listing_cap next to listing_limit_reached).
+  data?: unknown;
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, code?: string, data?: unknown) {
     super(message);
     this.statusCode = statusCode;
+    this.code = code;
+    this.data = data;
   }
+}
+
+// Reads the `code` key off a DRF error body, if there is one.
+export function errorCode(body: unknown): string | undefined {
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const code = (body as Record<string, unknown>).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
 }
 
 function extractErrorMessage(data: unknown): string | null {
@@ -58,6 +78,8 @@ async function request<T>(
     throw new ApiError(
       extractErrorMessage(body) ?? `Request failed (HTTP ${res.status})`,
       res.status,
+      errorCode(body),
+      body,
     );
   }
 

@@ -115,18 +115,19 @@ export default function ListingsPage() {
       </div>
 
       {/* Subscription surface (AGENTS.md: landlords need to see their
-          tier/cap "sooner than post-MVP" now that subscriptions gate
-          listing creation). Lives BELOW the header/CTA so the primary
-          task (listings) stays first in reading order.
+          tier/cap "sooner than post-MVP" now that plans gate how many
+          listings can be live). Lives BELOW the header/CTA so the
+          primary task (listings) stays first in reading order.
 
-          listingsUsed = listings.length is now EXACT: the ?mine=true
-          filter above scopes this list to the landlord's own rows (any
-          status), which is precisely the population the backend's
-          perform_create cap counts (every listing, regardless of
-          status — an abandoned draft burns a free-tier slot, which the
-          card's usage bar now makes visible). */}
-      <div className="mb-6 max-w-md">
-        <SubscriptionCard userId={userId} listingsUsed={listings.length} />
+          The card reads its usage numbers from the backend (PR #34),
+          NOT from `listings` here: only published + in-review listings
+          use a live slot, and the backend is what enforces that.
+
+          id="subscription": the listing form's "Upgrade to submit"
+          saves the draft, then lands here (…/listings#subscription).
+          scroll-mt clears the sticky dashboard header. */}
+      <div id="subscription" className="mb-6 max-w-md scroll-mt-20">
+        <SubscriptionCard />
       </div>
 
       {listings.length === 0 ? (

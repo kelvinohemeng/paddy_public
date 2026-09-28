@@ -126,6 +126,23 @@
   --color-surface: #f2f2f2;
   --color-hairline: #d9d9d9;
 
+  /* Form fields — the listing form (Figma 288:8254) and the components
+     it uses, read 2026-09-28:
+     field             → "bg-field" fill of Single / Multi Select
+                         (20:23057) and File Upload Area (19:6652)
+     field-border      → Input Field (21:24953) 1px stroke
+     field-placeholder → Input Field placeholder text
+     field-dashed      → File Upload Area's 4/4 dashed stroke
+     subtle-foreground → Label "Type Subtle" text (289:168764) and the
+                         field descriptions under it
+     disabled-foreground → label colour of every Disabled state */
+  --color-field: #fafafa;
+  --color-field-border: #e2e2e2;
+  --color-field-placeholder: #757575;
+  --color-field-dashed: #d4d4d8;
+  --color-subtle-foreground: #52525b;
+  --color-disabled-foreground: #a1a1aa;
+
   /* Figma effect style "Cards" + the search pill's drop shadow. */
   --shadow-card: 0 4px 27.6px 3px rgb(0 0 0 / 0.1);
   --shadow-pill: 0 8px 12px 6px rgb(0 0 0 / 0.15);
@@ -166,7 +183,11 @@
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #fafafa;
+  /* White, not the old #fafafa: in the Accounts – Landlord frames
+     (Figma 181:22493) the nav sits on the white page, and the Dashboard
+     Button's Active fill (#f9f9f9, --sidebar-accent below) is only
+     visible against white. The dashboard header shares this token. */
+  --sidebar: #ffffff;
   --sidebar-foreground: #18181b;
   --sidebar-primary: #27272a;
   --sidebar-primary-foreground: #ffffff;

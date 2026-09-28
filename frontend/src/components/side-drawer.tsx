@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Maximize2, Minimize2, X } from "lucide-react";
@@ -13,7 +13,10 @@ import { cn } from "@/lib/utils";
 // open, expand and close the same way:
 //
 // - an 845px white panel (top-left radius 20) sliding in from the
-//   right over a dimmed, blurred page; full width on phones
+//   right over a dimmed, blurred page
+// - FULL-SCREEN below the md breakpoint (768px, the same breakpoint the
+//   dashboard sidebar uses): no rounded corner and no expand button,
+//   since there's nothing left to expand into
 // - round close + expand buttons top-left, then an optional title, and
 //   optional action buttons at the right end of the same row
 // - closing plays the slide-out, then router.back() — which drops the
@@ -28,8 +31,26 @@ import { cn } from "@/lib/utils";
 // - otherwise: the drawer widens in place to fill the screen. The
 //   dashboard forms use this, because navigating away would throw out
 //   a half-filled form and any picked photos.
+//
+// Header actions, two ways:
+// - the `actions` prop, for wrappers that own their buttons (the listing
+//   preview's Update / Archive / Submit);
+// - a portal slot, for a child that owns them. The listing form stepper
+//   keeps its step and form state to itself, yet its Back / Next belong
+//   in this header row (Figma 288:8254 puts Create Listing / Cancel
+//   there). useSideDrawerActionsSlot() hands the child the header's
+//   actions element to createPortal() into; outside a drawer it's null
+//   and the child renders its buttons in place instead.
 
 const CLOSE_ANIMATION_MS = 220;
+
+const ActionsSlotContext = createContext<HTMLElement | null>(null);
+
+/** The drawer header's actions element, or null outside a SideDrawer
+ *  (and for the first render inside one, before the element exists). */
+export function useSideDrawerActionsSlot(): HTMLElement | null {
+  return useContext(ActionsSlotContext);
+}
 
 export function SideDrawer({
   title,
@@ -59,6 +80,9 @@ export function SideDrawer({
   const router = useRouter();
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  // A callback ref into state (not useRef): children need a re-render
+  // once the element exists so their portal can mount into it.
+  const [actionsSlot, setActionsSlot] = useState<HTMLDivElement | null>(null);
 
   function close() {
     setOpen(false);
@@ -78,13 +102,31 @@ export function SideDrawer({
           onInteractOutside={(e) => {
             if (!dismissOnOutsideClick) e.preventDefault();
           }}
+          onEscapeKeyDown={(e) => {
+            // Esc on an OPEN suggestion list (the listing form's address
+            // autocomplete) should close that list, not the whole drawer
+            // and every value typed into it. Radix hears Esc at the
+            // document level before the input does, so check here.
+            // (Radix popovers/selects inside the drawer already take
+            // their own Esc first.)
+            const focused = document.activeElement;
+            if (
+              focused?.getAttribute("role") === "combobox" &&
+              focused.getAttribute("aria-expanded") === "true"
+            ) {
+              e.preventDefault();
+            }
+          }}
           className={cn(
             "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden bg-white shadow-2xl ease-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
             "transition-[max-width,border-radius] duration-300",
-            expanded ? "max-w-full" : "max-w-[845px] sm:rounded-tl-[20px]",
+            // Below md: always the whole screen. From md up: the 845px
+            // drawer with its rounded corner, or full width once expanded.
+            "max-w-full",
+            !expanded && "md:max-w-[845px] md:rounded-tl-[20px]",
           )}
         >
-          <div className="flex shrink-0 items-center gap-3 px-5 pt-7 pb-4 md:px-8">
+          <div className="flex shrink-0 items-center gap-3 px-5 pt-4 pb-3 md:px-8 md:pt-7 md:pb-4">
             <Dialog.Close
               aria-label="Close"
               className={cn(buttonClass, "bg-zinc-100 hover:bg-zinc-200")}
@@ -93,7 +135,9 @@ export function SideDrawer({
             </Dialog.Close>
             {expandHref ? (
               // Plain <a>, not <Link>: a hard navigation skips the
-              // interception and loads the full page.
+              // interception and loads the full page. Still offered on
+              // phones — the full page is a different view, not a wider
+              // one.
               <a
                 href={expandHref}
                 aria-label="Open full page"
@@ -108,7 +152,8 @@ export function SideDrawer({
                 onClick={() => setExpanded((v) => !v)}
                 aria-label={expanded ? "Shrink panel" : "Expand panel"}
                 title={expanded ? "Shrink panel" : "Expand panel"}
-                className={cn(buttonClass, "hover:bg-zinc-100")}
+                // Hidden below md: the drawer is already full-screen.
+                className={cn(buttonClass, "hover:bg-zinc-100 max-md:hidden")}
               >
                 {expanded ? (
                   <Minimize2 className="size-4" />
@@ -134,11 +179,14 @@ export function SideDrawer({
                 </p>
               )}
             </div>
-            {actions && (
-              <div className="ml-auto flex shrink-0 items-center gap-2">
-                {actions}
-              </div>
-            )}
+            {/* Always rendered so a child can portal into it; empty:
+                keeps an unused slot from taking space. */}
+            <div
+              ref={setActionsSlot}
+              className="ml-auto flex shrink-0 items-center gap-2 empty:hidden"
+            >
+              {actions}
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <div
@@ -149,7 +197,9 @@ export function SideDrawer({
                 expanded && !expandHref && "mx-auto w-full max-w-3xl",
               )}
             >
-              {children}
+              <ActionsSlotContext.Provider value={actionsSlot}>
+                {children}
+              </ActionsSlotContext.Provider>
             </div>
           </div>
         </Dialog.Content>

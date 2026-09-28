@@ -25,9 +25,14 @@ type AmenityPickerProps = {
   // "controlled": it never keeps its own separate copy of the
   // selection, it always reflects exactly whatever the parent form
   // hands it, and reports changes back via onChange. Same principle
-  // as every other field in listing-create-form.tsx being driven by
+  // as every other field in the listing form (listing-form/) being driven by
   // react-hook-form's own state, not a local useState.
   onChange: (ids: number[]) => void;
+  // Lets a <label htmlFor> point at the trigger button.
+  id?: string;
+  // Extra classes for the trigger, so a form can match its own fields
+  // (the listing form stretches it to Figma's 56px bg-field select).
+  triggerClassName?: string;
 };
 
 // A searchable multi-select for amenities, with an inline "create new"
@@ -39,7 +44,12 @@ type AmenityPickerProps = {
 // landlords independently "create" the same amenity name, they end up
 // pointing at the same underlying row, never a duplicate.
 
-export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
+export const AmenityPicker = ({
+  value,
+  onChange,
+  id,
+  triggerClassName,
+}: AmenityPickerProps) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
@@ -140,16 +150,17 @@ export const AmenityPicker = ({ value, onChange }: AmenityPickerProps) => {
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
+            id={id}
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="w-full justify-between font-normal"
+            className={cn("w-full justify-between font-normal", triggerClassName)}
           >
             <span className="truncate">
               {isLoading && options.length === 0
                 ? "Loading amenities..."
                 : selectedAmenities.length > 0
-                  ? `${selectedAmenities.length} amenities selected`
+                  ? `${selectedAmenities.length} ${selectedAmenities.length === 1 ? "amenity" : "amenities"} selected`
                   : "Select amenities..."}
             </span>
             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

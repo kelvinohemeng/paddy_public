@@ -1,19 +1,51 @@
+import type { ComponentType } from "react";
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
 
-import { PaddyIcon, type PaddyIconName } from "@/components/paddy-icons";
+import {
+  PaddyIcon,
+  PlusMiniIcon,
+  type PaddyIconName,
+} from "@/components/paddy-icons";
 import { cn } from "@/lib/utils";
 
-// paddy dashboard button primitive — Medusa-referenced, shadcn-built.
-// Spec: Handoff → "Dashboard Button" component set (242:3911), 2
-// states: Active / Default. Sidebar/nav row: leading Paddy Icon +
-// label, flanked by two small "plus-mini" accessory vectors.
+// paddy dashboard nav button.
+// Spec: Figma Handoff → "Dashboard Button" component set (242:3911),
+// re-read 2026-09-28 through the Figma plugin API. The set has ONE
+// property, State = Active | Default:
+//   both    40px tall, padding 10/16, 6px gap, square corners (radius 0)
+//           20px Paddy Icon (#111111, --color-paddy-gray-1) + label
+//           Inter Medium 14/20 #18181b (--foreground)
+//   Active  #f9f9f9 fill (--sidebar-accent)
+//   Default no fill
 //
-// Improv decision: the two "plus-mini" instances in Figma serialize
-// with zero-area vector paths (line strokes, not fills) so their
-// exact glyph can't be read from the relay snapshot. Rendered here
-// as a single trailing chevron (expand/active affordance) instead of
-// two flanking marks — flag if the design intent was different.
+// Two things the earlier version got wrong, now fixed:
+// - It had rounded corners; the set is square.
+// - The two "plus-mini" instances (11:1354) are real: a plus sign, 10px
+//   strokes, 1.5 wide, round caps, #52525b. They sit before the icon and
+//   after the label, and are HIDDEN in both variants (and in every
+//   instance in the Accounts screens). So nothing shows by default; the
+//   leadingMark / trailingMark props switch them on, mirroring Figma's
+//   visibility toggles. The trailing chevron the old version drew instead
+//   is gone.
+//
+// Default's shadow: the Default variant carries the Secondary button's
+// shadow stack (1px rgba(0,0,0,.08) ring + 0 1px 2px rgba(0,0,0,.12)).
+// Because that frame has no fill, Figma casts the shadow from the icon
+// and label glyphs only, where it's invisible — the screens show a plain
+// row with no outline. A CSS box-shadow would draw a visible ring round
+// the whole box, so it's left off to match what the design renders.
+//
+// Not in the set (added for the web, flag if the design wants otherwise):
+// - Hover: the Active fill, so hovering previews the selected look.
+// - Keyboard focus: the same 2px white gap + 4px blue ring PaddyButton
+//   uses (Figma's Focus state on the Button set).
+// There's no Disabled state: no nav item is ever disabled.
+//
+// Height: the set is 40px, but every instance in the Accounts – Landlord
+// screens (e.g. 288:8272) overrides the padding to 12/16, i.e. 44px. The
+// sidebar passes that override through className.
+
+type IconComponent = ComponentType<{ className?: string }>;
 
 export function DashboardButton({
   icon,
@@ -25,33 +57,51 @@ export function DashboardButton({
   onClick,
   // Collapsed sidebar rail: icon only, centered, label hidden.
   collapsed = false,
+  leadingMark = false,
+  trailingMark = false,
   className,
 }: {
-  icon: PaddyIconName;
+  /** A Paddy Icons name, or any icon component for items the set has no
+   *  glyph for (it's sized and coloured the same way). */
+  icon: PaddyIconName | IconComponent;
   label: string;
   active?: boolean;
   href?: string;
   onClick?: () => void;
   collapsed?: boolean;
+  /** Figma's hidden plus-mini before the icon. */
+  leadingMark?: boolean;
+  /** Figma's hidden plus-mini after the label. */
+  trailingMark?: boolean;
   className?: string;
 }) {
+  const Icon = typeof icon === "string" ? null : icon;
   const content = (
     <>
-      <PaddyIcon name={icon} className="size-5 shrink-0" />
+      {leadingMark && !collapsed && (
+        <PlusMiniIcon className="text-subtle-foreground shrink-0" />
+      )}
+      {Icon ? (
+        <Icon className="text-paddy-gray-1 size-5 shrink-0" />
+      ) : (
+        <PaddyIcon
+          name={icon as PaddyIconName}
+          className="text-paddy-gray-1 size-5 shrink-0"
+        />
+      )}
       {!collapsed && (
         <span className="flex-1 truncate text-left">{label}</span>
       )}
-      {active && !collapsed && (
-        <ChevronRight className="size-[15px] shrink-0 opacity-60" aria-hidden />
+      {trailingMark && !collapsed && (
+        <PlusMiniIcon className="text-subtle-foreground shrink-0" />
       )}
     </>
   );
   const styles = cn(
-    "flex h-10 w-full items-center gap-2.5 rounded-lg px-4 text-sm font-medium transition",
+    "text-foreground flex h-10 w-full items-center gap-1.5 rounded-none px-4 py-2.5 text-sm leading-5 font-medium outline-none transition-[background-color,box-shadow]",
+    "hover:bg-sidebar-accent focus-visible:shadow-[0_0_0_2px_#fff,0_0_0_4px_rgb(59_130_246/0.6)]",
+    active ? "bg-sidebar-accent" : "bg-transparent",
     collapsed && "justify-center px-0",
-    active
-      ? "bg-[#FAFAFA] text-[#17171C]"
-      : "bg-transparent text-[#17171C] hover:bg-[#FAFAFA]",
     className,
   );
 
@@ -61,7 +111,9 @@ export function DashboardButton({
         href={href}
         aria-current={active ? "page" : undefined}
         aria-label={collapsed ? label : undefined}
+        title={collapsed ? label : undefined}
         onClick={onClick}
+        data-state={active ? "active" : "default"}
         className={styles}
       >
         {content}
@@ -74,7 +126,9 @@ export function DashboardButton({
       type="button"
       aria-current={active ? "page" : undefined}
       aria-label={collapsed ? label : undefined}
+      title={collapsed ? label : undefined}
       onClick={onClick}
+      data-state={active ? "active" : "default"}
       className={styles}
     >
       {content}

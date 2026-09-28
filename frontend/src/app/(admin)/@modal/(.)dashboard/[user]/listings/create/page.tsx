@@ -1,7 +1,7 @@
 "use client";
 
 import { SideDrawer } from "@/components/side-drawer";
-import { ListingCreateForm } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-create-form";
+import { ListingFormStepper } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-form-stepper";
 
 // Intercepts client-side navigation to /dashboard/[user]/listings/create
 // and opens the form in the shared right-hand drawer — the same slide-in
@@ -9,20 +9,22 @@ import { ListingCreateForm } from "@/app/(admin)/dashboard/[user]/listings/_comp
 // through to the real listings/create/page.tsx full page instead.
 //
 // Expanding widens the drawer in place rather than navigating, so the
-// <ListingCreateForm /> never unmounts: half-filled values and picked
+// <ListingFormStepper /> never unmounts: half-filled values and picked
 // File objects survive the toggle with zero storage code. Clicking the
 // dimmed page doesn't close it (would discard the form); Esc and the
-// close button do.
+// close button do. The stepper puts its Back / Next in this drawer's
+// header row itself (SideDrawer's actions slot); below md the drawer is
+// full-screen and they sit in a bar at the bottom instead.
 export default function InterceptedListingCreatePanel() {
   return (
     <SideDrawer
       title="Create listing"
       showTitle
-      subtitle="Add photos and details — the list updates once saved."
+      subtitle="Five short steps — nothing is saved until the last one."
       dismissOnOutsideClick={false}
       bodyClassName="px-5 pb-8 md:px-8"
     >
-      <ListingCreateForm />
+      <ListingFormStepper />
     </SideDrawer>
   );
 }

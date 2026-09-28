@@ -1,7 +1,6 @@
 "use client";
 
 import React from "react";
-import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
 import { useMe } from "@/hooks/use-auth";
 import {
@@ -12,18 +11,11 @@ import {
   useSidebar as useShadcnSidebar,
   SidebarTrigger as ShadcnSidebarTrigger,
 } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
-import {
-  LayoutDashboard,
-  Building2,
-  FileText,
-  Heart,
-  Map,
-  User,
-  ShieldCheck,
-} from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
+import { DashboardButton } from "@/components/dashboard-button";
+import type { PaddyIconName } from "@/components/paddy-icons";
 import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 
 export function Sidebar() {
@@ -39,7 +31,8 @@ export function Sidebar() {
           "duration-200",
           "flex",
           "flex-col",
-          "gap-2",
+          // 4px between items, as in the Accounts – Landlord nav.
+          "gap-1",
           "pt-2",
           "pb-2",
           "border-r",
@@ -74,10 +67,17 @@ export function Sidebar() {
 // still loading, narrowing once it arrives. Pages re-check roles
 // themselves and the backend 403s regardless, so this gate is
 // navigation, not security.
+//
+// Each row is the Figma DashboardButton (Handoff 242:3911). Same items
+// and routes as before — only the look changed. The Figma screens'
+// own nav items (Browse Homes, About me, Payment, Settings…) are a
+// separate, later change. Icons come from the Paddy Icons set; Reviews
+// has no glyph there, so it keeps lucide's ShieldCheck.
 function WorkspaceLinks() {
   const params = useParams<{ user: string }>();
   const { data: identity } = useMe();
   const pathname = usePathname();
+  const { open, isMobile, setOpenMobile } = useShadcnSidebar();
 
   // Route param first (every dashboard page carries [user]); identity
   // id only as a fallback for admin pages without that segment. No
@@ -86,17 +86,22 @@ function WorkspaceLinks() {
   const role: string | undefined = identity?.role;
   if (!userId) return null;
 
-  const links = [
+  const links: {
+    href: string;
+    label: string;
+    icon: PaddyIconName | typeof ShieldCheck;
+    visible: boolean;
+  }[] = [
     {
       href: `/dashboard/${userId}`,
       label: "Home",
-      icon: <LayoutDashboard className="w-4" />,
+      icon: "home",
       visible: true,
     },
     {
       href: DISCOVERY_PATH,
       label: "Discover",
-      icon: <Map className="w-4" />,
+      icon: "map",
       // Public hub — every role browses listings, so this is always
       // shown (same as the old DashboardNav's Discover entry).
       visible: true,
@@ -104,7 +109,7 @@ function WorkspaceLinks() {
     {
       href: `/dashboard/${userId}/listings`,
       label: "Listings",
-      icon: <Building2 className="w-4" />,
+      icon: "listings",
       // Role undefined while identity loads (or if it fails) — render,
       // then narrow once the role arrives.
       visible:
@@ -113,13 +118,13 @@ function WorkspaceLinks() {
     {
       href: `/dashboard/${userId}/leases`,
       label: "Leases",
-      icon: <FileText className="w-4" />,
+      icon: "lease",
       visible: true,
     },
     {
       href: `/dashboard/${userId}/reviews`,
       label: "Reviews",
-      icon: <ShieldCheck className="w-4" />,
+      icon: ShieldCheck,
       // Staff/admin only; shown while the role loads, narrowed after.
       // The page re-checks, the backend 403s regardless.
       visible: !role || ["staff", "admin"].includes(role),
@@ -127,68 +132,48 @@ function WorkspaceLinks() {
     {
       href: `/dashboard/${userId}/saved`,
       label: "Saved Homes",
-      icon: <Heart className="w-4" />,
+      icon: "heart",
       // Renter only; shown while the role loads, narrowed after.
       visible: !role || role === "renter",
     },
     {
       href: `/dashboard/${userId}/profile`,
       label: "Profile",
-      icon: <User className="w-4" />,
+      icon: "profile",
       visible: true,
     },
-  ].filter((l) => l.visible);
+  ];
 
   return (
     <>
-      {links.map(({ href, label, icon }) => {
-        // Exact match for Home (every dashboard URL starts with it),
-        // prefix match for the section links.
-        const isHome = href.split("/").length === 3;
-        const isSelected = isHome
-          ? pathname === href
-          : pathname === href || pathname.startsWith(`${href}/`);
-        return (
-          <Button
-            key={href}
-            asChild
-            variant="ghost"
-            size="lg"
-            className={cn(
-              "flex w-full items-center justify-start gap-2 py-2 !px-3 text-sm",
-              {
-                "bg-sidebar-primary": isSelected,
-                "hover:!bg-sidebar-primary/90": isSelected,
-                "text-sidebar-primary-foreground": isSelected,
-              }
-            )}
-          >
-            <Link
+      {links
+        .filter((l) => l.visible)
+        .map(({ href, label, icon }) => {
+          // Exact match for Home (every dashboard URL starts with it),
+          // prefix match for the section links.
+          const isHome = href.split("/").length === 3;
+          const isSelected = isHome
+            ? pathname === href
+            : pathname === href || pathname.startsWith(`${href}/`);
+          return (
+            <DashboardButton
+              key={href}
               href={href}
-              className={cn("flex w-full items-center gap-2")}
-            >
-              <div
-                className={cn("w-4", {
-                  "text-muted-foreground": !isSelected,
-                  "text-sidebar-primary-foreground": isSelected,
-                })}
-              >
-                {icon}
-              </div>
-              <span
-                className={cn("line-clamp-1 truncate", {
-                  "font-normal": !isSelected,
-                  "font-semibold": isSelected,
-                  "text-sidebar-primary-foreground": isSelected,
-                  "text-foreground": !isSelected,
-                })}
-              >
-                {label}
-              </span>
-            </Link>
-          </Button>
-        );
-      })}
+              icon={icon}
+              label={label}
+              active={isSelected}
+              // The collapsed desktop rail is icon-only. The phone sheet
+              // always shows labels (`open` describes the desktop rail).
+              collapsed={!open && !isMobile}
+              // On phones the nav is a sheet over the page: close it
+              // once a link is picked so the new page is visible.
+              onClick={isMobile ? () => setOpenMobile(false) : undefined}
+              // 44px rows, as every instance in the Accounts – Landlord
+              // screens overrides the set's 40px (e.g. 288:8272).
+              className="h-11 py-3"
+            />
+          );
+        })}
     </>
   );
 }

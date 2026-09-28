@@ -7,7 +7,7 @@
 // inside the aside), this full-page version had no inline edit path —
 // "Edit Listing" used to navigate to the separate /edit route. Now it
 // toggles the SAME shared component the creation/update routes use
-// (ListingCreateForm, in edit mode via listingId) right here on the
+// (ListingFormStepper, in edit mode via listingId) right here on the
 // page, matching the panel's preview->edit behavior. The /edit route
 // still exists as a deep-linkable URL; this toggle is just the
 // in-place way to get there without a navigation.
@@ -21,7 +21,7 @@ import {
   listingStatusHint,
   useListingStatus,
 } from "../_components/listing-preview";
-import { ListingCreateForm } from "../_components/listing-create-form";
+import { ListingFormStepper } from "../_components/listing-form-stepper";
 
 export default function ListingShowPage({
   params,
@@ -33,11 +33,11 @@ export default function ListingShowPage({
   const status = useListingStatus(id);
 
   return (
-    <div className={mode === "edit" ? "mx-auto max-w-2xl p-6" : "mx-auto max-w-[845px] p-6"}>
+    <div className={mode === "edit" ? "mx-auto max-w-3xl p-6" : "mx-auto max-w-[845px] p-6"}>
       {mode === "edit" ? (
         <>
-          <h1 className="mb-6 text-2xl font-bold">Update Listing</h1>
-          <ListingCreateForm
+          <h1 className="font-display mb-6 text-2xl font-medium tracking-[-0.02em]">Edit listing</h1>
+          <ListingFormStepper
             listingId={id}
             // Both callbacks flip straight back to the (refetched)
             // preview without any navigation — the URL never changed,
