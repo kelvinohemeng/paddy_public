@@ -104,6 +104,15 @@ class Listing(models.Model):
         # landlord/staff/admin, AND to the specific renter who holds the
         # Lease (see ListingViewSet.get_queryset's renter branch), so they
         # can still reach their own leased listing's detail/dashboard card.
+        PAUSED = 'paused', 'Paused'
+        # Set automatically (never by a person) when a landlord's paid
+        # plan lapses and they have more live listings than their new
+        # limit allows — see payments/limits.py enforce_listing_caps.
+        # Hidden from the public exactly like archived, but kept separate
+        # from ARCHIVED (the landlord's own choice, needs re-review to
+        # come back) and REJECTED (staff's decision): a paused listing was
+        # already verified and goes straight back to PUBLISHED on its own
+        # once the landlord pays again.
 
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.DRAFT

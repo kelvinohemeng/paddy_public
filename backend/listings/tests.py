@@ -138,144 +138,117 @@ class ListingCreateTests(APITestCase):
         # FIRST listing still goes through — confirms the free tier
         # genuinely doesn't require any payment setup at all
 
-    def test_second_listing_blocked_without_subscription(self):
-        self.client.force_authenticate(user=self.landlord_user)
+    # ---- Listing limits (Kelvin's decisions, 2026-09-28) ----
+    # Creating a DRAFT is always allowed, except that a Free landlord may
+    # hold at most 10 listings in total. The live limit (Free 3, agent 10,
+    # lord unlimited) is checked when a listing is SUBMITTED for review —
+    # see ListingLimitSubmitTests below. The old tests here expected the
+    # 2nd listing to be blocked at create time: that was the
+    # "3 of 1 — limit reached" bug.
 
-        first = {
-            'title': 'Free listing', 'description': 'Test', 'listing_type': 'rent',
-            'price_monthly': '2000.00', 'advance_rent_period': '1_year',
-            'bedrooms': 1, 'bathrooms': 1, 'address_precise': '1 Test St',
-            'neighborhood': 'Osu', 'city': 'Accra',
-        }
-        self.client.post('/listings/', first, format='json')
-        # Uses up the free tier
+    BASE = {
+        'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+        'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+        'address_precise': '1 Test St', 'neighborhood': 'Osu', 'city': 'Accra',
+    }
 
-        second = {**first, 'title': 'Second listing, should be blocked'}
-        response = self.client.post('/listings/', second, format='json')
+    def _make(self, count, status_value):
+        # Creates listings straight in the database (no API), so a test
+        # can set up "this landlord already has N of these" in one line.
+        for i in range(count):
+            Listing.objects.create(
+                landlord_profile=self.landlord_profile, title=f'{status_value} {i}',
+                status=status_value, **self.BASE,
+            )
 
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(Listing.objects.filter(title='Second listing, should be blocked').exists())
-
-    def test_second_listing_allowed_with_active_subscription(self):
+    def _subscribe(self, tier, days=20):
         from payments.models import LandlordSubscription
         from django.utils import timezone
         from datetime import timedelta
-
-        LandlordSubscription.objects.create(
+        return LandlordSubscription.objects.create(
             landlord_profile=self.landlord_profile,
-            tier=LandlordSubscription.Tier.AGENT,
+            tier=tier,
             status=LandlordSubscription.Status.ACTIVE,
-            current_period_end=timezone.now() + timedelta(days=20),
+            current_period_end=timezone.now() + timedelta(days=days),
         )
 
+    def test_free_landlord_can_create_drafts_beyond_live_limit(self):
+        # Free's live limit is 3, but drafts don't use live slots —
+        # creating a 5th listing (as a draft) must work.
+        self._make(4, Listing.Status.DRAFT)
         self.client.force_authenticate(user=self.landlord_user)
 
-        first = {
-            'title': 'Free listing 2', 'description': 'Test', 'listing_type': 'rent',
-            'price_monthly': '2000.00', 'advance_rent_period': '1_year',
-            'bedrooms': 1, 'bathrooms': 1, 'address_precise': '1 Test St',
-            'neighborhood': 'Osu', 'city': 'Accra',
-        }
-        self.client.post('/listings/', first, format='json')
-
-        second = {**first, 'title': 'Paid second listing'}
-        response = self.client.post('/listings/', second, format='json')
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Fifth draft'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        # With an ACTIVE, non-expired subscription in place, the second
-        # listing goes through — proves the enforcement genuinely checks
-        # the subscription, not just hard-blocking after the first
-        # listing unconditionally
 
-    def test_second_listing_blocked_with_expired_subscription(self):
-        from payments.models import LandlordSubscription
-        from django.utils import timezone
-        from datetime import timedelta
-
-        LandlordSubscription.objects.create(
-            landlord_profile=self.landlord_profile,
-            tier=LandlordSubscription.Tier.AGENT,
-            status=LandlordSubscription.Status.ACTIVE,
-            current_period_end=timezone.now() - timedelta(days=1),
-            # In the past — expired
-        )
-
+    def test_free_landlord_with_three_live_can_still_create_draft(self):
+        # The exact "3 of 1 — limit reached" scenario: being at the live
+        # limit must NOT stop a landlord from starting a new draft.
+        self._make(3, Listing.Status.PUBLISHED)
         self.client.force_authenticate(user=self.landlord_user)
 
-        first = {
-            'title': 'Free listing 3', 'description': 'Test', 'listing_type': 'rent',
-            'price_monthly': '2000.00', 'advance_rent_period': '1_year',
-            'bedrooms': 1, 'bathrooms': 1, 'address_precise': '1 Test St',
-            'neighborhood': 'Osu', 'city': 'Accra',
-        }
-        self.client.post('/listings/', first, format='json')
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Draft while full'}, format='json')
 
-        second = {**first, 'title': 'Blocked, expired sub'}
-        response = self.client.post('/listings/', second, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_free_total_limit_blocks_the_eleventh_listing(self):
+        self._make(3, Listing.Status.PUBLISHED)
+        self._make(5, Listing.Status.DRAFT)
+        self._make(2, Listing.Status.REJECTED)
+        # 10 in total — rejected listings count toward the total.
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Eleventh'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        # An existing but EXPIRED subscription must not grant access —
-        # this is the exact scenario is_active()'s date check exists for,
-        # and confirms even having tier=AGENT stored doesn't matter if
-        # is_active() is False — falls back to the FREE cap regardless
+        self.assertEqual(response.data['code'], 'listing_total_limit_reached')
+        self.assertFalse(Listing.objects.filter(title='Eleventh').exists())
 
-    def test_agent_tier_allows_up_to_ten_listings(self):
+    def test_paused_listings_count_toward_free_total(self):
+        self._make(9, Listing.Status.DRAFT)
+        self._make(1, Listing.Status.PAUSED)
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Over'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_archived_and_leased_do_not_count_toward_free_total(self):
+        self._make(9, Listing.Status.DRAFT)
+        self._make(3, Listing.Status.ARCHIVED)
+        self._make(2, Listing.Status.LEASED)
+        # 9 counted, so a 10th is still allowed.
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Tenth'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_paid_plan_has_no_total_limit(self):
+        from payments.models import LandlordSubscription
+        self._subscribe(LandlordSubscription.Tier.AGENT)
+        self._make(15, Listing.Status.DRAFT)
+        self.client.force_authenticate(user=self.landlord_user)
+
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Sixteenth'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_expired_paid_plan_falls_back_to_free_total_limit(self):
         from payments.models import LandlordSubscription
         from django.utils import timezone
         from datetime import timedelta
-
-        LandlordSubscription.objects.create(
-            landlord_profile=self.landlord_profile,
-            tier=LandlordSubscription.Tier.AGENT,
-            status=LandlordSubscription.Status.ACTIVE,
-            current_period_end=timezone.now() + timedelta(days=20),
-        )
-
+        subscription = self._subscribe(LandlordSubscription.Tier.AGENT)
+        subscription.current_period_end = timezone.now() - timedelta(days=10)
+        subscription.save()
+        # Ended 10 days ago — well past the 3-day grace period.
+        self._make(10, Listing.Status.DRAFT)
         self.client.force_authenticate(user=self.landlord_user)
 
-        base = {
-            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
-            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
-            'address_precise': '1 Test St', 'neighborhood': 'Osu', 'city': 'Accra',
-        }
+        response = self.client.post('/listings/', {**self.BASE, 'title': 'Blocked'}, format='json')
 
-        for i in range(10):
-            response = self.client.post('/listings/', {**base, 'title': f'Agent listing {i}'}, format='json')
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        # All 10 succeed — agent tier's cap
-
-        eleventh = self.client.post('/listings/', {**base, 'title': 'Agent listing 11'}, format='json')
-        self.assertEqual(eleventh.status_code, status.HTTP_403_FORBIDDEN)
-        # The 11th is correctly blocked — proves the cap is genuinely
-        # enforced at exactly 10, not "unlimited once you're on a paid
-        # tier at all" or some other off-by-one
-
-    def test_lord_tier_has_no_cap(self):
-        from payments.models import LandlordSubscription
-        from django.utils import timezone
-        from datetime import timedelta
-
-        LandlordSubscription.objects.create(
-            landlord_profile=self.landlord_profile,
-            tier=LandlordSubscription.Tier.LORD,
-            status=LandlordSubscription.Status.ACTIVE,
-            current_period_end=timezone.now() + timedelta(days=20),
-        )
-
-        self.client.force_authenticate(user=self.landlord_user)
-
-        base = {
-            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
-            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
-            'address_precise': '1 Test St', 'neighborhood': 'Osu', 'city': 'Accra',
-        }
-
-        for i in range(15):
-            # Deliberately MORE than agent's 10-cap, to prove lord tier
-            # genuinely has no limit rather than accidentally inheriting
-            # agent's cap
-            response = self.client.post('/listings/', {**base, 'title': f'Lord listing {i}'}, format='json')
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
 class ListingOwnershipTests(APITestCase):
@@ -1419,8 +1392,7 @@ class ListingMineFilterTests(APITestCase):
         titles = _titles_from_list_response(response)
 
         self.assertIn('My draft', titles)
-        # Drafts included — the dashboard must count/list them for the
-        # subscription cap, which counts ALL statuses, not just live ones.
+        # Drafts included — the dashboard lists every status here.
         self.assertIn('My published', titles)
         self.assertNotIn('Other published', titles)
         # THE point of the param: without it, the default landlord base
@@ -1631,9 +1603,8 @@ class ListingSubmitForReviewTests(APITestCase):
         # self-publish bypass — status is read_only, so client-supplied
         # values are silently ignored on both write paths and the only
         # transition stays the submit-for-review action. Uses a FRESH
-        # landlord for the create half: setUp already gave self.owner
-        # five rows, so its free-tier cap (1 listing) is long spent and
-        # any further POST would 403 on the cap, not on status handling.
+        # landlord for the create half, so the create below is tested on
+        # its own and not mixed up with self.owner's existing listings.
         fresh = User.objects.create_user(
             email='review-fresh@example.com', password='pass123456', role='landlord',
             is_verified=True,  # creating a listing requires a verified email

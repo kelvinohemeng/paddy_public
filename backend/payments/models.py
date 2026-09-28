@@ -29,9 +29,19 @@ class LandlordSubscription(models.Model):
     tier = models.CharField(max_length=10, choices=Tier.choices, default=Tier.FREE)
 
     LISTING_CAPS = {
-        Tier.FREE: 1,
+        Tier.FREE: 3,
         Tier.AGENT: 10,
         Tier.LORD: None,
+        # KELVIN'S DECISION (2026-09-28): these are LIVE-listing caps —
+        # the number of listings that may be `published` or
+        # `pending_review` at the same time. Drafts, rejected, archived,
+        # paused and leased listings don't use a slot. The cap is checked
+        # when a landlord submits a listing for review (see
+        # listings/views.py submit_for_review), not when they create a
+        # draft. The Free tier ALSO has a separate total limit (10
+        # listings of any kind) — see FREE_TOTAL_LISTING_CAP in
+        # payments/limits.py.
+        #
         # None here specifically means "no cap" (unlimited) — NOT zero,
         # NOT "not set". Chosen deliberately since 0 would be
         # ambiguous/wrong (0 would mean "can't list at all"), and this
@@ -52,6 +62,57 @@ class LandlordSubscription(models.Model):
     # Paystack's ID for the actual subscription object (e.g.
     # "SUB_vsyqdmlzble3uii") — returned once a subscription is
     # successfully created, used later if we ever need to cancel/manage it
+
+    paystack_email_token = models.CharField(max_length=100, blank=True)
+    # A second secret Paystack hands us with every subscription (the
+    # `email_token` field on subscription.create). Paystack's "disable
+    # subscription" API needs BOTH the subscription code AND this token,
+    # so without it we can't cancel on the landlord's behalf. If an older
+    # row doesn't have it, payments/views.py fetches it from Paystack on
+    # demand (see _email_token_for).
+
+    paystack_plan_code = models.CharField(max_length=100, blank=True)
+    # Which Paystack plan the CURRENT subscription code belongs to. Needed
+    # for plan switching: when a landlord moves agent → lord, this lets us
+    # tell "the new plan's first charge has landed" apart from "we've only
+    # heard that a new subscription exists" — see
+    # retire_superseded_subscription in payments/views.py.
+
+    cancel_at_period_end = models.BooleanField(default=False)
+    # True once the landlord cancels (POST /payments/subscription/cancel/)
+    # or Paystack tells us the plan won't renew (subscription.not_renew /
+    # subscription.disable). They keep their paid plan until
+    # current_period_end — they've paid for that time — and then drop to
+    # Free with NO grace period (a grace period is for failed renewals,
+    # and a cancelled plan isn't going to renew).
+
+    past_due_since = models.DateTimeField(null=True, blank=True)
+    # When the FIRST failed renewal (invoice.payment_failed) of the
+    # current problem arrived. Paystack keeps retrying the card for a few
+    # days, so paddy gives a 3-day grace period from this moment before
+    # pausing extra listings (payments/limits.py GRACE_PERIOD). Cleared
+    # again as soon as a payment succeeds.
+
+    superseded_subscription_code = models.CharField(max_length=100, blank=True)
+    superseded_email_token = models.CharField(max_length=100, blank=True)
+    # PLAN SWITCHING (agent ↔ lord). Paystack has no "change plan" call,
+    # so a switch means starting a brand-new subscription on the new plan.
+    # The OLD one would keep charging the landlord every month unless we
+    # turn it off. When the new subscription arrives, the old code/token
+    # move into these two fields; once the new plan's charge is confirmed
+    # we disable the old one at Paystack and clear these. If Paystack is
+    # unreachable at that moment, the daily enforce_listing_caps command
+    # retries — so the landlord never ends up paying for two plans.
+
+    last_plan_charge_at = models.DateTimeField(null=True, blank=True)
+    # When the most recent plan charge we've applied was paid (Paystack's
+    # `paid_at`). A plan charge may only change this row if it's NEWER
+    # than this. Why it matters: GET /payments/verify/?reference=... can
+    # be called with ANY old reference, and before this field existed an
+    # old charge would be applied again. A landlord who had moved from
+    # lord down to agent could replay an old lord charge and get lord
+    # limits back while paying the agent price. With this check, replaying
+    # an older charge does nothing.
 
     class Status(models.TextChoices):
         INACTIVE = 'inactive', 'Inactive'
@@ -92,9 +153,10 @@ class LandlordSubscription(models.Model):
         # drifting out of sync with each other over time
         #
         # NOTE: FREE tier landlords are never "active" in this sense —
-        # is_active() specifically means "currently paying", the free
-        # tier's 1-listing allowance is handled separately by
-        # listing_cap() below, not by this method
+        # is_active() specifically means "currently paying". Listing
+        # limits don't use this method: they go through
+        # payments/limits.py effective_tier(), which also allows the
+        # 3-day grace period and handles cancelled plans
 
         from django.utils import timezone
         # Imported here rather than at the top of the file — this is a
@@ -116,13 +178,11 @@ class LandlordSubscription(models.Model):
         # comparing an aware datetime to a naive one raises an error
 
     def listing_cap(self):
-        # Returns the max number of listings this landlord's CURRENT
-        # tier allows, or None for unlimited. Deliberately does NOT
-        # check is_active() itself — a landlord whose paid tier has
-        # lapsed (PAST_DUE/expired) should fall back to being treated
-        # as FREE-tier capped, which the call-site (perform_create)
-        # handles by checking is_active() separately before ever
-        # trusting a paid tier's higher cap
+        # Returns the max number of LIVE listings this row's stored tier
+        # allows, or None for unlimited. Deliberately does NOT check
+        # whether the plan is still paid for: enforcement code uses
+        # payments/limits.py (effective_tier + live_cap_for) instead,
+        # which falls back to Free once a paid plan has lapsed
 
         return self.LISTING_CAPS[self.tier]
 

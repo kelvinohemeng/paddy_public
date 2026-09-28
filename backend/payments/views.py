@@ -20,7 +20,7 @@ from accounts.models import User, LandlordProfile
 from accounts.permissions import require_verified_email
 from .models import LandlordSubscription, ListingUnlock
 from .serializers import LandlordSubscriptionSerializer
-from . import paystack
+from . import limits, paystack
 
 logger = logging.getLogger(__name__)
 # Same module-level logger pattern as payments/paystack.py and
@@ -80,6 +80,48 @@ def initiate_subscription(request):
     # the spot, defaulting to Tier.FREE/Status.INACTIVE, rather than
     # requiring a separate signup-time step
 
+    if limits.effective_tier(subscription) == requested_tier:
+        return Response(
+            {
+                'error': f'You are already on {subscription.get_tier_display()}.',
+                'code': 'already_on_plan',
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    # Paying for the plan you already have would start a SECOND Paystack
+    # subscription on the same plan — two monthly charges for one plan.
+    # (Resuming a plan you've cancelled isn't supported yet; once it has
+    # run out, subscribing again works normally.)
+
+    if subscription.superseded_subscription_code:
+        return Response(
+            {
+                'error': 'Your last plan change is still being finalised. Please try again in a few minutes.',
+                'code': 'plan_change_pending',
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+    # PLAN SWITCHING: a switch leaves the old Paystack subscription in
+    # superseded_subscription_code until it has been turned off. Starting
+    # another switch before that happens would push a THIRD subscription
+    # into the picture and we could lose track of the second one — which
+    # would then keep charging the landlord. So one switch at a time.
+    # 409 Conflict = "the request is fine, but not right now".
+    #
+    # HOW A SWITCH WORKS (agent ↔ lord), start to finish:
+    #   1. The landlord pays for the new plan here, exactly like a first
+    #      subscription. Paystack creates a NEW subscription.
+    #   2. subscription.create webhook: the new code is stored, and the
+    #      old code moves to superseded_subscription_code. The landlord
+    #      keeps the OLD plan's limits for now.
+    #   3. charge.success for the new plan: the tier switches, and only
+    #      then is the old Paystack subscription disabled
+    #      (retire_superseded_subscription below). If the landlord moved
+    #      DOWN (lord → agent), listings over the new limit are paused,
+    #      newest first.
+    # The new plan is charged in full straight away. Paystack can't
+    # prorate, so unused time on the old plan isn't refunded.
+
     result = paystack.initialize_transaction(
         email=user.email,
         amount_kobo=int(request.data.get('amount_kobo')),
@@ -130,13 +172,177 @@ def my_subscription(request):
     # completely normal, expected state, not an error
 
     if subscription is None:
-        return Response({
+        data = {
             'tier': LandlordSubscription.Tier.FREE,
             'status': LandlordSubscription.Status.INACTIVE,
             'current_period_end': None,
-        })
+            'cancel_at_period_end': False,
+        }
+    else:
+        data = dict(LandlordSubscriptionSerializer(subscription).data)
 
-    return Response(LandlordSubscriptionSerializer(subscription).data)
+    data['paid_access_ends_at'] = limits.paid_access_ends_at(subscription)
+    data.update(limits.usage_for(user.landlordprofile))
+    return Response(data)
+    # The usage numbers (listings_used / listing_cap, and for Free
+    # listings_total / listing_total_cap) come from payments/limits.py —
+    # the SAME code that enforces the limits. The subscription card
+    # shows these instead of counting listings itself, so the card and
+    # the "limit reached" error can never disagree.
+    # effective_tier is the tier whose limits apply right now: `tier`
+    # can still say "agent" after an agent plan has run out.
+    # paid_access_ends_at is when the paid plan stops counting (period
+    # end, plus the 3-day grace unless the plan was cancelled) — None on
+    # Free.
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
+def cancel_subscription(request):
+    # POST /payments/subscription/cancel/ — the landlord stops their paid
+    # plan from renewing. They keep it until current_period_end (they've
+    # paid for that time), then drop to Free with no grace period.
+    #
+    # Deliberately NOT gated on a verified email (unlike subscribing):
+    # stopping charges should never be blocked.
+
+    user = request.user
+    if user.role != User.Role.LANDLORD:
+        return Response({'error': 'Only landlords have subscriptions'}, status=status.HTTP_403_FORBIDDEN)
+
+    subscription = limits.get_subscription(user.landlordprofile)
+    if subscription is None or limits.effective_tier(subscription) == LandlordSubscription.Tier.FREE:
+        return Response(
+            {'error': 'You are not on a paid plan.', 'code': 'no_paid_plan'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if subscription.cancel_at_period_end:
+        return Response(
+            {'error': 'Your plan is already cancelled.', 'code': 'already_cancelled'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    for code, token in (
+        (subscription.paystack_subscription_code, subscription.paystack_email_token),
+        (subscription.superseded_subscription_code, subscription.superseded_email_token),
+    ):
+        if code and not _disable_at_paystack(code, token):
+            return Response(
+                {'error': 'Could not reach Paystack to cancel your plan. Nothing has changed; please try again.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+    # Turn off EVERY Paystack subscription this landlord has with us: the
+    # current one and, mid-switch, the old one too. "Cancel" has to mean
+    # no more charges at all.
+    # If Paystack can't be reached we say so and change nothing here.
+    # The worst outcome would be telling the landlord "cancelled" while
+    # Paystack keeps charging them. 502 Bad Gateway = "a service we rely
+    # on failed".
+    # A row with no Paystack code (e.g. staff granted the plan by hand in
+    # the admin) has nothing to turn off at Paystack; the flag below is
+    # enough.
+
+    subscription.cancel_at_period_end = True
+    subscription.superseded_subscription_code = ''
+    subscription.superseded_email_token = ''
+    subscription.save(update_fields=[
+        'cancel_at_period_end', 'superseded_subscription_code', 'superseded_email_token', 'updated_at',
+    ])
+    # Paystack will also send subscription.not_renew for this, which sets
+    # the same flag again — harmless.
+
+    data = dict(LandlordSubscriptionSerializer(subscription).data)
+    data['paid_access_ends_at'] = limits.paid_access_ends_at(subscription)
+    data.update(limits.usage_for(user.landlordprofile))
+    return Response(data)
+
+cancel_subscription.throttle_scope = 'payments'
+# Calls Paystack's real API, so it gets the same rate limit as the other
+# payment endpoints.
+
+
+PAYSTACK_ALREADY_STOPPED = ('non-renewing', 'cancelled', 'complete', 'completed')
+# Paystack subscription statuses that mean "won't be charged again".
+
+
+def _disable_at_paystack(code, token):
+    # Turns off one Paystack subscription. Returns True once it's
+    # definitely not going to renew, False if we couldn't make sure (the
+    # caller then keeps the old state and tries again later).
+    #
+    # `token` is the subscription's email_token, which Paystack requires
+    # alongside the code. Older rows didn't store it, so if it's missing
+    # we ask Paystack for it.
+    details = None
+    if not token:
+        details = paystack.fetch_subscription(code)
+        token = (details.get('data') or {}).get('email_token') if details.get('status') else None
+        if not token:
+            logger.error('Could not get the email token for Paystack subscription %s: %s', code, details.get('message'))
+            return False
+
+    result = paystack.disable_subscription(code, token)
+    if result.get('status'):
+        return True
+
+    # Paystack also refuses to disable a subscription that's ALREADY
+    # disabled (for example, the landlord used the cancel link in
+    # Paystack's own email). That's still the outcome we want, so check
+    # the subscription's status before treating this as a failure.
+    details = paystack.fetch_subscription(code)
+    paystack_status = (details.get('data') or {}).get('status') if details.get('status') else None
+    if paystack_status in PAYSTACK_ALREADY_STOPPED:
+        return True
+
+    logger.error('Could not disable Paystack subscription %s: %s', code, result.get('message'))
+    return False
+
+
+def _plan_switch_confirmed(subscription):
+    # True once the plan named by the CURRENT Paystack subscription
+    # (paystack_plan_code) has actually been paid for: a charge.success for
+    # it set the row ACTIVE on that plan's tier.
+    current_plan_tier = _tier_for_plan_code(subscription.paystack_plan_code)
+    return (
+        subscription.status == LandlordSubscription.Status.ACTIVE
+        and current_plan_tier is not None
+        and subscription.tier == current_plan_tier
+    )
+
+
+def retire_superseded_subscription(subscription):
+    # PLAN SWITCHING, step 3 (see initiate_subscription for the full
+    # story): turn off the OLD Paystack subscription, but only once the
+    # NEW plan's charge has been confirmed. Returns True when there's
+    # nothing left to retire.
+    #
+    # Called from the webhooks (subscription.create and charge.success,
+    # which can arrive in either order) and from the daily
+    # enforce_listing_caps command, which retries if Paystack was down.
+    if not subscription.superseded_subscription_code:
+        return True
+
+    new_plan_confirmed = _plan_switch_confirmed(subscription)
+    # "Confirmed" = a charge.success for the new plan has already set the
+    # tier to that plan. Until then the old plan keeps running, so the
+    # landlord is never left with no working plan if the new payment
+    # somehow doesn't land.
+    if not new_plan_confirmed:
+        return False
+
+    if not _disable_at_paystack(
+        subscription.superseded_subscription_code, subscription.superseded_email_token
+    ):
+        return False
+        # Paystack unreachable: keep the old code so the daily command
+        # tries again. Better to retry than to forget about a
+        # subscription that would keep charging.
+
+    subscription.superseded_subscription_code = ''
+    subscription.superseded_email_token = ''
+    subscription.save(update_fields=['superseded_subscription_code', 'superseded_email_token', 'updated_at'])
+    return True
 
 
 @api_view(['POST'])
@@ -398,6 +604,51 @@ def _handle_successful_charge(data):
     subscription, _ = LandlordSubscription.objects.get_or_create(
         landlord_profile=landlord_profile
     )
+
+    if (
+        subscription.superseded_subscription_code
+        and _plan_switch_confirmed(subscription)
+        and tier != subscription.tier
+    ):
+        logger.error(
+            'Plan charge for %s on the OLD plan (%s) after switching to %s; reference %s. '
+            'The old Paystack subscription %s should have been disabled — staff may need to refund this charge.',
+            email, tier, subscription.tier, data.get('reference', ''),
+            subscription.superseded_subscription_code,
+        )
+        retire_superseded_subscription(subscription)
+        return
+    # PLAN SWITCHING safety net. The landlord has already switched plans
+    # (the new plan's charge was confirmed), but turning off the OLD
+    # Paystack subscription hasn't succeeded yet (e.g. Paystack was down),
+    # and now the old one has renewed. Applying this charge would flip the
+    # landlord back to the plan they left. Instead: keep the new plan, try
+    # again to turn the old one off, and log it loudly so staff can refund
+    # the charge that shouldn't have happened.
+    paid_at = _parse_paid_at(data)
+    if (
+        paid_at is not None
+        and subscription.last_plan_charge_at is not None
+        and paid_at <= subscription.last_plan_charge_at
+    ):
+        if tier != subscription.tier:
+            logger.warning(
+                'Ignoring an older %s plan charge for %s (reference %s, paid %s; newest applied %s). '
+                'If this was a real new payment that arrived late, staff should check the tier by hand.',
+                tier, email, data.get('reference', ''), paid_at, subscription.last_plan_charge_at,
+            )
+        return
+    # SECURITY — only a plan charge NEWER than the last one we applied may
+    # change the subscription. GET /payments/verify/?reference=... accepts
+    # ANY reference, including months-old ones, and runs them through this
+    # function again. Without this check, a landlord who moved from lord
+    # down to agent could re-verify an old lord charge and get lord limits
+    # back while paying the agent price. "<=" also makes a repeated
+    # delivery of the SAME charge (Paystack may send a webhook twice, and
+    # verify + webhook both run for one charge) a harmless no-op.
+    # A payload with no paid_at is still applied as before — real Paystack
+    # charge data always has one.
+
     subscription.status = LandlordSubscription.Status.ACTIVE
     # ACTIVE here means "money genuinely moved for a real plan"
     # (charge.success only fires for successful charges, verify_payment
@@ -407,6 +658,11 @@ def _handle_successful_charge(data):
     # branch.
 
     subscription.tier = tier
+    subscription.past_due_since = None
+    # Money moved, so any earlier failed renewal is resolved and the
+    # grace-period clock stops.
+    if paid_at is not None:
+        subscription.last_plan_charge_at = paid_at
 
     period_end = _period_end_from_paystack_data(data)
     if period_end is not None:
@@ -420,6 +676,26 @@ def _handle_successful_charge(data):
     # paid rows ended up ACTIVE with no period and stayed gated).
 
     subscription.save()
+
+    retire_superseded_subscription(subscription)
+    # If this charge confirms a plan SWITCH, the old Paystack
+    # subscription is turned off now, so the landlord only pays for one
+    # plan. Does nothing if there's no switch in progress.
+
+    limits.enforce_listing_caps(landlord_profile)
+    # The landlord's limit may have changed: paused listings come back
+    # (oldest first) after a renewal or upgrade, and a downgrade from
+    # lord to agent pauses the newest listings over 10.
+
+
+def _parse_paid_at(data):
+    # When Paystack says the money moved. Transaction payloads carry it as
+    # `paid_at` (and sometimes also `paidAt`). None if missing or
+    # unreadable.
+    raw = data.get('paid_at') or data.get('paidAt')
+    if not isinstance(raw, str):
+        return None
+    return parse_datetime(raw)
 
 
 @api_view(['GET'])
@@ -599,30 +875,83 @@ def paystack_webhook(request):
             # fix a genuinely missing user. Logging this properly (not
             # done yet) would be the real production fix
 
+        landlord_profile = LandlordProfile.objects.filter(user=user).first()
+        if landlord_profile is None:
+            return Response(status=status.HTTP_200_OK)
+        # .filter().first() instead of user.landlordprofile, which raises
+        # (→ 500, and Paystack retries forever) for a user with no
+        # landlord profile. Same fix as _handle_successful_charge.
+
         subscription, _ = LandlordSubscription.objects.get_or_create(
-            landlord_profile=user.landlordprofile
+            landlord_profile=landlord_profile
         )
+
+        if subscription_code and subscription_code == subscription.superseded_subscription_code:
+            return Response(status=status.HTTP_200_OK)
+            # A late or repeated delivery about the OLD plan we've already
+            # moved away from — nothing to do.
+
+        plan_code = _plan_code_from_paystack_data(data)
+        tier = _tier_for_plan_code(plan_code)
+        is_new_subscription = bool(subscription_code) and subscription_code != subscription.paystack_subscription_code
+        on_paid_plan_now = limits.effective_tier(subscription) != LandlordSubscription.Tier.FREE
+
+        if is_new_subscription and subscription.paystack_subscription_code:
+            subscription.superseded_subscription_code = subscription.paystack_subscription_code
+            subscription.superseded_email_token = subscription.paystack_email_token
+        # PLAN SWITCHING, step 2 (see initiate_subscription): a NEW Paystack
+        # subscription has arrived while we still know about an older one.
+        # The old one is set aside here and turned off once the new plan's
+        # charge is confirmed. This also covers someone re-subscribing
+        # after a lapse: if the old subscription is still alive at
+        # Paystack (e.g. stuck retrying a failed card), it gets turned off
+        # too, so it can't start charging again later.
+
         subscription.paystack_customer_code = customer_code
         subscription.paystack_subscription_code = subscription_code
+        subscription.paystack_email_token = data.get('email_token') or ''
+        subscription.paystack_plan_code = plan_code or ''
+        # email_token — needed later to cancel this subscription (see
+        # _disable_at_paystack). plan_code — which plan this subscription
+        # is on, used to tell when a switch has been paid for.
 
-        tier = _tier_for_plan_code(_plan_code_from_paystack_data(data))
-        if tier is not None:
+        if is_new_subscription:
+            subscription.cancel_at_period_end = False
+            # A brand-new subscription renews until someone cancels it.
+
+        if tier is not None and not on_paid_plan_now:
             subscription.tier = tier
         # Tier recorded now (not at first charge) so the row already
         # names the right plan while payment is pending. Status is
         # deliberately NOT touched here — no money has moved yet, and
         # only charge.success below may mark a subscription ACTIVE.
+        # EXCEPTION — a plan SWITCH: if the landlord is on a working paid
+        # plan right now, they keep its tier (and its limits) until the
+        # new plan's charge.success arrives. Kelvin's decision: the old
+        # limit applies mid-switch.
 
         period_end = _period_end_from_paystack_data(data)
-        if period_end is not None:
+        if period_end is not None and (
+            subscription.current_period_end is None
+            or not on_paid_plan_now
+            or period_end > subscription.current_period_end
+        ):
             subscription.current_period_end = period_end
         # subscription.create's data IS the Subscription resource, whose
         # next_payment_date is top-level — this is the reliable source
         # for the period end. Stored now so that even if a later
         # charge.success arrives without date info, the row isn't left
         # dateless (which is_active() would treat as inactive).
+        # Mid-switch we only ever move the date LATER, never earlier, so
+        # a switch can't cut short time the landlord already paid for.
 
         subscription.save()
+
+        retire_superseded_subscription(subscription)
+        # Webhooks can arrive in either order. If the new plan's
+        # charge.success already landed, the switch is confirmed and the
+        # old subscription is turned off now; otherwise this does nothing
+        # and charge.success will do it.
 
     elif event == 'charge.success':
         # Fires for BOTH the very first charge and every successful
@@ -656,6 +985,15 @@ def paystack_webhook(request):
 
         subscription = None
         subscription_code = invoice_sub.get('subscription_code')
+        if subscription_code and LandlordSubscription.objects.filter(
+            superseded_subscription_code=subscription_code
+        ).exists():
+            return Response(status=status.HTTP_200_OK)
+            # An invoice for an OLD plan the landlord has switched away
+            # from. It must not change the period of the plan they're on
+            # now. (Checked before the email fallback below, which would
+            # otherwise find the landlord's row and apply it.)
+
         if subscription_code:
             subscription = LandlordSubscription.objects.filter(
                 paystack_subscription_code=subscription_code
@@ -688,21 +1026,73 @@ def paystack_webhook(request):
         subscription.status = LandlordSubscription.Status.ACTIVE
         # A successful invoice means money moved — this also heals a
         # PAST_DUE row back to ACTIVE when a retry succeeds.
+        subscription.past_due_since = None
+        # ...and stops the grace-period clock.
 
         subscription.save()
 
+        limits.enforce_listing_caps(subscription.landlord_profile)
+        # A renewal that finally went through brings paused listings back.
+
     elif event == 'invoice.payment_failed':
         email = data.get('customer', {}).get('email')
+        invoice_sub = data.get('subscription')
+        failed_code = invoice_sub.get('subscription_code') if isinstance(invoice_sub, dict) else None
 
-        try:
-            user = User.objects.get(email=email)
-            subscription = LandlordSubscription.objects.get(landlord_profile=user.landlordprofile)
+        if failed_code and LandlordSubscription.objects.filter(
+            superseded_subscription_code=failed_code
+        ).exists():
+            return Response(status=status.HTTP_200_OK)
+            # A failed charge on an OLD plan the landlord has switched away
+            # from says nothing about the plan they're on now.
+
+        subscription = LandlordSubscription.objects.filter(
+            landlord_profile__user__email=email
+        ).first() if email else None
+        # Same lookup as before, written so a missing user OR a missing
+        # subscription row both just give None instead of an exception.
+
+        if subscription is not None:
             subscription.status = LandlordSubscription.Status.PAST_DUE
+            if subscription.past_due_since is None:
+                subscription.past_due_since = timezone.now()
+            # Only the FIRST failure starts the clock. Paystack sends this
+            # event again on each retry, and restarting the clock every
+            # time would stretch the 3-day grace period indefinitely.
             subscription.save()
-        except (User.DoesNotExist, LandlordSubscription.DoesNotExist):
-            pass
-            # Nothing sensible to do if either doesn't exist — same
-            # "don't fail the webhook over it" reasoning as above
+
+            limits.enforce_listing_caps(subscription.landlord_profile)
+            # Usually nothing changes yet (the 3-day grace period applies),
+            # but if the grace period has already run out, extra listings
+            # are paused now rather than at the next daily run.
+
+    elif event in ('subscription.not_renew', 'subscription.disable'):
+        # subscription.not_renew — the plan was cancelled (by the landlord
+        # through our cancel endpoint, through the link in Paystack's
+        # email, or by staff on the Paystack dashboard). It stays paid
+        # until its period ends and won't renew.
+        # subscription.disable — the plan has actually ended (it reached
+        # its end date after a cancel, or Paystack gave up retrying a
+        # failed card).
+        # Both are handled the same way: the plan won't renew, so the
+        # landlord keeps it until current_period_end with no grace period
+        # after that, and then drops to Free.
+        subscription_code = data.get('subscription_code')
+        subscription = LandlordSubscription.objects.filter(
+            paystack_subscription_code=subscription_code
+        ).first() if subscription_code else None
+        # Matched ONLY by subscription code, never by email. When we turn
+        # off an OLD plan after a switch, Paystack sends these events for
+        # that old code. Looking the landlord up by email would mark their
+        # NEW plan as cancelled by mistake. The old code isn't the current
+        # one any more, so it simply matches nothing here.
+
+        if subscription is not None:
+            subscription.cancel_at_period_end = True
+            subscription.save(update_fields=['cancel_at_period_end', 'updated_at'])
+            limits.enforce_listing_caps(subscription.landlord_profile)
+            # If the period is already over (disable arrives on the end
+            # date), listings above the Free limit are paused now.
 
     return Response(status=status.HTTP_200_OK)
     # Always acknowledge receipt with 200, for every event type we don't

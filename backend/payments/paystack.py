@@ -126,3 +126,33 @@ def verify_transaction(reference):
         f'{BASE_URL}/transaction/verify/{reference}',
         headers=_headers(),
     )
+
+
+def fetch_subscription(code):
+    # GET /subscription/:code — asks Paystack for one subscription's
+    # current details. We use two fields from the answer:
+    #   - `email_token`: needed to disable the subscription (see below),
+    #     for rows saved before we started storing it.
+    #   - `status`: 'active', 'non-renewing', 'attention', 'cancelled' or
+    #     'complete' — lets us check whether a disable already happened
+    #     when Paystack refuses to disable it a second time.
+    return _request(
+        'GET',
+        f'{BASE_URL}/subscription/{code}',
+        headers=_headers(),
+    )
+
+
+def disable_subscription(code, token):
+    # POST /subscription/disable — stops a subscription from renewing.
+    # Paystack doesn't cut the customer off here: the subscription becomes
+    # 'non-renewing' and simply isn't charged on its next payment date
+    # (Paystack then sends subscription.disable on that date). Paystack
+    # requires BOTH the subscription code and the email token, so a
+    # leaked subscription code alone isn't enough to cancel someone.
+    return _request(
+        'POST',
+        f'{BASE_URL}/subscription/disable',
+        headers=_headers(),
+        json={'code': code, 'token': token},
+    )

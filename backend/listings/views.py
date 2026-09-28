@@ -284,41 +284,45 @@ class ListingViewSet(viewsets.ModelViewSet):
 
         landlord_profile = self.request.user.landlordprofile
 
-        existing_listing_count = Listing.objects.filter(landlord_profile=landlord_profile).count()
-        # How many listings this landlord already has, REGARDLESS of
-        # status (draft/published/etc.) — the free tier's cap counts
-        # every listing they've ever created, not just published ones
-
-        from payments.models import LandlordSubscription
+        from payments import limits
         # Imported here, inside the method, rather than at the top of
-        # the file — avoids a circular import risk (payments doesn't
-        # import from listings, but keeping cross-app imports scoped to
-        # where they're actually used is a common, safe habit once an
-        # app graph gets more connected)
+        # the file — payments/limits.py imports listings.models, so
+        # keeping cross-app imports scoped to where they're used avoids
+        # any chance of a circular import at startup.
 
-        subscription = LandlordSubscription.objects.filter(landlord_profile=landlord_profile).first()
+        with transaction.atomic():
+            limits.lock_landlord(landlord_profile)
+            # Locks this landlord's row until the listing is saved, so two
+            # create requests at the same moment can't both squeeze in as
+            # the 10th listing. See lock_landlord in payments/limits.py.
 
-        if subscription is not None and subscription.is_active():
-            cap = subscription.listing_cap()
-            # A genuinely active PAID subscription — use whatever cap
-            # their tier grants (10 for agent, None/unlimited for lord)
-        else:
-            cap = LandlordSubscription.LISTING_CAPS[LandlordSubscription.Tier.FREE]
-            # No subscription row at all, OR one that exists but isn't
-            # currently active (lapsed/past due/never paid) — falls
-            # back to the FREE tier's cap regardless of what tier value
-            # happens to be stored on the row, since is_active() being
-            # False means we can't trust that tier is currently paid for
+            subscription = limits.get_subscription(landlord_profile)
+            if limits.effective_tier(subscription) == limits.LandlordSubscription.Tier.FREE:
+                total = Listing.objects.filter(landlord_profile=landlord_profile).exclude(
+                    status__in=limits.NOT_COUNTED_IN_FREE_TOTAL
+                ).count()
+                if total >= limits.FREE_TOTAL_LISTING_CAP:
+                    raise PermissionDenied({
+                        'detail': (
+                            f'The Free plan allows {limits.FREE_TOTAL_LISTING_CAP} listings in total. '
+                            'Archive one you no longer need, or upgrade your plan.'
+                        ),
+                        'code': 'listing_total_limit_reached',
+                    })
+            # KELVIN'S DECISION (2026-09-28): creating a DRAFT is always
+            # allowed, except that a Free landlord may hold at most 10
+            # listings in total (archived and leased ones don't count).
+            # The live limit (3 / 10 / unlimited) is NOT checked here any
+            # more — it's checked when the listing is submitted for review
+            # (submit_for_review below). Checking it here, and counting
+            # every listing ever made, was the "3 of 1 — limit reached"
+            # bug: a landlord couldn't even start a draft.
+            # `code` lets the frontend show an upgrade/archive prompt
+            # instead of a bare error.
 
-        if cap is not None and existing_listing_count >= cap:
-            raise PermissionDenied(
-                f'You have reached your listing limit ({cap}). '
-                'Please upgrade your subscription to publish more listings.'
-            )
-
-        serializer.save(landlord_profile=landlord_profile)
-        # Exact same line as before — landlord_profile always comes from
-        # whoever's logged in, never from the request body
+            serializer.save(landlord_profile=landlord_profile)
+            # Exact same line as before — landlord_profile always comes from
+            # whoever's logged in, never from the request body
 
     def perform_update(self, serializer):
         # Called automatically during "update" (PATCH/PUT) — this is
@@ -369,8 +373,11 @@ class ListingViewSet(viewsets.ModelViewSet):
         Listing.Status.PENDING_REVIEW,
         Listing.Status.PUBLISHED,
         Listing.Status.REJECTED,
+        Listing.Status.PAUSED,
     )
-    # Which statuses a listing may be archived FROM. Deliberately missing:
+    # Which statuses a listing may be archived FROM. PAUSED is allowed: a
+    # landlord whose plan lapsed may decide a paused home isn't coming
+    # back. Deliberately missing:
     # LEASED — someone lives there under an active Lease, and the listing
     # page is how that renter reaches their lease; end the lease first.
     # (And ARCHIVED itself, since that would be a no-op.)
@@ -409,6 +416,12 @@ class ListingViewSet(viewsets.ModelViewSet):
         # update_fields — only write the `status` column, not the whole
         # row. Safer when other requests might be editing different
         # fields of the same listing at the same moment.
+
+        from payments import limits
+        limits.enforce_listing_caps(listing.landlord_profile)
+        # Archiving a live listing frees a slot. If the landlord has
+        # paused listings (their plan lapsed), the oldest one comes back
+        # right away instead of waiting for the daily job.
 
         return Response(self.get_serializer(listing).data)
 
@@ -513,12 +526,52 @@ class ListingViewSet(viewsets.ModelViewSet):
             # already enforces the price/listing_type XOR, and anything
             # more is a product decision for Kelvin first.
 
-        listing.status = Listing.Status.PENDING_REVIEW
-        listing.save(update_fields=['status'])
-        # update_fields=['status'] — only this column is meant to change
-        # here; scoping the write means a concurrent edit to some other
-        # field (title, price) in the same moment can't be silently
-        # clobbered by a full-row save carrying stale values.
+        from payments import limits
+        # Lazy import — same circular-import reasoning as perform_create.
+
+        with transaction.atomic():
+            limits.lock_landlord(listing.landlord_profile)
+            # Two submits at the same moment (double-click, two tabs) must
+            # not both take the last live slot — see lock_landlord.
+
+            listing.refresh_from_db(fields=['status'])
+            if listing.status not in (Listing.Status.DRAFT, Listing.Status.REJECTED):
+                return Response(
+                    {'error': 'Only draft or rejected listings can be submitted for review'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+                # Checked again now that we hold the lock: the request
+                # that got here first may have just submitted this very
+                # listing.
+
+            usage = limits.usage_for(listing.landlord_profile)
+            cap = usage['listing_cap']
+            if cap is not None and usage['listings_used'] >= cap:
+                return Response(
+                    {
+                        'error': (
+                            f'Your plan allows {cap} live listings (published or in review), '
+                            'and you are using all of them. Upgrade your plan or archive a '
+                            'listing to submit this one.'
+                        ),
+                        'code': 'listing_limit_reached',
+                        'listings_used': usage['listings_used'],
+                        'listing_cap': cap,
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            # KELVIN'S DECISION (2026-09-28): THIS is where the live limit
+            # (Free 3, agent 10, lord unlimited) is enforced — the moment
+            # a listing asks to go live, not when a draft is created.
+            # `code` lets the listing form show "Upgrade to submit"
+            # instead of a generic error; the numbers let it say how many.
+
+            listing.status = Listing.Status.PENDING_REVIEW
+            listing.save(update_fields=['status'])
+            # update_fields=['status'] — only this column is meant to change
+            # here; scoping the write means a concurrent edit to some other
+            # field (title, price) in the same moment can't be silently
+            # clobbered by a full-row save carrying stale values.
 
         return Response(self.get_serializer(listing).data)
         # self.get_serializer (not a bare ListingSerializer(...)) —
@@ -621,6 +674,19 @@ class ListingViewSet(viewsets.ModelViewSet):
         # submit-for-review: only the review columns change, a
         # concurrent edit elsewhere can't be clobbered by a stale
         # full-row save.
+
+        if decision == Listing.Status.PUBLISHED:
+            from payments import limits
+            limits.enforce_listing_caps(listing.landlord_profile)
+            listing.refresh_from_db(fields=['status'])
+            # KELVIN'S DECISION (2026-09-28): when a plan lapses, listings
+            # already in review are left alone and review finishes. If
+            # the landlord is over their limit when this one is approved,
+            # it's their newest published listing, so enforce pauses it
+            # right here (and the response below says `paused`, so the
+            # console shows what actually happened). Also a safety net in
+            # general: publishing can never leave a landlord above their
+            # live limit.
 
         return Response(self.get_serializer(listing).data)
         # Full re-serialization with request context (same reasoning as
