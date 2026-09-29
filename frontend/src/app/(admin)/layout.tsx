@@ -71,7 +71,9 @@ export default async function AdminLayout({
   // indirection.
   return (
     <AdminChrome modal={modal}>
-      <div className="min-w-0 flex-1">{children}</div>
+      {/* flex column so a page's empty state (flex-1) can fill the panel
+          and centre itself, as in the Figma "No Property" frame. */}
+      <div className="flex min-w-0 flex-1 flex-col">{children}</div>
     </AdminChrome>
   );
 }

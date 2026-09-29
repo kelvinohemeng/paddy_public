@@ -116,6 +116,29 @@ const DISABLED: Record<PaddyButtonStyle, string> = {
 
 type IconComponent = ComponentType<{ className?: string }>;
 
+// The full class list for one style + size. Exported so a Next <Link>
+// can look exactly like a PaddyButton (e.g. "Add a new property", which
+// must stay a Link for the create drawer's intercepting route) without
+// nesting a <button> inside an <a>, which is invalid HTML.
+export function paddyButtonClassName({
+  variant = "primary",
+  size = "base",
+  className,
+}: {
+  variant?: PaddyButtonStyle;
+  size?: PaddyButtonSize;
+  className?: string;
+} = {}) {
+  return cn(
+    "relative inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md leading-5 font-medium whitespace-nowrap outline-none transition-[background-color,box-shadow,color] select-none",
+    "disabled:pointer-events-none data-[loading]:cursor-progress",
+    STYLE_CLASSES[variant],
+    SIZE_CLASSES[size],
+    DISABLED[variant],
+    className,
+  );
+}
+
 export function PaddyButton({
   variant = "primary",
   size = "base",
@@ -155,14 +178,7 @@ export function PaddyButton({
         }
         onClick?.(e);
       }}
-      className={cn(
-        "relative inline-flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md leading-5 font-medium whitespace-nowrap outline-none transition-[background-color,box-shadow,color] select-none",
-        "disabled:pointer-events-none data-[loading]:cursor-progress",
-        STYLE_CLASSES[variant],
-        SIZE_CLASSES[size],
-        DISABLED[variant],
-        className,
-      )}
+      className={paddyButtonClassName({ variant, size, className })}
       {...props}
     >
       {/* Content stays in the layout while loading so the button never

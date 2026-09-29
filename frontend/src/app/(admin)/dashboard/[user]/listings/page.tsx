@@ -1,29 +1,33 @@
 "use client";
-// Required — useList (below) is a client-side hook (manages state,
-// re-fetches reactively in the browser). Next.js's App Router treats
-// every file as a SERVER component by default unless this directive
-// is present, and a server component genuinely cannot call a client
-// hook at all — this is a hard runtime error, not a style choice.
+// Required — useApiList (below) is a client-side hook. Next.js's App
+// Router treats every file as a SERVER component unless this directive
+// is present, and a server component can't call a client hook at all.
 
 import { useApiList } from "@/hooks/use-api";
 import { useMe } from "@/hooks/use-auth";
-import Link from "next/link";
 import { useParams } from "next/navigation";
-// Link, not <a> — Next.js's client-side navigation component. Using
-// it (instead of a plain anchor tag) is what makes the intercepting
-// routes below actually trigger as MODALS instead of full page
-// reloads. A hard navigation (typing the URL directly, or a plain <a>)
-// bypasses interception entirely and renders the real full page.
 
 import { ListingCard } from "@/components/listing-card";
 import { listingCardProps } from "@/lib/listing-card-data";
 import { ListingGrid } from "@/components/listing-grid";
-import { SubscriptionCard } from "./_components/subscription-card";
+import {
+  DashboardEmptyState,
+  DashboardLinkButton,
+  DashboardMessage,
+  DashboardPage,
+} from "@/components/dashboard-page";
 import {
   STATUS_BADGE_STATE,
   STATUS_META,
   parseStatus,
 } from "@/lib/listing-status";
+
+// "My Property" — the landlord's own listings. Figma 181:22561 (with
+// listings) and 181:22625 ("No Property", empty), read 2026-09-28.
+//
+// The plan / subscription card used to sit above this grid. The frames
+// have no room for it, and their nav has a "Payment" row, so it moved to
+// /dashboard/[user]/payment (see payment/page.tsx).
 
 export default function ListingsPage() {
   const params = useParams<{ user: string }>();
@@ -33,139 +37,107 @@ export default function ListingsPage() {
 
   // GET /listings/?mine=true (backend PR #16): ONLY this landlord's own
   // listings, any status — instead of the default own-UNION-published
-  // mix. The dashboard is a management view, not a browse view; before
-  // this param existed the grid mixed in every other landlord's
-  // published listings AND the subscription-cap count below read
-  // high. Filters append verbatim as query params, so this arrives as
-  // &mine=true.
-  //
-  // Refine v5 nested the return as { query, result }; the plain
-  // useQuery replacement returns { data, isLoading, isError } flat.
-  // (The old { field, operator, value } filter shape is now just
-  // { field, value } — the operator was never sent to the backend.)
+  // mix. This is a management view, not a browse view.
   const { data, isLoading, isError } = useApiList("listings", {
-    filters: [
-      // ?mine=true (backend PR #16): ONLY this landlord's own listings,
-      // any status — instead of the default own-UNION-published mix.
-      // The dashboard is a management view, not a browse view; before
-      // this param existed the grid mixed in every other landlord's
-      // published listings AND the subscription-cap count below read
-      // high. Filters append verbatim as query params, so this arrives
-      // as &mine=true.
-      { field: "mine", value: "true" },
-    ],
+    filters: [{ field: "mine", value: "true" }],
   });
 
+  const createHref = `/dashboard/${userId}/listings/create`;
+
+  // Listing management is landlord-only in the nav. Other roles reach
+  // this URL only by typing it: point them somewhere useful instead. The
+  // backend would 403 any actual write anyway.
+  if (role !== undefined && role !== "landlord") {
+    return (
+      <DashboardEmptyState
+        title="Listings are for landlords"
+        description={
+          role === "renter"
+            ? "Your tenancies live under Active Lease."
+            : "Listings waiting for verification are in the review queue."
+        }
+        action={
+          <DashboardLinkButton
+            href={
+              role === "renter"
+                ? `/dashboard/${userId}/leases`
+                : `/dashboard/${userId}/reviews`
+            }
+          >
+            {role === "renter" ? "Go to Active Lease" : "Open the review queue"}
+          </DashboardLinkButton>
+        }
+      />
+    );
+  }
+
   if (isLoading) {
-    return <p className="p-6">Loading listings...</p>;
+    return <DashboardMessage loading>Loading your properties…</DashboardMessage>;
   }
 
   if (isError) {
-    // A real, visible failure state — worth having explicitly rather
-    // than letting a failed fetch render a silently empty list, which
-    // would be indistinguishable from "zero listings exist yet"
-    return <p className="p-6 text-red-500">Failed to load listings.</p>;
+    // A visible failure, rather than an empty grid that would look the
+    // same as "no listings yet".
+    return (
+      <DashboardMessage tone="error">
+        Couldn&apos;t load your properties. Refresh to try again.
+      </DashboardMessage>
+    );
   }
 
-  const listings = data?.data ?? [];
-  // data.data — the actual array of listings. data.total also
-  // exists here for pagination, unused for now since this is a first
-  // pass at just proving the create flow works end to end.
+  const listings: any[] = data?.data ?? [];
 
-  // Listing management is landlord/staff-only (renters reach this URL
-  // only by typing it — the layout gate lets all roles through and the
-  // sidebar hides this entry for renters). Render a pointer, not the
-  // management UI; the backend would 403 any actual write anyway.
-  if (role === "renter") {
+  if (listings.length === 0) {
     return (
-      <div className="p-6">
-        <p className="text-muted-foreground">
-          Listing management is for landlords — your tenancies live under{" "}
-          <Link
-            href={`/dashboard/${userId}/leases`}
-            className="text-indigo-600 underline"
-          >
-            Leases
-          </Link>
-          .
-        </p>
-      </div>
+      <DashboardEmptyState
+        title="You have no property"
+        description="Create one"
+        action={
+          // The frame's button says "Discover New Homes" (copied from the
+          // renter frame); for a landlord the next step is adding a home.
+          <DashboardLinkButton href={createHref}>Add a new property</DashboardLinkButton>
+        }
+      />
     );
   }
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">Listings</h1>
-
-        <Link
-          href={`/dashboard/${userId}/listings/create`}
-          className="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
-        >
-          New Listing
-        </Link>
-        {/* This Link's href is the SAME URL Refine's "listings"
-            resource registration points "create" at (with :user
-            resolved to the real id). Nothing about the URL changes
-            because of the modal pattern — what changes is HOW
-            Next.js decides to render whatever's at that URL, based on
-            whether navigation happened via this Link (client-side,
-            intercepted -> modal) or a hard refresh/direct visit
-            (full page, see the create/page.tsx fallback below) */}
-      </div>
-
-      {/* Subscription surface (AGENTS.md: landlords need to see their
-          tier/cap "sooner than post-MVP" now that plans gate how many
-          listings can be live). Lives BELOW the header/CTA so the
-          primary task (listings) stays first in reading order.
-
-          The card reads its usage numbers from the backend (PR #34),
-          NOT from `listings` here: only published + in-review listings
-          use a live slot, and the backend is what enforces that.
-
-          id="subscription": the listing form's "Upgrade to submit"
-          saves the draft, then lands here (…/listings#subscription).
-          scroll-mt clears the sticky dashboard header. */}
-      <div id="subscription" className="mb-6 max-w-md scroll-mt-20">
-        <SubscriptionCard />
-      </div>
-
-      {listings.length === 0 ? (
-        <p className="text-muted-foreground">
-          No listings yet — create your first one to get started.
-        </p>
-      ) : (
-        <ListingGrid>
-          {listings.map((listing: any) => {
-            const status = parseStatus(listing.status);
-            return (
-              // Same card as the Discovery Hub, in its Property state
-              // (the landlord's own listing: no heart, lifecycle badge).
-              // No action button — the whole card links to
-              // /dashboard/[user]/listings/[id], which the
-              // @modal/(.)dashboard/[user]/listings/[id] intercepted
-              // route opens in the preview drawer (Update / Archive /
-              // Submit live there); a direct visit or refresh lands on
-              // the full-page listings/[id]/page.tsx.
-              <ListingCard
-                key={listing.id}
-                {...listingCardProps(listing)}
-                state="property"
-                href={`/dashboard/${userId}/listings/${listing.id}`}
-                status={
-                  status
-                    ? {
-                        label: STATUS_META[status].label,
-                        state: STATUS_BADGE_STATE[status],
-                      }
-                    : undefined
-                }
-                action={null}
-              />
-            );
-          })}
-        </ListingGrid>
-      )}
-    </div>
+    <DashboardPage
+      title="My Property"
+      action={
+        // A Link (DashboardLinkButton renders one), so it opens the create
+        // drawer through the @modal/(.)dashboard/[user]/listings/create
+        // intercepting route. Primary Base (32), as in the frame.
+        <DashboardLinkButton href={createHref}>Add a new property</DashboardLinkButton>
+      }
+    >
+      <ListingGrid className="gap-x-6 gap-y-[30px]">
+        {listings.map((listing: any) => {
+          const status = parseStatus(listing.status);
+          return (
+            // Property state: the landlord's own listing — no heart, a
+            // lifecycle badge. No action button: the whole card links to
+            // /dashboard/[user]/listings/[id], which the intercepted route
+            // opens in the preview drawer (Update / Archive / Submit live
+            // there); a direct visit lands on the full-page version.
+            <ListingCard
+              key={listing.id}
+              {...listingCardProps(listing)}
+              state="property"
+              href={`/dashboard/${userId}/listings/${listing.id}`}
+              status={
+                status
+                  ? {
+                      label: STATUS_META[status].label,
+                      state: STATUS_BADGE_STATE[status],
+                    }
+                  : undefined
+              }
+              action={null}
+            />
+          );
+        })}
+      </ListingGrid>
+    </DashboardPage>
   );
 }

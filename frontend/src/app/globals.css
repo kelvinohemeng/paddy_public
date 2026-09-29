@@ -126,6 +126,12 @@
   --color-surface: #f2f2f2;
   --color-hairline: #d9d9d9;
 
+  /* Dashboard content panel — the rounded grey sheet beside the nav in
+     every Accounts frame (Figma 181:22493 / 174:20049 / 181:23169). Same
+     value as the Dashboard Button's Active fill, so the selected nav row
+     reads as part of the panel. */
+  --color-panel: #f9f9f9;
+
   /* Form fields — the listing form (Figma 288:8254) and the components
      it uses, read 2026-09-28:
      field             → "bg-field" fill of Single / Multi Select

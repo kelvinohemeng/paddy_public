@@ -407,7 +407,7 @@ function StepperForm({
         toast.success("Saved as a draft", {
           description: "Upgrade your plan, then submit it for review from the listing.",
         });
-        router.push(`/dashboard/${userId}/listings#subscription`);
+        router.push(`/dashboard/${userId}/payment#subscription`);
         return;
       }
 
@@ -438,7 +438,7 @@ function StepperForm({
       <OutcomePanel
         outcome={outcome}
         onOpenListing={() => router.push(`/dashboard/${userId}/listings/${outcome.listingId}`)}
-        onPlans={() => router.push(`/dashboard/${userId}/listings#subscription`)}
+        onPlans={() => router.push(`/dashboard/${userId}/payment#subscription`)}
         onDone={() => finish(outcome.listingId)}
       />
     );
@@ -695,7 +695,7 @@ function TotalLimitScreen({
         </PaddyButton>
         <PaddyButton
           size="xl"
-          onClick={() => router.push(`/dashboard/${params.user}/listings#subscription`)}
+          onClick={() => router.push(`/dashboard/${params.user}/payment#subscription`)}
         >
           See plans
         </PaddyButton>
@@ -839,7 +839,7 @@ function saveErrorText(err: unknown, action: "create" | "update", userId?: strin
         <>
           The Free plan holds 10 listings in total, and you&apos;re at the limit, so
           this one wasn&apos;t saved. Archive a listing you no longer need, or{" "}
-          <a className="font-medium underline" href={`/dashboard/${userId}/listings#subscription`}>
+          <a className="font-medium underline" href={`/dashboard/${userId}/payment#subscription`}>
             upgrade your plan
           </a>
           .

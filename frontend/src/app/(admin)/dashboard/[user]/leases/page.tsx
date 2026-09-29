@@ -1,125 +1,149 @@
 "use client";
-// Required — useList below is a client hook; same server-by-default
+// Required — useApiList below is a client hook; same server-by-default
 // reasoning as the listings page.
 
 import { useApiList } from "@/hooks/use-api";
-import Link from "next/link";
-import { useParams } from "next/navigation";
-import { CalendarDays, MapPin } from "lucide-react";
+import { useMe } from "@/hooks/use-auth";
+import { useParams, useRouter } from "next/navigation";
 
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { LEASE_STATUS_META } from "./lease-status";
+import { ListingCard } from "@/components/listing-card";
+import { ListingGrid } from "@/components/listing-grid";
+import {
+  DashboardEmptyState,
+  DashboardLinkButton,
+  DashboardMessage,
+  DashboardPage,
+} from "@/components/dashboard-page";
+import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
+import { LEASE_BADGE } from "./lease-status";
 
-// Active Leases dashboard (AGENTS.md build-priority #4). Read-only by
-// design: leases are entered by staff/landlords in Django admin once a
-// deal closes off-platform (paddy never moves rent/deposit money, so
-// there is no payment event to auto-create from — see
-// backend/leases/models.py). Renters see their own leases, landlords
-// see leases on their own listings, staff see all — that scoping is
-// enforced by LeaseViewSet.get_queryset, so this page renders whatever
-// arrives with zero role branching on the data itself.
+// Active Lease — "Leased Homes" in Figma 181:22594 (landlord) and
+// 176:21788 (renter), read 2026-09-28: the shared Listing Card in its
+// Leased state — the other party's name under the details, a status
+// badge and "Review Document", which opens the lease (contracts and
+// receipts live on the detail page).
+//
+// Read-only by design: leases are recorded by staff or landlords once a
+// deal closes off-platform (paddy never moves rent or deposit money, so
+// there's no payment event to create one from). Renters see their own
+// leases, landlords the leases on their listings, staff all of them —
+// LeaseViewSet.get_queryset does that scoping, so this page renders
+// whatever arrives.
+//
+// Known gap: a lease row carries the listing's title but no photo, and
+// the listing itself isn't readable by the renter once it's leased (the
+// public queryset is published-only). So these cards show the "No photo
+// yet" placeholder until LeaseSerializer grows a cover-photo field.
 
-// Status labels live in ./lease-status (shared with the detail page).
+function formatMonth(iso?: string | null): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+}
+
+function formatRent(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const amount = Number(raw);
+  // Same "GHC 4,000/mo" form as the listing cards (listing-card-data.ts).
+  return Number.isFinite(amount)
+    ? `GHC ${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}/mo`
+    : undefined;
+}
 
 export default function LeasesPage() {
   const params = useParams<{ user: string }>();
   const userId = params.user;
+  const router = useRouter();
+  const { data: identity } = useMe();
+  const role: string | undefined = identity?.role;
 
-  // Same endpoint the old Refine useList({ resource: "leases" }) call
-  // hit — GET /leases/, backend role-scoped automatically.
+  // GET /leases/, role-scoped by the backend.
   const { data, isLoading, isError } = useApiList("leases");
 
   if (isLoading) {
-    return (
-      <div className="p-6">
-        <p>Loading leases...</p>
-      </div>
-    );
+    return <DashboardMessage loading>Loading your leases…</DashboardMessage>;
   }
 
   if (isError) {
     return (
-      <div className="p-6">
-        <p className="text-red-500">Failed to load leases.</p>
-      </div>
+      <DashboardMessage tone="error">
+        Couldn&apos;t load your leases. Refresh to try again.
+      </DashboardMessage>
     );
   }
 
   const leases: any[] = data?.data ?? [];
 
+  if (leases.length === 0) {
+    return role === "renter" ? (
+      <DashboardEmptyState
+        title="You have no active lease"
+        description="When a landlord records your tenancy and you confirm it, it shows up here"
+        action={<DashboardLinkButton href={DISCOVERY_PATH}>Discover New Homes</DashboardLinkButton>}
+      />
+    ) : (
+      <DashboardEmptyState
+        title="No leased homes yet"
+        description="When a renter confirms a lease on one of your homes, it shows up here"
+        action={
+          role === "landlord" ? (
+            <DashboardLinkButton href={`/dashboard/${userId}/listings`}>
+              View my property
+            </DashboardLinkButton>
+          ) : undefined
+        }
+      />
+    );
+  }
+
   return (
-    <div className="p-6">
-      <h1 className="mb-6 text-2xl font-bold">Leases</h1>
+    <DashboardPage title="Leased Homes">
+      <ListingGrid className="gap-x-6 gap-y-[30px]">
+        {leases.map((lease: any, index: number) => {
+          // A row with no id can't link anywhere — render it inert rather
+          // than navigating to ".../leases/undefined".
+          const leaseId = lease.id ?? lease.pk;
+          const href = leaseId ? `/dashboard/${userId}/leases/${leaseId}` : undefined;
 
-      {leases.length === 0 ? (
-        <p className="text-muted-foreground">
-          No leases yet — once a tenancy is recorded (by staff or your
-          landlord), it shows up here with its contracts and receipts.
-        </p>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {leases.map((lease: any, index: number) => {
-            const meta = LEASE_STATUS_META[lease.status] ?? {
-              label: lease.status,
-              variant: "secondary" as const,
-            };
-            // A row with no id can't link anywhere — render it inert
-            // rather than navigating to ".../leases/undefined", which
-            // the detail page would (correctly) fail to load.
-            const leaseId = lease.id ?? lease.pk;
-            const card = (
-              <Card
-                className={
-                  leaseId
-                    ? "cursor-pointer transition hover:shadow-md"
-                    : "opacity-70"
-                }
-              >
-                <CardContent className="space-y-2 py-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="truncate font-medium">
-                      {lease.listing_title ?? `Listing #${lease.listing}`}
-                    </p>
-                    <Badge variant={meta.variant} className="shrink-0">
-                      {meta.label}
-                    </Badge>
-                  </div>
+          // The other side of the lease: renters see their landlord,
+          // landlords (and staff) see the renter.
+          const counterpart =
+            role === "renter" ? lease.landlord_name : lease.renter_name;
 
-                  <p className="text-muted-foreground flex items-center gap-1 truncate text-xs">
-                    <MapPin className="size-3 shrink-0" />
-                    {lease.renter_name ?? ""}
-                    {lease.renter_name && lease.landlord_name && " · "}
-                    {lease.landlord_name ?? ""}
-                  </p>
+          const start = formatMonth(lease.start_date);
+          const end = formatMonth(lease.end_date);
 
-                  <div className="text-muted-foreground flex items-center gap-3 text-xs">
-                    <span className="flex items-center gap-1">
-                      <CalendarDays className="size-3" />
-                      {lease.start_date} → {lease.end_date}
-                    </span>
-                    {lease.rent_amount_monthly && (
-                      <span className="text-foreground ml-auto font-medium">
-                        GHS {lease.rent_amount_monthly}/mo
-                      </span>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-            return leaseId ? (
-              <Link
-                key={leaseId}
-                href={`/dashboard/${userId}/leases/${leaseId}`}
-              >
-                {card}
-              </Link>
-            ) : (
-              <div key={`lease-row-${index}`}>{card}</div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+          return (
+            <ListingCard
+              key={leaseId ?? `lease-row-${index}`}
+              state="leased"
+              heading={lease.listing_title ?? `Listing #${lease.listing}`}
+              subtitle={start && end ? `${start} – ${end}` : (start ?? "Dates not set")}
+              price={formatRent(lease.rent_amount_monthly)}
+              details={
+                lease.advance_rent_period && lease.advance_rent_period !== "none"
+                  ? [
+                      lease.advance_rent_period === "6_months"
+                        ? "6 months advance"
+                        : "1 year advance",
+                    ]
+                  : []
+              }
+              landlord={counterpart ? { name: counterpart } : undefined}
+              status={
+                LEASE_BADGE[lease.status] ?? { label: String(lease.status), state: "neutral" }
+              }
+              href={href}
+              action={
+                href
+                  ? { label: "Review Document", onClick: () => router.push(href) }
+                  : null
+              }
+            />
+          );
+        })}
+      </ListingGrid>
+    </DashboardPage>
   );
 }

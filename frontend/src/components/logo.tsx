@@ -1,21 +1,52 @@
 import { cn } from "@/lib/utils";
 
-// paddy wordmark — gradient text approximating Figma's orange→red
-// "paddy" lockup (201:2868, Auth section). The MASCOT is still a
-// placeholder gap: Figma's Logo is a masked mascot PHOTO the relay
-// can't export (structure-only read, no image token — see
-// role-card.tsx). Renders text-only until the mascot asset is
-// exported and dropped in as a static image/SVG.
+// paddy logo — Figma "Logo" component (used at the top of every Accounts
+// frame, e.g. 181:22561), read 2026-09-28 via the Figma plugin API:
+//   mascot  36x40, masked photo, exported at 3x to
+//           public/brand/paddy-mascot.png (108x122, transparent)
+//   gap     5.9px
+//   "paddy" Clash Display Medium 39.6px, -3% tracking, linear gradient
+//           #fba213 → #af1624, running left to right and ~24° downward
+//           (from the fill's gradientTransform)
+//
+// Everything is sized in em, so the lockup scales with the font size the
+// caller sets (text-3xl on the auth pages, 40px in the dashboard sidebar)
+// and keeps Figma's proportions: mascot ≈1em tall, gap ≈0.15em.
+//
+// `mascot={false}` gives the wordmark alone, for tight spots.
 
-export function Logo({ className }: { className?: string }) {
+export function Logo({
+  className,
+  mascot = true,
+}: {
+  className?: string;
+  mascot?: boolean;
+}) {
   return (
     <span
       className={cn(
-        "bg-gradient-to-r from-[#F59E0B] via-[#EA580C] to-[#DC2626] bg-clip-text text-2xl font-bold tracking-tight text-transparent",
+        "font-display inline-flex items-center gap-[0.15em] text-2xl leading-none font-medium tracking-[-0.03em]",
         className,
       )}
     >
-      paddy
+      {mascot && (
+        // Decorative: the wordmark next to it already names the brand.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src="/brand/paddy-mascot.png"
+          alt=""
+          aria-hidden
+          width={108}
+          height={122}
+          className="h-[1.01em] w-auto shrink-0"
+        />
+      )}
+      {/* 1.24 line height = Figma's auto height for the face (49px box at
+          39.6px), which also leaves room for the "y" descender that
+          bg-clip-text would otherwise cut off. */}
+      <span className="bg-[linear-gradient(114deg,#fba213_0%,#af1624_100%)] bg-clip-text leading-[1.24] text-transparent">
+        paddy
+      </span>
     </span>
   );
 }
