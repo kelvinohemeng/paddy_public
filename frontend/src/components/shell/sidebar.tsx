@@ -10,6 +10,7 @@ import {
   SidebarContent as ShadcnSidebarContent,
   SidebarHeader as ShadcnSidebarHeader,
   useSidebar as useShadcnSidebar,
+  SidebarFooter, SidebarMenu, SidebarMenuItem, SidebarMenuButton
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/logo";
@@ -64,11 +65,20 @@ export function Sidebar() {
           // Desktop: 32px in from the page edge, 40px under the logo, and
           // the 266px column runs to the sidebar's right edge. The phone
           // sheet is narrower, so it gets an even inset instead.
-          isMobile ? "px-4 pt-6" : "pt-10 pr-0 pl-8",
+          isMobile ? "px-2 pt-6" : "pt-10 pr-0 pl-3",
         )}
       >
         <NavGroups />
       </ShadcnSidebarContent>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton>
+               Username
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
     </ShadcnSidebar>
   );
 }

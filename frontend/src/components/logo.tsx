@@ -33,7 +33,7 @@ export function Logo({
         // Decorative: the wordmark next to it already names the brand.
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src="/brand/paddy-mascot.png"
+          src="/brand/Logo.png"
           alt=""
           aria-hidden
           width={108}
@@ -41,12 +41,6 @@ export function Logo({
           className="h-[1.01em] w-auto shrink-0"
         />
       )}
-      {/* 1.24 line height = Figma's auto height for the face (49px box at
-          39.6px), which also leaves room for the "y" descender that
-          bg-clip-text would otherwise cut off. */}
-      <span className="bg-[linear-gradient(114deg,#fba213_0%,#af1624_100%)] bg-clip-text leading-[1.24] text-transparent">
-        paddy
-      </span>
     </span>
   );
 }

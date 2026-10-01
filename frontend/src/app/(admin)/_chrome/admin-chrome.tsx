@@ -21,8 +21,8 @@ export function AdminChrome({
   modal: React.ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen w-full items-stretch">
-      <div className="min-w-0 flex-1">
+    <div className="flex min-h-screen bg-red-400 w-full items-stretch">
+      <div className="min-w-0 flex-1 ">
         <Layout>{children}</Layout>
       </div>
       {/* null (@modal/default.tsx) or a portaled SideDrawer. */}

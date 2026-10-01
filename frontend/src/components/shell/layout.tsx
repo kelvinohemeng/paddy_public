@@ -37,7 +37,7 @@ export function Layout({ children }: PropsWithChildren) {
     <SidebarProvider
       open
       onOpenChange={noop}
-      style={{ "--sidebar-width": "298px" } as CSSProperties}
+      style={{ "--sidebar-width": "16rem" } as CSSProperties}
       className="bg-white"
     >
       <Sidebar />
@@ -51,7 +51,7 @@ export function Layout({ children }: PropsWithChildren) {
             "bg-panel border-hairline relative flex min-w-0 flex-1 flex-col border",
             // Phones: a small inset so the sheet still reads as a panel.
             "m-2 rounded-2xl",
-            "md:mt-[47px] md:mr-[45px] md:mb-12 md:ml-[41px] md:rounded-[20px]",
+            "md:mt-[47px] md:mr-[45px] md:mb-12 md:ml-[12px] md:rounded-[20px]",
             // At least the viewport height minus the margins (1024 − 95 =
             // Figma's 929px panel); longer pages grow and the window scrolls.
             "md:min-h-[calc(100svh-95px)]",
