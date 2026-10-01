@@ -16,13 +16,19 @@ from decouple import config
 import os
 
 if os.name == 'nt':
-    OSGEO4W = r'C:\Users\g\AppData\Local\Programs\OSGeo4W'
+    OSGEO4W = config('OSGEO4W_ROOT', default=r'C:\OSGeo4W')
+    # Windows-only: where OSGeo4W (which provides GDAL/GEOS for GeoDjango)
+    # is installed. Read from .env so no one's personal install path is
+    # hard-coded in the repo. Set OSGEO4W_ROOT in backend/.env if yours
+    # isn't at the installer's default, C:\OSGeo4W.
     os.environ['OSGEO4W_ROOT'] = OSGEO4W
     os.environ['GDAL_DATA'] = OSGEO4W + r'\share\gdal'
     os.environ['PROJ_LIB'] = OSGEO4W + r'\share\proj'
     os.environ['PATH'] = OSGEO4W + r'\bin;' + os.environ['PATH']
 
-    GDAL_LIBRARY_PATH = OSGEO4W + r'\bin\gdal313.dll'
+    GDAL_LIBRARY_PATH = config('GDAL_LIBRARY_PATH', default=OSGEO4W + r'\bin\gdal313.dll')
+    # The DLL name includes GDAL's version (gdal313 = GDAL 3.13), so it can
+    # be overridden from .env after an OSGeo4W upgrade.
     GEOS_LIBRARY_PATH = OSGEO4W + r'\bin\geos_c.dll'
 
 
@@ -211,10 +217,12 @@ ANYMAIL = {
     # .env-file loading is a separate mechanism that os.environ.get()
     # never taps into on its own
 }
-DEFAULT_FROM_EMAIL = "hello@thegeneralyst.com"
-# Local dev only — prints the email content to your terminal instead of
-# actually sending it. We'll swap this for a real email service
-# (e.g. SendGrid, AWS SES) once we're closer to production
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL')
+# The "From" address on every email paddy sends (verification, password
+# reset, viewing confirmations). It must be on a domain verified in
+# Resend, or Resend rejects the send. Read from .env (no default) so the
+# real address isn't hard-coded in a public repo, and so a missing value
+# fails loudly at startup instead of emails silently bouncing.
 
 
 PAYSTACK_SECRET_KEY = config('PAYSTACK_SECRET_KEY')
@@ -537,7 +545,10 @@ AWS_QUERYSTRING_AUTH = False
 # returning 403 Forbidden once their embedded signature expired,
 # even though the file itself is still there and still public
 
-AWS_S3_CUSTOM_DOMAIN = 'app.mediaupload.thegeneralyst.com'
+AWS_S3_CUSTOM_DOMAIN = config('AWS_S3_CUSTOM_DOMAIN')
+# Read from .env, no default: the real media domain isn't hard-coded in a
+# public repo, and a missing value fails loudly at startup instead of
+# every listing photo URL silently breaking.
 # THE actual public-facing domain django-storages will use to build
 # every file URL — completely SEPARATE from AWS_S3_ENDPOINT_URL above.
 # AWS_S3_ENDPOINT_URL is the PRIVATE API endpoint used for authenticated
@@ -545,8 +556,7 @@ AWS_S3_CUSTOM_DOMAIN = 'app.mediaupload.thegeneralyst.com'
 # use. This custom domain is the PUBLIC one, freely readable by anyone
 # with the URL, no credentials needed — this is what actually gets
 # embedded in API responses for the frontend to load images from.
-# A real custom domain on Kelvin's own Cloudflare account (not the
-# rate-limited "Public Development URL" r2.dev subdomain used
-# initially) — genuinely fine for production as-is. Swap this to a
-# paddy-branded domain later (e.g. media.paddy.com) once paddy has its
-# own domain — same one-line change, no other code affected
+# Use a custom domain connected to the R2 bucket in Cloudflare (not the
+# rate-limited "Public Development URL" r2.dev subdomain). Switching to a
+# paddy-branded domain later (e.g. media.paddy.com) is just a change to
+# this environment variable — no code changes.

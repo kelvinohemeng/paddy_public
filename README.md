@@ -1,56 +1,80 @@
 # paddy
 
-A curated, staff-verified long-term rental marketplace for Ghana's urban market (Accra/Kumasi).
+A curated, staff-verified long-term rental marketplace for Ghana's urban market (Accra and Kumasi).
+Every listing is visited and verified by the paddy team before it goes live.
 
-See `AGENTS.md` for full architecture, business model, and conventions (canonical spec for
-anyone — human or AI — working on this codebase).
+> **Proprietary software.** This repository is public for reference only. All rights reserved;
+> see [LICENSE](LICENSE). To report a security issue, see [SECURITY.md](SECURITY.md).
 
-## Structure
+## Tech stack
+
+| Part | Stack |
+|---|---|
+| Frontend | Next.js 16 (App Router, TypeScript), Tailwind CSS v4, shadcn/ui, TanStack Query, Storybook |
+| Backend | Django 5 + Django REST Framework, GeoDjango, SimpleJWT auth |
+| Database | PostgreSQL with the PostGIS extension |
+| Services | Paystack (payments), Google Maps & Places, Google sign-in, Cloudflare R2 (media), Resend (email) |
+
+## Repository layout
 
 ```
 paddy/
-├── AGENTS.md          # canonical project spec: business model, stack, conventions
-├── frontend/          # Next.js (TypeScript, Tailwind, App Router) — public site + dashboards
-├── backend/           # Django + DRF + GeoDjango — API, auth, admin (staff listing tool)
-├── archive/           # superseded planning docs from an earlier iteration of this idea
-├── *.dc.html          # UI concept references (still active visual direction)
-└── ghana-rental-ui-concepts.html
+├── backend/        # Django API, auth, payments, and the Django admin (staff tools)
+│   ├── accounts/   #   users, roles, profiles, sign-up / sign-in / verification
+│   ├── listings/   #   listings, photos, saved homes, staff review
+│   ├── leases/     #   leases and lease records
+│   ├── viewings/   #   in-person viewing requests
+│   ├── payments/   #   Paystack subscriptions, pay-to-unlock, listing limits
+│   └── core/       #   amenities, dev seed data
+├── frontend/       # Next.js app: public Discovery Hub + role-based dashboards
+└── figma-plugin/   # design-handoff Figma plugin
 ```
 
-## Getting started
+## Getting started (local development)
 
-### Backend (Django)
+### Prerequisites
+
+- **Python 3.11** and [pipenv](https://pipenv.pypa.io/)
+- **PostgreSQL 16 with PostGIS**, plus GDAL (`gdal-bin` on Linux, OSGeo4W on Windows)
+- **Node.js 20+**
+
+### Backend
 
 ```bash
 cd backend
-python -m venv .venv
-source .venv/Scripts/activate   # Windows git-bash; use .venv/bin/activate on macOS/Linux
-pip install -r requirements.txt
-cp .env.example .env            # then fill in real secrets
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver
+pipenv install --dev
+cp .env.example .env          # then fill in your own values
+pipenv run python manage.py migrate
+pipenv run python manage.py seed_dev_data   # optional demo data
+pipenv run python manage.py createsuperuser
+pipenv run python manage.py runserver
 ```
 
-Defaults to SQLite for zero-setup local dev. Set `DATABASE_ENGINE=postgis` in `.env` once
-Postgres + PostGIS is available (see AGENTS.md for the Railway/self-host deploy plan) — that
-also requires uncommenting `django.contrib.gis` in `config/settings.py`.
+The API runs at `http://localhost:8000` and the Django admin at `http://localhost:8000/admin/`.
+Every setting comes from `backend/.env`; see `backend/.env.example` for the full list.
 
-### Frontend (Next.js)
+### Frontend
 
 ```bash
 cd frontend
 npm install
+cp .env.example .env.local    # then fill in your own values
 npm run dev
 ```
 
-## Build priority
+The app runs at `http://localhost:3000`. Storybook: `npm run storybook`.
 
-1. Discovery Hub (map + listing grid)
-2. Property Detail page (photosphere tour, verification badges)
-3. On-Site Pre-Checkout Review (staff-facing, Paystack Inline)
-4. Renter Active Leases Dashboard
-5. Auth Gateway, Renter CV form, Saved Homes
-6. Landlord-facing dashboard — post-MVP (Django admin covers this for now)
+## Tests
 
-Full detail in `AGENTS.md`.
+```bash
+cd backend
+pipenv run python manage.py check
+pipenv run python manage.py test     # needs PostgreSQL + PostGIS
+```
+
+The `Backend CI` GitHub Actions workflow runs the same checks and tests against a PostGIS
+database on every pull request.
+
+## License
+
+Copyright (c) 2026 Kelvin Ohemeng. All rights reserved. See [LICENSE](LICENSE).

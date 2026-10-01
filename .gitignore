@@ -23,3 +23,21 @@ Thumbs.db
 # --- Logs ---
 *.log
 npm-debug.log*
+
+# --- Build / tool output that should never be committed ---
+/.next/
+/.freebuff/
+
+# --- Private working notes & internal docs (kept locally, never pushed) ---
+# The repo is public. These hold business strategy, pricing, legal notes and
+# AI-agent working notes, so they live only on Kelvin's machine.
+/AGENTS.md
+/archive/
+/docs/
+/BACKEND_HANDOFF_*.md
+/git-and-github-guide.md
+/frontend/memory.md
+
+# --- Design concept exports / AI artifact generations (local only) ---
+*.dc.html
+/ghana-rental-ui-concepts.html

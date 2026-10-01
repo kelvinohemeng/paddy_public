@@ -1,11 +1,15 @@
 # Contributing to paddy
 
+> paddy is proprietary software (see [LICENSE](LICENSE)). The repository is public for
+> reference only, and **outside contributions aren't accepted** unless the owner has invited
+> you. This file describes the internal workflow for the project team and its coding agents.
+> To report a security issue, follow [SECURITY.md](SECURITY.md), not a public issue or PR.
+
 ## Branch workflow (mandatory convention — not technically enforced yet)
 
 `main` is the source of truth and should always be in a working, tested
-state. Branch protection is not enabled yet (requires a paid GitHub plan
-for private repos) — this is a **convention every contributor and every
-agent must follow manually** until that's turned on.
+state. It is the only long-lived branch: feature branches are deleted once
+their PR merges. Follow these rules even where GitHub doesn't enforce them.
 
 1. **Never push directly to `main`.** Always work on a feature branch:
    ```
@@ -21,9 +25,9 @@ agent must follow manually** until that's turned on.
 
 ## Multiple agents working in parallel
 
-For true simultaneous parallel agents (each agent physically isolated in
-its own folder, not just a branch), see `docs/multi-agent-workflow.md`
-for the full git worktree setup/cleanup steps.
+For truly simultaneous agents, give each one its own folder with
+`git worktree add ../paddy-<task> -b feature/<task>` (and remove it with
+`git worktree remove` when done), so agents never share a working copy.
 
 If several agents (Claude Code, etc.) are working on this repo at once:
 

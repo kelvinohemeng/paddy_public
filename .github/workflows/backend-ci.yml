@@ -105,6 +105,8 @@ jobs:
           R2_STORAGE_SECRET_ACCESS_KEY: 'dummy-for-ci-64-characters-long-padded-out-to-match-real-length'
           R2_STORAGE_BUCKET_NAME: 'dummy-bucket-for-ci'
           R2_STORAGE_ACCOUNT_ID: 'dummyaccountidforci'
+          DEFAULT_FROM_EMAIL: 'ci@example.com'
+          AWS_S3_CUSTOM_DOMAIN: 'media.example.com'
           # R2 credentials are only ever needed to SATISFY settings.py's
           # config(...) calls at import time (no default= was given for
           # these, same reasoning as SECRET_KEY) — CI never makes a
@@ -136,6 +138,8 @@ jobs:
           R2_STORAGE_SECRET_ACCESS_KEY: 'dummy-for-ci-64-characters-long-padded-out-to-match-real-length'
           R2_STORAGE_BUCKET_NAME: 'dummy-bucket-for-ci'
           R2_STORAGE_ACCOUNT_ID: 'dummyaccountidforci'
+          DEFAULT_FROM_EMAIL: 'ci@example.com'
+          AWS_S3_CUSTOM_DOMAIN: 'media.example.com'
 
       - name: Verify the app boots under gunicorn (production-like check)
         # This is genuinely a DIFFERENT check from "manage.py check" and
@@ -175,3 +179,5 @@ jobs:
           R2_STORAGE_SECRET_ACCESS_KEY: 'dummy-for-ci-64-characters-long-padded-out-to-match-real-length'
           R2_STORAGE_BUCKET_NAME: 'dummy-bucket-for-ci'
           R2_STORAGE_ACCOUNT_ID: 'dummyaccountidforci'
+          DEFAULT_FROM_EMAIL: 'ci@example.com'
+          AWS_S3_CUSTOM_DOMAIN: 'media.example.com'
