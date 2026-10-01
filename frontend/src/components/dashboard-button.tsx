@@ -1,6 +1,8 @@
 import type { ComponentType } from "react";
 import Link from "next/link";
+import { ArrowUpRight } from "lucide-react";
 
+import { PaddyBadge } from "@/components/paddy-badge";
 import {
   PaddyIcon,
   PlusMiniIcon,
@@ -39,7 +41,14 @@ import { cn } from "@/lib/utils";
 // - Hover: the Active fill, so hovering previews the selected look.
 // - Keyboard focus: the same 2px white gap + 4px blue ring PaddyButton
 //   uses (Figma's Focus state on the Button set).
-// There's no Disabled state: no nav item is ever disabled.
+// - Disabled ("coming soon"): the set has no Disabled state. The landlord
+//   nav shows Analytics before it exists (Kelvin, 2026-10-01), so a
+//   disabled row is drawn at half opacity with no hover, isn't a link or
+//   a button, and carries a small neutral PaddyBadge ("Soon") after the
+//   label.
+// - External: a row that leaves the app (the admin's Django admin link)
+//   opens in a new tab, with an up-right arrow after the label so that's
+//   clear before clicking.
 //
 // Height: the set is 40px, but every instance in the Accounts – Landlord
 // screens (e.g. 288:8272) overrides the padding to 12/16, i.e. 44px. The
@@ -59,6 +68,9 @@ export function DashboardButton({
   collapsed = false,
   leadingMark = false,
   trailingMark = false,
+  disabled = false,
+  badge,
+  external = false,
   className,
 }: {
   /** A Paddy Icons name, or any icon component for items the set has no
@@ -73,6 +85,13 @@ export function DashboardButton({
   leadingMark?: boolean;
   /** Figma's hidden plus-mini after the label. */
   trailingMark?: boolean;
+  /** Not available yet: drawn muted and not clickable. href/onClick are
+   *  ignored. Pair with `badge` to say why. */
+  disabled?: boolean;
+  /** A small badge after the label, e.g. "Soon". */
+  badge?: string;
+  /** href leaves the app: opens in a new tab. */
+  external?: boolean;
   className?: string;
 }) {
   const Icon = typeof icon === "string" ? null : icon;
@@ -92,6 +111,11 @@ export function DashboardButton({
       {!collapsed && (
         <span className="flex-1 truncate text-left">{label}</span>
       )}
+      {badge && !collapsed && <PaddyBadge size="2xs">{badge}</PaddyBadge>}
+      {external && !collapsed && (
+        <ArrowUpRight className="text-subtle-foreground size-4 shrink-0" aria-hidden />
+      )}
+      {external && <span className="sr-only">(opens in a new tab)</span>}
       {trailingMark && !collapsed && (
         <PlusMiniIcon className="text-subtle-foreground shrink-0" />
       )}
@@ -104,6 +128,41 @@ export function DashboardButton({
     collapsed && "justify-center px-0",
     className,
   );
+
+  if (disabled) {
+    // Not a link or a button: there's nothing to do here yet. The title
+    // says why on hover, and aria-disabled tells screen readers.
+    return (
+      <div
+        aria-disabled="true"
+        aria-label={collapsed ? label : undefined}
+        title={badge ? `${label} (${badge.toLowerCase()})` : label}
+        data-state="disabled"
+        className={cn(styles, "cursor-not-allowed opacity-50 hover:bg-transparent")}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  if (href && external) {
+    // A plain <a>, not next/link: the page is outside this app, so
+    // there's nothing for client-side navigation to do.
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={collapsed ? `${label} (opens in a new tab)` : undefined}
+        title={collapsed ? label : undefined}
+        onClick={onClick}
+        data-state="default"
+        className={styles}
+      >
+        {content}
+      </a>
+    );
+  }
 
   if (href) {
     return (

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
+import { ChartColumn, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
 
 import { useLogout, useMe } from "@/hooks/use-auth";
 import {
@@ -30,18 +30,24 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 //   Landlord frames  Browse Homes · About me · Active Lease · My Listings |
 //                    Payment | Settings · Logout
 //
-// What's built from that, per role:
-//   everyone        Dashboard (the landlord frames skip it, but every role
-//                   has a home page, so it stays), Browse Homes, About me,
-//                   Active Lease, Logout
-//   landlord        My Listings, and Payment (their plan and billing —
-//                   the subscription card lives there now)
-//   renter          Saved Homes
-//   staff / admin   Review Queue (no Figma frame; same row, lucide icon)
+// The rows themselves are set per role (Kelvin, 2026-10-01), with the
+// frames' look but not their exact list — see navFor() below:
+//   landlord        My Listings · Analytics (soon) | Payment · About me
+//   renter          Browse Homes · Saved Homes | About me
+//   staff           Review Queue · Browse Homes | About me
+//   admin           Review Queue · Admin panel ↗ · Browse Homes | About me
+//   everyone        | Logout
 //
-// Left out until they have pages behind them: Settings (there are no
-// settings yet) and Payment for renters (there's no endpoint listing a
-// renter's unlock payments). A nav row that 404s is worse than no row.
+// Gone since the frames: "Dashboard" (there's no dashboard home page any
+// more — /dashboard opens each role's main page, see
+// app/(admin)/dashboard/page.tsx) and "Active Lease" (leases are out of
+// the MVP; the pages and backend stay, unlinked).
+//
+// Left out until they have pages behind them: Settings, Viewings,
+// Unlocked Listings and the renter's Payment row. A nav row
+// that 404s is worse than no row. Marker comments in navFor() show where
+// each one goes. Analytics is the one deliberate exception: shown
+// disabled with a "Soon" badge, so landlords know it's coming.
 //
 // Role-specific rows appear once identity has loaded, so a renter never
 // sees landlord rows flash in and out. Pages re-check roles themselves and
@@ -50,8 +56,74 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 type NavItem = {
   href: string;
   label: string;
-  icon: PaddyIconName | typeof ShieldCheck;
+  icon: PaddyIconName | LucideIcon;
+  /** Shown disabled with a "Soon" badge: the page doesn't exist yet. */
+  soon?: boolean;
+  /** Leaves the app (new tab). */
+  external?: boolean;
 };
+
+type NavGroupsForRole = {
+  main: NavItem[];
+  // Plan, billing and profile: the frames' second group.
+  account: NavItem[];
+};
+
+// Django admin, on the backend. Only the admin role gets this row: staff
+// accounts can't sign in to Django admin yet (they don't have is_staff),
+// so for them it would be a dead end.
+const DJANGO_ADMIN_URL = `${process.env.NEXT_PUBLIC_API_URL}/admin/`;
+
+function navFor(role: string | undefined, base: string): NavGroupsForRole {
+  const browseHomes: NavItem = { href: DISCOVERY_PATH, label: "Browse Homes", icon: "map" };
+  const aboutMe: NavItem = { href: `${base}/profile`, label: "About me", icon: "profile" };
+
+  switch (role) {
+    case "landlord":
+      return {
+        main: [
+          { href: `${base}/listings`, label: "My Listings", icon: "listings" },
+          // Viewings row goes here once the viewings page exists.
+          { href: `${base}/analytics`, label: "Analytics", icon: ChartColumn, soon: true },
+        ],
+        account: [
+          // Their plan and billing — the subscription card lives there.
+          { href: `${base}/payment`, label: "Payment", icon: "payments" },
+          aboutMe,
+        ],
+      };
+    case "renter":
+      return {
+        main: [
+          browseHomes,
+          // Unlocked Listings row goes here once that page exists.
+          { href: `${base}/saved`, label: "Saved Homes", icon: "heart" },
+          // Viewings row goes here once the viewings page exists.
+        ],
+        account: [
+          // Payment row goes here once renters have receipts to show.
+          aboutMe,
+        ],
+      };
+    case "staff":
+    case "admin":
+      return {
+        main: [
+          { href: `${base}/reviews`, label: "Review Queue", icon: ShieldCheck },
+          // Viewings row goes here once the viewings page exists.
+          ...(role === "admin"
+            ? [{ href: DJANGO_ADMIN_URL, label: "Admin panel", icon: Wrench, external: true }]
+            : []),
+          browseHomes,
+        ],
+        account: [aboutMe],
+      };
+    default:
+      // Identity still loading, or no role yet (onboarding not finished,
+      // and /dashboard sends those users to /onboarding anyway).
+      return { main: [], account: [] };
+  }
+}
 
 export function Sidebar() {
   const { isMobile } = useShadcnSidebar();
@@ -84,17 +156,16 @@ export function Sidebar() {
 }
 
 function SidebarLogo() {
-  const params = useParams<{ user?: string }>();
-  const { data: identity } = useMe();
   const { isMobile, setOpenMobile } = useShadcnSidebar();
-  const userId = params.user ?? identity?.id;
 
   return (
     <ShadcnSidebarHeader
       className={cn("gap-0 p-0", isMobile ? "px-4 pt-5" : "pt-12 pl-8")}
     >
       <Link
-        href={userId ? `/dashboard/${userId}` : "/dashboard"}
+        // "/dashboard" works out the role's main page on the server
+        // (My Listings, Review Queue or Saved Homes).
+        href="/dashboard"
         aria-label="paddy dashboard home"
         onClick={isMobile ? () => setOpenMobile(false) : undefined}
         // flex, so the link is exactly the logo's height (an inline box
@@ -120,48 +191,25 @@ function NavGroups() {
   const role: string | undefined = identity?.role;
   if (!userId) return null;
 
-  const base = `/dashboard/${userId}`;
+  const { main, account } = navFor(role, `/dashboard/${userId}`);
 
-  const main: NavItem[] = [
-    { href: base, label: "Dashboard", icon: "home" },
-    // The public hub: every role browses homes.
-    { href: DISCOVERY_PATH, label: "Browse Homes", icon: "map" },
-    { href: `${base}/profile`, label: "About me", icon: "profile" },
-    { href: `${base}/leases`, label: "Active Lease", icon: "lease" },
-  ];
-  if (role === "landlord") {
-    main.push({ href: `${base}/listings`, label: "My Listings", icon: "listings" });
-  }
-  if (role === "renter") {
-    main.push({ href: `${base}/saved`, label: "Saved Homes", icon: "heart" });
-  }
-  if (role === "staff" || role === "admin") {
-    main.push({ href: `${base}/reviews`, label: "Review Queue", icon: ShieldCheck });
-  }
-
-  const billing: NavItem[] =
-    role === "landlord"
-      ? [{ href: `${base}/payment`, label: "Payment", icon: "payments" }]
-      : [];
-
-  // Exact match for Dashboard (every dashboard URL starts with it), prefix
-  // match for the rest.
-  const isActive = (href: string) =>
-    href === base
-      ? pathname === href
-      : pathname === href || pathname.startsWith(`${href}/`);
+  // Prefix match, so a listing's own page keeps My Listings lit.
+  const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
   // On phones the nav is a sheet over the page: close it once a row is
   // picked so the new page is visible.
   const closeSheet = isMobile ? () => setOpenMobile(false) : undefined;
 
-  const row = ({ href, label, icon }: NavItem) => (
+  const row = ({ href, label, icon, soon, external }: NavItem) => (
     <DashboardButton
       key={href}
       href={href}
       icon={icon}
       label={label}
-      active={isActive(href)}
+      active={!soon && !external && isActive(href)}
+      disabled={soon}
+      badge={soon ? "Soon" : undefined}
+      external={external}
       onClick={closeSheet}
       // 44px rows: every instance in the Accounts screens overrides the
       // set's 40px (e.g. 288:8272).
@@ -171,11 +219,15 @@ function NavGroups() {
 
   return (
     <nav aria-label="Dashboard" className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">{main.map(row)}</div>
-      <NavRule />
-      {billing.length > 0 && (
+      {main.length > 0 && (
         <>
-          <div className="flex flex-col gap-1">{billing.map(row)}</div>
+          <div className="flex flex-col gap-1">{main.map(row)}</div>
+          <NavRule />
+        </>
+      )}
+      {account.length > 0 && (
+        <>
+          <div className="flex flex-col gap-1">{account.map(row)}</div>
           <NavRule />
         </>
       )}

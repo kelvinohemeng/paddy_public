@@ -8,14 +8,15 @@
 // Token storage (unchanged semantics): BOTH tokens go in BOTH stores —
 // cookies (path "/", 1-day expiry) for server-side reads (proxy.ts,
 // (admin)/layout.tsx) and localStorage for client-side reads
-// (authedFetch, this file). Removing both on logout is what actually
-// logs a browser out; path: "/" is required on remove because the
-// cookies were set with path "/".
+// (authedFetch, this file). Removing both on logout is what logs a
+// browser out; path: "/" is required on remove because the cookies were
+// set with path "/". Logout also revokes the refresh token server-side
+// (see useLogout).
 //
-// Endpoints (unchanged): POST /accounts/login/, /accounts/register/,
-// /accounts/login/google/, GET /accounts/me/. Field naming: the app
-// speaks camelCase, Django speaks snake_case — translation happens at
-// these network boundaries only.
+// Endpoints: POST /accounts/login/, /accounts/register/,
+// /accounts/login/google/, /accounts/logout/, GET /accounts/me/. Field
+// naming: the app speaks camelCase, Django speaks snake_case —
+// translation happens at these network boundaries only.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
@@ -194,9 +195,29 @@ export function useLogout() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      // JWTs aren't tracked server-side — deleting both stores is the
-      // entire logout. No backend call needed.
+      // Clearing both stores logs THIS browser out, but the refresh token
+      // itself stays valid for the rest of its ~1-day life — anyone who
+      // copied it could keep minting access tokens. POST /accounts/logout/
+      // blacklists it, so /accounts/login/refresh/ rejects it from then on.
+      // Read it before clearing, since clearing deletes our only copy.
+      const refresh = localStorage.getItem("refresh_token");
       clearTokens();
+
+      // Not awaited: the backend runs on Render's free tier, which can
+      // take most of a minute to wake up, and logout must never wait on
+      // that. The request carries on after the redirect (it's a client-
+      // side navigation, the page isn't unloaded). It only needs the
+      // refresh token in the body, no access token, so an expired access
+      // token can't block it. Failures are ignored: a 400 means the token
+      // was already unusable, and a network error leaves us no worse off
+      // than before this call existed.
+      if (refresh) {
+        fetch(`${API_URL}/accounts/logout/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh }),
+        }).catch(() => {});
+      }
     },
     onSuccess: async () => {
       // Drop cached identity/data so the next session can't flash the

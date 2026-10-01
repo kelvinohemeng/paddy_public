@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/nextjs-vite";
-import { ShieldCheck } from "lucide-react";
+import { ChartColumn, ShieldCheck, Wrench } from "lucide-react";
 import { expect } from "storybook/test";
 
 import { DashboardButton } from "./dashboard-button";
@@ -68,6 +68,41 @@ export const Collapsed: Story = {
 // An item the Paddy Icons set has no glyph for takes any icon component.
 export const WithLucideIcon: Story = {
   args: { icon: ShieldCheck, label: "Reviews" },
+};
+
+// Not in the Figma set: a page that doesn't exist yet (the landlord's
+// Analytics row). Muted, not clickable, with a "Soon" badge.
+export const ComingSoon: Story = {
+  args: {
+    icon: ChartColumn,
+    label: "Analytics",
+    href: "/dashboard",
+    disabled: true,
+    badge: "Soon",
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.queryByRole("link")).not.toBeInTheDocument();
+    await expect(canvas.getByText("Analytics").closest("[aria-disabled]")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+
+// Not in the Figma set: a row that leaves the app (the admin's Django
+// admin link) opens in a new tab.
+export const External: Story = {
+  args: {
+    icon: Wrench,
+    label: "Admin panel",
+    href: "https://example.com/admin/",
+    external: true,
+  },
+  play: async ({ canvas }) => {
+    const link = canvas.getByRole("link", { name: /admin panel/i });
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  },
 };
 
 // The Accounts – Landlord sidebar (181:22625): 44px instances (padding

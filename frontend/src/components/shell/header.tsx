@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
 
 import { Logo } from "@/components/logo";
 import { useSidebar, SidebarTrigger } from "@/components/ui/sidebar";
@@ -16,8 +15,9 @@ export const Header = () => {
 };
 
 function MobileHeader() {
-  const params = useParams<{ user?: string }>();
-  const home = params.user ? `/dashboard/${params.user}` : "/dashboard";
+  // "/dashboard" works out the role's main page on the server, same as
+  // the sidebar logo.
+  const home = "/dashboard";
 
   return (
     <header

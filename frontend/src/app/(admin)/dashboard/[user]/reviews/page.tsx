@@ -123,17 +123,17 @@ export default function ReviewsPage() {
         description={
           role === "landlord"
             ? "Your submissions and their status are under My Listings."
-            : "Your tenancies live under Active Lease."
+            : "The homes you're keeping an eye on are under Saved Homes."
         }
         action={
           <DashboardLinkButton
             href={
               role === "landlord"
                 ? `/dashboard/${userId}/listings`
-                : `/dashboard/${userId}/leases`
+                : `/dashboard/${userId}/saved`
             }
           >
-            {role === "landlord" ? "Go to My Listings" : "Go to Active Lease"}
+            {role === "landlord" ? "Go to My Listings" : "Go to Saved Homes"}
           </DashboardLinkButton>
         }
       />
