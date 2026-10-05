@@ -901,3 +901,424 @@ class ResendVerificationEmailTests(APITestCase):
         response = self.client.post('/accounts/verify-email/resend/')
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class LogoutTests(APITestCase):
+    # POST /accounts/logout/ — revokes ("blacklists") the refresh token the
+    # frontend hands back, so it can never mint another access token.
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='logout@example.com', password='testpass123', role='renter'
+        )
+
+    def _refresh_token(self):
+        from rest_framework_simplejwt.tokens import RefreshToken
+        return str(RefreshToken.for_user(self.user))
+        # A real refresh token, the same kind /accounts/login/ hands out.
+
+    def test_logout_revokes_the_refresh_token(self):
+        refresh = self._refresh_token()
+
+        response = self.client.post('/accounts/logout/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_205_RESET_CONTENT)
+
+        reuse = self.client.post('/accounts/login/refresh/', {'refresh': refresh}, format='json')
+        self.assertEqual(reuse.status_code, status.HTTP_401_UNAUTHORIZED)
+        # The actual security property: a 205 alone would only prove the
+        # view ran. Trying the token again proves it really is dead.
+
+    def test_refresh_token_still_works_without_logout(self):
+        # The control for the test above: without logging out, the same
+        # kind of token CAN be exchanged. Without this, the test above
+        # would also pass if /login/refresh/ were simply broken.
+        refresh = self._refresh_token()
+
+        response = self.client.post('/accounts/login/refresh/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+
+    def test_logout_twice_with_the_same_token_is_400(self):
+        refresh = self._refresh_token()
+        self.client.post('/accounts/logout/', {'refresh': refresh}, format='json')
+
+        response = self.client.post('/accounts/logout/', {'refresh': refresh}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_logout_with_garbage_token_is_400(self):
+        response = self.client.post('/accounts/logout/', {'refresh': 'not-a-token'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class VerifyEmailTests(APITestCase):
+    # POST /accounts/verify-email/ — the frontend's /verify-email page
+    # forwards the uid + token from the link in the email.
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='verify-me@example.com', password='testpass123', role='renter'
+        )
+
+    def _uid_and_token(self, user=None):
+        # Builds a real link the same way send_verification_email does,
+        # instead of scraping one out of a sent email.
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+        from .views import email_verification_token
+
+        user = user or self.user
+        return urlsafe_base64_encode(force_bytes(user.pk)), email_verification_token.make_token(user)
+
+    def test_valid_link_verifies_the_account(self):
+        uid, token = self._uid_and_token()
+
+        response = self.client.post('/accounts/verify-email/', {'uid': uid, 'token': token}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_verified)
+
+    def test_wrong_token_is_400_and_leaves_account_unverified(self):
+        uid, _ = self._uid_and_token()
+
+        response = self.client.post(
+            '/accounts/verify-email/', {'uid': uid, 'token': 'not-a-real-token'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_verified)
+
+    def test_token_for_another_user_does_not_verify_this_one(self):
+        # A token is tied to one account: someone who verified their own
+        # email can't reuse their token with another person's uid.
+        other = User.objects.create_user(
+            email='someone-else@example.com', password='testpass123', role='renter'
+        )
+        uid, _ = self._uid_and_token()
+        _, other_token = self._uid_and_token(user=other)
+
+        response = self.client.post(
+            '/accounts/verify-email/', {'uid': uid, 'token': other_token}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.is_verified)
+
+    def test_malformed_uid_is_400(self):
+        response = self.client.post(
+            '/accounts/verify-email/', {'uid': 'not-valid-base64!!', 'token': 'x'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_uid_of_deleted_user_is_400(self):
+        uid, token = self._uid_and_token()
+        self.user.delete()
+
+        response = self.client.post('/accounts/verify-email/', {'uid': uid, 'token': token}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class EmailFailureTests(APITestCase):
+    # Email providers go down. Each view that sends mail decides what a
+    # failed send means for the person using it; these tests pin those
+    # decisions. `patch(..., side_effect=Exception(...))` makes the patched
+    # function RAISE instead of returning, which is how we fake an outage.
+
+    def test_signup_still_succeeds_when_verification_email_fails(self):
+        with patch('accounts.views.send_verification_email', side_effect=Exception('Resend is down')):
+            response = self.client.post('/accounts/register/', {
+                'email': 'unlucky@example.com',
+                'password': 'testpass123',
+                'role': 'renter',
+                'first_name': 'Un',
+                'last_name': 'Lucky',
+            }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(User.objects.filter(email='unlucky@example.com').exists())
+        # The account exists, so the person can log in and press
+        # "Resend" later instead of seeing a 500 for a signup that worked.
+
+    def test_resend_reports_503_when_email_fails(self):
+        user = User.objects.create_user(
+            email='resend-fail@example.com', password='testpass123', role='renter'
+        )
+        self.client.force_authenticate(user=user)
+
+        with patch('accounts.views.send_verification_email', side_effect=Exception('Resend is down')):
+            response = self.client.post('/accounts/verify-email/resend/')
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn('error', response.data)
+        # Here the ONLY job is sending the email, so failing loudly is
+        # right: "Verification email sent" would be a lie.
+
+    def test_password_reset_returns_generic_message_when_email_fails(self):
+        User.objects.create_user(
+            email='reset-fail@example.com', password='testpass123', role='renter'
+        )
+
+        with patch('accounts.views.EmailMultiAlternatives.send', side_effect=Exception('Resend is down')):
+            response = self.client.post(
+                '/accounts/password-reset/', {'email': 'reset-fail@example.com'}, format='json'
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('message', response.data)
+        # Same answer as an unknown email: an error here would tell an
+        # attacker "this email has an account".
+
+
+class PasswordResetConfirmInputTests(APITestCase):
+
+    def test_missing_fields_are_400(self):
+        for body in ({}, {'uid': 'x'}, {'uid': 'x', 'token': 'y'}, {'token': 'y', 'new_password': 'z'}):
+            with self.subTest(body=body):
+                # subTest — runs the same check for each body and reports
+                # exactly which one failed, instead of stopping at the first.
+                response = self.client.post('/accounts/password-reset/confirm/', body, format='json')
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn('error', response.data)
+
+
+class GoogleLoginTokenTests(APITestCase):
+    # POST /accounts/login/google/ — the token checks and returning users.
+    # GoogleLoginRoleTests above covers which role a NEW user may pick.
+
+    PAYLOAD = {
+        'email': 'returning@example.com',
+        'email_verified': True,
+        'given_name': 'Kofi',
+        'family_name': 'Boateng',
+        'name': 'Kofi Boateng',
+    }
+
+    def _post(self, body, payload=None, **patch_kwargs):
+        # Same trick as GoogleLoginRoleTests: swap out Google's token check
+        # so the test never talks to Google.
+        if not patch_kwargs:
+            patch_kwargs = {'return_value': dict(payload or self.PAYLOAD)}
+        with patch('accounts.views.id_token.verify_oauth2_token', **patch_kwargs):
+            return self.client.post('/accounts/login/google/', body, format='json')
+
+    def test_missing_token_is_400(self):
+        response = self.client.post('/accounts/login/google/', {}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_token_google_rejects_is_400_and_creates_nobody(self):
+        response = self._post({'token': 'tampered'}, side_effect=ValueError('Token expired'))
+        # Google's library raises ValueError for a bad signature, an
+        # expired token, or a token issued for a different app.
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(User.objects.filter(email=self.PAYLOAD['email']).exists())
+
+    def test_returning_user_keeps_their_role_and_profile(self):
+        user = User.objects.create_user(
+            email=self.PAYLOAD['email'], password='testpass123', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=user, full_name='Existing Landlord', national_id_number='GHA-G1',
+            preferred_payout_method='momo',
+        )
+
+        response = self._post({'token': 'fake', 'role': 'renter'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['role'], User.Role.LANDLORD)
+        self.assertEqual(User.objects.filter(email=self.PAYLOAD['email']).count(), 1)
+        self.assertFalse(RenterProfile.objects.filter(user=user).exists())
+        # `role` only applies to a brand-new account. Signing in again
+        # must not switch an existing landlord to renter.
+
+    def test_new_user_is_marked_verified_and_google(self):
+        response = self._post({'token': 'fake', 'role': 'renter'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.PAYLOAD['email'])
+        self.assertTrue(user.is_verified)
+        self.assertEqual(user.sign_in_method, User.SignInMethod.GOOGLE)
+        self.assertEqual(user.first_name, 'Kofi')
+        self.assertEqual(RenterProfile.objects.get(user=user).full_name, 'Kofi Boateng')
+
+    def test_google_profile_photo_is_saved_for_new_user(self):
+        from django.test import override_settings
+
+        payload = dict(self.PAYLOAD, picture='https://lh3.googleusercontent.com/a/photo')
+        with patch('accounts.views.requests.get') as mock_get, override_settings(STORAGES={
+            'default': {'BACKEND': 'django.core.files.storage.memory.InMemoryStorage'},
+            'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+        }):
+            # Two fakes: requests.get so no real download happens, and an
+            # in-memory file store so nothing is uploaded to R2.
+            mock_get.return_value.status_code = 200
+            mock_get.return_value.content = b'fake-image-bytes'
+
+            response = self._post({'token': 'fake', 'role': 'renter'}, payload=payload)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get.assert_called_once_with('https://lh3.googleusercontent.com/a/photo')
+        user = User.objects.get(email=self.PAYLOAD['email'])
+        self.assertTrue(user.profile_image.name.endswith('_google.jpg'))
+
+    def test_failed_photo_download_does_not_block_login(self):
+        payload = dict(self.PAYLOAD, picture='https://lh3.googleusercontent.com/a/missing')
+        with patch('accounts.views.requests.get') as mock_get:
+            mock_get.return_value.status_code = 404
+
+            response = self._post({'token': 'fake', 'role': 'renter'}, payload=payload)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.PAYLOAD['email'])
+        self.assertFalse(user.profile_image)
+        # No photo, but the person is signed in.
+
+
+class MeProfileChoiceValidationTests(APITestCase):
+    # PATCH /accounts/me/ refuses values that aren't one of a field's
+    # choices, for each role's own choice fields.
+
+    def setUp(self):
+        self.renter = User.objects.create_user(
+            email='choice-renter@example.com', password='testpass123', role='renter'
+        )
+        self.renter_profile = RenterProfile.objects.create(user=self.renter, full_name='Choice Renter')
+
+        self.landlord = User.objects.create_user(
+            email='choice-landlord@example.com', password='testpass123', role='landlord'
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord, full_name='Choice Landlord',
+            national_id_number='GHA-C1', preferred_payout_method='momo'
+        )
+
+    def test_renter_invalid_payment_method_is_400(self):
+        self.client.force_authenticate(user=self.renter)
+
+        response = self.client.patch(
+            '/accounts/me/', {'preferred_payment_method': 'bitcoin'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('error', response.data)
+
+    def test_landlord_invalid_payout_method_is_400_and_writes_nothing(self):
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.patch(
+            '/accounts/me/', {'preferred_payout_method': 'bitcoin'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.landlord_profile.refresh_from_db()
+        self.assertEqual(self.landlord_profile.preferred_payout_method, 'momo')
+
+    def test_landlord_can_update_full_name(self):
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.patch('/accounts/me/', {'full_name': 'Renamed Landlord'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.landlord_profile.refresh_from_db()
+        self.assertEqual(self.landlord_profile.full_name, 'Renamed Landlord')
+
+
+class LoginThrottleTests(APITestCase):
+    # POST /accounts/login/ allows 5 attempts a minute per IP address
+    # (the 'login' rate in settings.py), to slow down password guessing.
+    #
+    # Rate limits count requests in Django's cache, and the cache is NOT
+    # reset between tests the way the database is. So this class clears
+    # it before AND after each test: before, so earlier tests' requests
+    # don't count; after, so this test's 429s don't leak into later ones.
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.addCleanup(cache.clear)
+        # addCleanup — runs after the test even if it fails, unlike code
+        # at the end of the test method.
+
+        User.objects.create_user(email='guess-me@example.com', password='testpass123', role='renter')
+
+    def test_sixth_attempt_in_a_minute_is_429(self):
+        wrong = {'email': 'guess-me@example.com', 'password': 'wrong-guess'}
+
+        for attempt in range(5):
+            response = self.client.post('/accounts/login/', wrong, format='json')
+            self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED, f'attempt {attempt + 1}')
+
+        response = self.client.post('/accounts/login/', wrong, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_even_the_right_password_waits_once_throttled(self):
+        for _ in range(5):
+            self.client.post('/accounts/login/', {'email': 'guess-me@example.com', 'password': 'nope'}, format='json')
+
+        response = self.client.post(
+            '/accounts/login/', {'email': 'guess-me@example.com', 'password': 'testpass123'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        # The limit is checked before the password, so a guesser can't
+        # tell a right guess from a wrong one while they're throttled.
+
+
+class CreateSuperuserFromEnvCommandTests(APITestCase):
+    # `python manage.py create_superuser_from_env` — Render's free tier
+    # has no shell, so the first admin is created from two env vars.
+    #
+    # patch.dict(os.environ, {...}) sets environment variables for the
+    # length of the `with` block only, then puts the old ones back.
+    # call_command runs a management command from Python, the same as
+    # typing it in a terminal; stdout=StringIO() captures what it prints.
+
+    ENV = {'DJANGO_SUPERUSER_EMAIL': 'boss@example.com', 'DJANGO_SUPERUSER_PASSWORD': 'a-long-pass-123'}
+
+    def _run(self, env):
+        import os
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        with patch.dict(os.environ, env):
+            call_command('create_superuser_from_env', stdout=out)
+        return out.getvalue()
+
+    def test_creates_superuser_from_env(self):
+        output = self._run(self.ENV)
+
+        user = User.objects.get(email='boss@example.com')
+        self.assertEqual(user.role, User.Role.ADMIN)
+        self.assertTrue(user.is_superuser)
+        self.assertTrue(user.is_staff)
+        self.assertTrue(user.check_password('a-long-pass-123'))
+        self.assertIn('created', output)
+
+    def test_running_twice_does_not_duplicate_or_change_password(self):
+        self._run(self.ENV)
+
+        output = self._run(dict(self.ENV, DJANGO_SUPERUSER_PASSWORD='a-different-pass'))
+
+        self.assertEqual(User.objects.filter(email='boss@example.com').count(), 1)
+        self.assertTrue(User.objects.get(email='boss@example.com').check_password('a-long-pass-123'))
+        self.assertIn('already exists', output)
+        # Safe to leave in a build command by mistake: later deploys
+        # don't reset the admin's password back to the env value.
+
+    def test_missing_env_vars_create_nobody(self):
+        output = self._run({'DJANGO_SUPERUSER_EMAIL': '', 'DJANGO_SUPERUSER_PASSWORD': ''})
+
+        self.assertFalse(User.objects.filter(is_superuser=True).exists())
+        self.assertIn('skipping', output)

@@ -2303,3 +2303,223 @@ class ListingSlugTests(APITestCase):
 
         listing.refresh_from_db()
         self.assertEqual(listing.slug, 'locked-slug-osu')
+
+
+def _make_landlord(email, national_id):
+    # Small helper for the classes below: a landlord user plus profile.
+    user = User.objects.create_user(email=email, password='pass123456', role='landlord', is_verified=True)
+    profile = LandlordProfile.objects.create(
+        user=user, full_name=email.split('@')[0], national_id_number=national_id,
+        preferred_payout_method='momo',
+    )
+    return user, profile
+
+
+def _make_listing(profile, title, **overrides):
+    fields = dict(
+        landlord_profile=profile, title=title, description='Test', listing_type='rent',
+        price_monthly='1500.00', advance_rent_period='1_year', bedrooms=2, bathrooms=1,
+        address_precise='5 Extra Rd', neighborhood='Osu', city='Accra',
+        status=Listing.Status.PUBLISHED,
+    )
+    fields.update(overrides)
+    return Listing.objects.create(**fields)
+
+
+class ListingMoreFilterTests(APITestCase):
+    # The two Discovery Hub filters ListingFilterTests doesn't cover:
+    # ?advance_rent_period= and ?amenities=.
+
+    def setUp(self):
+        _, profile = _make_landlord('more-filters@example.com', 'GHA-MF1')
+        self.water = Amenity.objects.create(name='Water MF', slug='water_mf')
+        self.power = Amenity.objects.create(name='Power MF', slug='power_mf')
+
+        self.six_months = _make_listing(profile, 'Six months', advance_rent_period='6_months')
+        self.one_year = _make_listing(profile, 'One year', advance_rent_period='1_year')
+        self.both_amenities = _make_listing(profile, 'Water and power')
+        self.both_amenities.amenities.set([self.water, self.power])
+        self.one_year.amenities.set([self.water])
+
+    def test_filter_by_advance_rent_period(self):
+        response = self.client.get('/listings/?advance_rent_period=6_months')
+
+        self.assertEqual(_titles_from_list_response(response), ['Six months'])
+
+    def test_filter_by_one_amenity(self):
+        response = self.client.get('/listings/?amenities=power_mf')
+
+        self.assertEqual(_titles_from_list_response(response), ['Water and power'])
+
+    def test_amenities_filter_matches_any_and_lists_each_home_once(self):
+        response = self.client.get('/listings/?amenities=water_mf&amenities=power_mf')
+
+        titles = _titles_from_list_response(response)
+        self.assertCountEqual(titles, ['One year', 'Water and power'])
+        # assertCountEqual = same items, any order. 'Water and power'
+        # matches BOTH slugs; the .distinct() in get_queryset is what
+        # stops it appearing twice, and this is the line that catches it
+        # if someone removes it.
+
+    def test_unknown_amenity_returns_nothing(self):
+        response = self.client.get('/listings/?amenities=helipad')
+
+        self.assertEqual(_titles_from_list_response(response), [])
+
+
+class ListingOtherLandlordWriteTests(APITestCase):
+    # Another landlord CAN see a published listing (it's public), so the
+    # 404-from-get_queryset trick doesn't protect it. These pin the
+    # explicit ownership checks that do.
+
+    def setUp(self):
+        self.owner, self.owner_profile = _make_landlord('pub-owner@example.com', 'GHA-PO1')
+        self.other, _ = _make_landlord('pub-other@example.com', 'GHA-PO2')
+        self.listing = _make_listing(self.owner_profile, 'Public listing')
+
+    def test_other_landlord_cannot_edit_a_published_listing(self):
+        self.client.force_authenticate(user=self.other)
+
+        response = self.client.patch(f'/listings/{self.listing.id}/', {'title': 'Hijacked'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.title, 'Public listing')
+
+    def test_other_landlord_cannot_upload_photos_to_a_published_listing(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.test import override_settings
+
+        self.client.force_authenticate(user=self.other)
+        image = SimpleUploadedFile('x.jpg', _real_jpeg_bytes(), content_type='image/jpeg')
+        with override_settings(STORAGES=IN_MEMORY_STORAGES):
+            response = self.client.post(
+                f'/listings/{self.listing.id}/photos/', {'images': [image]}, format='multipart'
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.listing.photos.count(), 0)
+
+    def test_other_landlord_cannot_archive_a_published_listing(self):
+        self.client.force_authenticate(user=self.other)
+
+        response = self.client.post(f'/listings/{self.listing.id}/archive/')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.PUBLISHED)
+
+    def test_owner_upload_with_no_images_is_400(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(f'/listings/{self.listing.id}/photos/', {}, format='multipart')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class StaffRestoreTests(APITestCase):
+
+    def test_staff_can_restore_an_archived_listing_to_draft(self):
+        _, profile = _make_landlord('restore-owner@example.com', 'GHA-R1')
+        listing = _make_listing(profile, 'Archived one', status=Listing.Status.ARCHIVED)
+        staff = User.objects.create_user(email='restore-staff@example.com', password='pass123456', role='staff')
+        self.client.force_authenticate(user=staff)
+
+        response = self.client.post(f'/listings/{listing.id}/restore/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        listing.refresh_from_db()
+        self.assertEqual(listing.status, Listing.Status.DRAFT)
+        # Draft, not published: it has to be reviewed again before it
+        # goes back on the map.
+
+
+class LeasedListingVisibilityTests(APITestCase):
+    # A leased home is off the public map, but the renter who leased it
+    # can still open it (from their lease). Nobody else can, including
+    # other renters: a tenant must never be able to see another
+    # tenant's lease.
+
+    def setUp(self):
+        from datetime import date
+        from leases.models import Lease
+
+        _, profile = _make_landlord('leased-owner@example.com', 'GHA-LV1')
+        self.listing = _make_listing(profile, 'Leased home', status=Listing.Status.LEASED)
+
+        self.tenant = User.objects.create_user(email='tenant@example.com', password='pass123456', role='renter')
+        tenant_profile = RenterProfile.objects.create(user=self.tenant, full_name='Tenant')
+        self.stranger = User.objects.create_user(email='stranger@example.com', password='pass123456', role='renter')
+        RenterProfile.objects.create(user=self.stranger, full_name='Stranger')
+
+        Lease.objects.create(
+            listing=self.listing, renter_profile=tenant_profile, landlord_profile=profile,
+            rent_amount_monthly='1500.00', deposit_amount='18000.00', advance_rent_period='1_year',
+            start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+        )
+
+    def test_renter_on_the_lease_can_open_the_listing(self):
+        self.client.force_authenticate(user=self.tenant)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_other_renter_cannot_open_the_listing(self):
+        self.client.force_authenticate(user=self.stranger)
+
+        response = self.client.get(f'/listings/{self.listing.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_leased_listing_is_not_in_public_results(self):
+        response = self.client.get('/listings/')
+
+        self.assertNotIn('Leased home', _titles_from_list_response(response))
+
+
+class SavedListingsForOtherRolesTests(APITestCase):
+
+    def test_landlord_saved_list_is_empty_not_an_error(self):
+        landlord, profile = _make_landlord('saved-landlord@example.com', 'GHA-SV1')
+        _make_listing(profile, 'Some home')
+        self.client.force_authenticate(user=landlord)
+
+        response = self.client.get('/listings/saved/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(list(data), [])
+
+
+class ListingCleanTests(APITestCase):
+    # Listing.clean() tidies prices that don't apply to the listing type.
+    # Django calls clean() from ModelForms (so: the Django admin) via
+    # full_clean(); a plain .save() does not call it.
+
+    def setUp(self):
+        _, self.profile = _make_landlord('clean-owner@example.com', 'GHA-CL1')
+
+    def test_rent_listing_drops_one_time_price(self):
+        listing = Listing(
+            landlord_profile=self.profile, title='Rent', listing_type=Listing.ListingType.RENT,
+            price_monthly='1500.00', price_one_time='90000.00',
+        )
+
+        listing.clean()
+
+        self.assertIsNone(listing.price_one_time)
+        self.assertEqual(listing.price_monthly, '1500.00')
+
+    def test_buy_listing_drops_monthly_price_and_advance(self):
+        listing = Listing(
+            landlord_profile=self.profile, title='Buy', listing_type=Listing.ListingType.BUY,
+            price_monthly='1500.00', price_one_time='90000.00',
+            advance_rent_period=Listing.AdvanceRentPeriod.ONE_YEAR,
+        )
+
+        listing.clean()
+
+        self.assertIsNone(listing.price_monthly)
+        self.assertEqual(listing.advance_rent_period, Listing.AdvanceRentPeriod.NONE)
+        self.assertEqual(listing.price_one_time, '90000.00')

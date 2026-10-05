@@ -923,3 +923,275 @@ class PaymentAccessRuleTests(APITestCase):
         response = self.client.post('/payments/unlock-listing/', {'listing_id': 'abc'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+PLANS = dict(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+# Fake plan codes, so these tests never depend on the real ones in .env.
+
+
+def post_webhook(client, event, data):
+    # Sends a correctly signed webhook, the way Paystack would.
+    body = json.dumps({'event': event, 'data': data}).encode('utf-8')
+    return client.post(
+        '/payments/webhook/', data=body, content_type='application/json',
+        HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+    )
+
+
+@override_settings(**PLANS)
+class StartPaymentEdgeCaseTests(APITestCase):
+    # The "starting a payment" views when the input or Paystack is wrong.
+
+    def setUp(self):
+        InitiateListingUnlockTests.setUp(self)
+        # Borrow the verified renter + published listing without
+        # inheriting (inheriting would re-run that class's tests here).
+        self.landlord_user.is_verified = True
+        self.landlord_user.save()
+
+    @patch('payments.paystack.initialize_transaction')
+    def test_unknown_tier_is_400_and_never_reaches_paystack(self, mock_init):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        for tier in ('gold', 'free', '', None):
+            with self.subTest(tier=tier):
+                response = self.client.post('/payments/subscribe/', {'tier': tier}, format='json')
+
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_init.assert_not_called()
+        # 'free' is refused too: the Free plan is the default, not
+        # something you pay for.
+
+    @patch('payments.paystack.initialize_transaction', return_value={'status': False, 'message': 'Invalid email'})
+    def test_unlock_reports_paystack_refusal_and_unlocks_nothing(self, mock_init):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post('/payments/unlock-listing/', {'listing_id': self.listing.id}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error'], 'Invalid email')
+        self.assertFalse(ListingUnlock.objects.exists())
+
+
+@override_settings(**PLANS)
+class WebhookEdgeCaseTests(APITestCase):
+    # Webhook deliveries we can't act on. The rule for all of them:
+    # answer 200 (so Paystack stops retrying something retrying won't
+    # fix) and change nothing.
+
+    def setUp(self):
+        WebhookTests.setUp(self)
+        self.renter_user = User.objects.create_user(
+            email='webhook-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Webhook Renter')
+
+        from listings.models import Listing
+        self.listing = Listing.objects.create(
+            landlord_profile=self.landlord_profile, title='Webhook listing', description='Test',
+            listing_type='rent', price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='1 Hook Rd', neighborhood='Osu',
+            city='Accra', status=Listing.Status.PUBLISHED,
+        )
+
+    def _unlock_charge(self, user_id, listing_id):
+        return {
+            'status': 'success', 'reference': 'T_STALE', 'amount': settings.LISTING_UNLOCK_PRICE_PESEWAS,
+            'currency': 'GHS',
+            'metadata': {'purpose': 'listing_unlock', 'user_id': user_id, 'listing_id': listing_id},
+        }
+
+    def test_unlock_charge_for_a_deleted_listing_is_ignored(self):
+        listing_id = self.listing.id
+        self.listing.delete()
+
+        response = post_webhook(self.client, 'charge.success', self._unlock_charge(self.renter_user.id, listing_id))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(ListingUnlock.objects.exists())
+
+    def test_unlock_charge_for_an_unknown_user_is_ignored(self):
+        response = post_webhook(self.client, 'charge.success', self._unlock_charge(999999, self.listing.id))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(ListingUnlock.objects.exists())
+
+    def test_plan_charge_for_an_unknown_email_creates_nothing(self):
+        response = post_webhook(self.client, 'charge.success', {
+            'customer': {'email': 'stranger@example.com'},
+            'plan_object': {'plan_code': 'PLN_agent_test'},
+            'paid_at': timezone.now().isoformat(),
+            'reference': 'T_UNKNOWN',
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(LandlordSubscription.objects.exists())
+
+    def test_subscription_create_for_an_unknown_email_creates_nothing(self):
+        response = post_webhook(self.client, 'subscription.create', {
+            'customer': {'email': 'stranger@example.com', 'customer_code': 'CUS_x'},
+            'subscription_code': 'SUB_x', 'plan': {'plan_code': 'PLN_agent_test'},
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(LandlordSubscription.objects.exists())
+
+    def test_subscription_create_for_a_renter_creates_nothing(self):
+        # A renter has no LandlordProfile; this used to be a 500 (and a
+        # 500 makes Paystack retry the same webhook over and over).
+        response = post_webhook(self.client, 'subscription.create', {
+            'customer': {'email': self.renter_user.email, 'customer_code': 'CUS_r'},
+            'subscription_code': 'SUB_r', 'plan': {'plan_code': 'PLN_agent_test'},
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(LandlordSubscription.objects.exists())
+
+    def test_subscription_create_for_the_old_plan_mid_switch_is_ignored(self):
+        LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile, tier=LandlordSubscription.Tier.LORD,
+            status=LandlordSubscription.Status.ACTIVE,
+            current_period_end=timezone.now() + timedelta(days=20),
+            paystack_subscription_code='SUB_new', superseded_subscription_code='SUB_old',
+        )
+
+        response = post_webhook(self.client, 'subscription.create', {
+            'customer': {'email': self.landlord_user.email, 'customer_code': 'CUS_l'},
+            'subscription_code': 'SUB_old', 'plan': {'plan_code': 'PLN_agent_test'},
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.paystack_subscription_code, 'SUB_new')
+        self.assertEqual(subscription.tier, LandlordSubscription.Tier.LORD)
+        # A late delivery about the plan they switched AWAY from must not
+        # overwrite the plan they're on now.
+
+    def test_invoice_update_without_subscription_details_changes_nothing(self):
+        period_end = timezone.now() + timedelta(days=5)
+        LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile, tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.PAST_DUE, current_period_end=period_end,
+            paystack_subscription_code='SUB_x',
+        )
+
+        response = post_webhook(self.client, 'invoice.update', {
+            'paid': True, 'status': 'success', 'customer': {'email': self.landlord_user.email},
+            'subscription': 'SUB_x',
+            # A plain string where Paystack sends an object.
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.status, LandlordSubscription.Status.PAST_DUE)
+        self.assertEqual(subscription.current_period_end, period_end)
+
+    def test_invoice_update_falls_back_to_customer_email(self):
+        # Older rows may not have the subscription code stored; the
+        # landlord's email still finds the right row.
+        LandlordSubscription.objects.create(
+            landlord_profile=self.landlord_profile, tier=LandlordSubscription.Tier.AGENT,
+            status=LandlordSubscription.Status.PAST_DUE,
+            current_period_end=timezone.now() - timedelta(days=1),
+        )
+
+        response = post_webhook(self.client, 'invoice.update', {
+            'paid': True, 'status': 'success', 'customer': {'email': self.landlord_user.email},
+            'subscription': {'subscription_code': 'SUB_not_stored', 'next_payment_date': '2027-01-15T00:00:00.000Z'},
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        subscription = LandlordSubscription.objects.get(landlord_profile=self.landlord_profile)
+        self.assertEqual(subscription.status, LandlordSubscription.Status.ACTIVE)
+        self.assertEqual(subscription.current_period_end.year, 2027)
+
+    def test_invoice_update_nobody_matches_is_ignored(self):
+        response = post_webhook(self.client, 'invoice.update', {
+            'paid': True, 'status': 'success', 'customer': {'email': 'stranger@example.com'},
+            'subscription': {'subscription_code': 'SUB_nobody', 'next_payment_date': '2027-01-15T00:00:00.000Z'},
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(LandlordSubscription.objects.exists())
+
+
+class PeriodEndParsingTests(APITestCase):
+    # _period_end_from_paystack_data reads "when is the next payment" out
+    # of a Paystack payload. Plain function, so it's tested directly
+    # instead of through a whole webhook.
+
+    def test_top_level_date_wins(self):
+        from .views import _period_end_from_paystack_data
+
+        result = _period_end_from_paystack_data({
+            'next_payment_date': '2027-02-01T00:00:00.000Z',
+            'plan_object': {'next_payment_date': '2030-01-01T00:00:00.000Z'},
+        })
+
+        self.assertEqual((result.year, result.month), (2027, 2))
+
+    def test_falls_back_to_plan_object(self):
+        from .views import _period_end_from_paystack_data
+
+        result = _period_end_from_paystack_data({'plan_object': {'next_payment_date': '2027-03-01T00:00:00.000Z'}})
+
+        self.assertEqual((result.year, result.month), (2027, 3))
+
+    def test_missing_or_unparseable_date_is_none(self):
+        from .views import _period_end_from_paystack_data
+
+        for data in ({}, {'next_payment_date': 'next tuesday'}, {'plan_object': 'not-a-dict'}):
+            with self.subTest(data=data):
+                self.assertIsNone(_period_end_from_paystack_data(data))
+                # None means "don't touch current_period_end", rather
+                # than storing a garbage date.
+
+
+class PaystackClientRequestTests(APITestCase):
+    # What paystack.py actually sends. requests.request is patched, so
+    # nothing leaves the machine; we inspect the call it WOULD have made.
+
+    def test_non_json_reply_degrades_to_status_false(self):
+        with patch('payments.paystack.requests.request') as mock_request:
+            mock_request.return_value.status_code = 502
+            mock_request.return_value.json.side_effect = ValueError('No JSON object could be decoded')
+            # e.g. an HTML error page from a proxy during an outage
+
+            result = paystack.verify_transaction('T_ANY')
+
+        self.assertFalse(result['status'])
+
+    def test_initialize_sends_plan_and_metadata(self):
+        with patch('payments.paystack.requests.request') as mock_request:
+            mock_request.return_value.json.return_value = {'status': True, 'data': {}}
+
+            paystack.initialize_transaction(
+                email='payer@example.com', amount_kobo=25000, callback_url='http://x.com',
+                plan_code='PLN_agent_test', metadata={'purpose': 'subscription'},
+            )
+
+        payload = mock_request.call_args.kwargs['json']
+        self.assertEqual(payload['plan'], 'PLN_agent_test')
+        self.assertEqual(payload['metadata'], {'purpose': 'subscription'})
+        self.assertEqual(payload['email'], 'payer@example.com')
+
+    def test_fetch_subscription_asks_for_that_code(self):
+        with patch('payments.paystack.requests.request') as mock_request:
+            mock_request.return_value.json.return_value = {'status': True, 'data': {}}
+
+            paystack.fetch_subscription('SUB_abc')
+
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, 'GET')
+        self.assertTrue(url.endswith('/subscription/SUB_abc'))
+
+    def test_disable_subscription_sends_code_and_token(self):
+        with patch('payments.paystack.requests.request') as mock_request:
+            mock_request.return_value.json.return_value = {'status': True}
+
+            paystack.disable_subscription('SUB_abc', 'tok_123')
+
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, 'POST')
+        self.assertTrue(url.endswith('/subscription/disable'))
+        self.assertEqual(mock_request.call_args.kwargs['json'], {'code': 'SUB_abc', 'token': 'tok_123'})

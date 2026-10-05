@@ -470,3 +470,114 @@ class LeasePartiesAreFixedTests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class LeasePrivacyAndEditRuleTests(APITestCase):
+    # A tenant must never be able to see another tenant's lease, plus the
+    # edit rules not covered above. Leases are out of the MVP UI, but the
+    # endpoints still exist, so their access rules still need to hold.
+
+    def setUp(self):
+        LeaseTests.setUp(self)
+        self.lease = Lease.objects.create(
+            listing=self.listing, renter_profile=self.renter_profile,
+            landlord_profile=self.landlord_profile, rent_amount_monthly='2000.00',
+            deposit_amount='24000.00', advance_rent_period='1_year',
+            start_date=date(2026, 1, 1), end_date=date(2026, 12, 31),
+        )
+        self.record = LeaseRecord.objects.create(
+            lease=self.lease, record_type='receipt', amount='24000.00', occurred_at=date(2026, 1, 1),
+        )
+
+        self.other_renter_user = User.objects.create_user(
+            email='lease-other-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.other_renter_user, full_name='Other Renter')
+
+    def test_other_renter_cannot_open_the_lease(self):
+        self.client.force_authenticate(user=self.other_renter_user)
+
+        response = self.client.get(f'/leases/{self.lease.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        # 404, not 403: a 403 would confirm the lease exists.
+
+    def test_other_renter_cannot_list_or_open_the_lease_records(self):
+        self.client.force_authenticate(user=self.other_renter_user)
+
+        listed = self.client.get('/leases/records/')
+        opened = self.client.get(f'/leases/records/{self.record.id}/')
+
+        data = listed.data['results'] if 'results' in listed.data else listed.data
+        self.assertEqual(list(data), [])
+        self.assertEqual(opened.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_other_landlord_cannot_open_or_edit_the_lease(self):
+        self.client.force_authenticate(user=self.other_landlord_user)
+
+        opened = self.client.get(f'/leases/{self.lease.id}/')
+        edited = self.client.patch(f'/leases/{self.lease.id}/', {'deposit_amount': '1.00'}, format='json')
+
+        self.assertEqual(opened.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(edited.status_code, status.HTTP_404_NOT_FOUND)
+        self.lease.refresh_from_db()
+        self.assertEqual(str(self.lease.deposit_amount), '24000.00')
+
+    def test_renter_cannot_edit_their_own_lease(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.patch(f'/leases/{self.lease.id}/', {'deposit_amount': '1.00'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.lease.refresh_from_db()
+        self.assertEqual(str(self.lease.deposit_amount), '24000.00')
+        # The renter can SEE their lease, so get_object() finds it; the
+        # explicit role check in perform_update is what stops the edit.
+
+    def test_landlord_cannot_log_a_record_on_another_landlords_lease(self):
+        self.client.force_authenticate(user=self.other_landlord_user)
+
+        response = self.client.post('/leases/records/', {
+            'lease': self.lease.id, 'record_type': 'receipt', 'amount': '5.00', 'occurred_at': '2026-02-01',
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.lease.records.count(), 1)
+
+    def test_staff_cannot_record_a_lease_with_the_wrong_landlord(self):
+        self.client.force_authenticate(user=self.staff_user)
+        payload = dict(self.lease_payload, landlord_profile=self.other_landlord_profile.id)
+
+        response = self.client.post('/leases/', payload, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(Lease.objects.count(), 1)
+        self.listing.refresh_from_db()
+        self.assertEqual(self.listing.status, Listing.Status.PUBLISHED)
+        # Nothing saved and the listing is still live.
+
+    def test_staff_lease_on_a_draft_listing_leaves_the_listing_alone(self):
+        draft = Listing.objects.create(
+            landlord_profile=self.landlord_profile, title='Old draft', description='Test',
+            listing_type='rent', price_monthly='2000.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise='12 Draft Rd', neighborhood='Osu',
+            city='Accra', status=Listing.Status.DRAFT,
+        )
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post('/leases/', dict(self.lease_payload, listing=draft.id), format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, Listing.Status.DRAFT)
+        # Only a PUBLISHED listing flips to leased. Backfilling an old
+        # lease must not turn a draft into a "leased" listing.
+
+    def test_declining_a_lease_that_is_not_pending_is_400(self):
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.post(f'/leases/{self.lease.id}/decline/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.lease.refresh_from_db()
+        self.assertEqual(self.lease.status, Lease.Status.ACTIVE)

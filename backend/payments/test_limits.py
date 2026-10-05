@@ -9,8 +9,10 @@ is tested in payments/tests.py next to the other webhook tests.
 
 from datetime import timedelta
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -450,3 +452,49 @@ class EnforceListingCapsCommandTests(LimitTestBase):
 
         self.assertFalse(Listing.objects.filter(status=Listing.Status.PAUSED).exists())
         self.assertIn('would pause 2', out.getvalue())
+
+    def test_dry_run_reports_paused_listings_that_may_come_back(self):
+        self.make(Listing.Status.PAUSED, count=2, published_days_ago=10)
+        out = StringIO()
+
+        call_command('enforce_listing_caps', '--dry-run', stdout=out)
+
+        self.assertIn('2 paused', out.getvalue())
+        self.assertEqual(Listing.objects.filter(status=Listing.Status.PAUSED).count(), 2)
+
+
+@override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+class EnforceListingCapsRetryTests(LimitTestBase):
+    # The command's first job: finish plan switches where turning off the
+    # OLD Paystack subscription failed earlier (Paystack was down).
+
+    def _switched_plan(self):
+        return self.subscribe(
+            LandlordSubscription.Tier.LORD, paystack_plan_code='PLN_lord_test',
+            paystack_subscription_code='SUB_new', paystack_email_token='tok_new',
+            superseded_subscription_code='SUB_old', superseded_email_token='tok_old',
+        )
+
+    @patch('payments.paystack.disable_subscription', return_value={'status': True})
+    def test_retries_turning_off_the_old_subscription(self, mock_disable):
+        subscription = self._switched_plan()
+        out = StringIO()
+
+        call_command('enforce_listing_caps', stdout=out)
+
+        mock_disable.assert_called_once_with('SUB_old', 'tok_old')
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.superseded_subscription_code, '')
+        self.assertIn('retired 1', out.getvalue())
+
+    @patch('payments.paystack.disable_subscription')
+    def test_dry_run_does_not_call_paystack(self, mock_disable):
+        subscription = self._switched_plan()
+        out = StringIO()
+
+        call_command('enforce_listing_caps', '--dry-run', stdout=out)
+
+        mock_disable.assert_not_called()
+        subscription.refresh_from_db()
+        self.assertEqual(subscription.superseded_subscription_code, 'SUB_old')
+        self.assertIn('Would retry', out.getvalue())
