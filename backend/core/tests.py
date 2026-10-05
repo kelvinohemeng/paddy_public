@@ -190,3 +190,56 @@ class AmenityWritePermissionTests(APITestCase):
         response = self.client.delete(f'/core/amenities/{self.amenity.id}/')
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class SeedDevDataCommandTests(APITestCase):
+    # `python manage.py seed_dev_data` fills a local database with demo
+    # rows. It isn't used in production, but it breaks quietly whenever a
+    # model gains a required field, and nobody notices until they need
+    # it. This smoke test runs it, so CI notices instead.
+
+    def _seed(self, *args):
+        from io import StringIO
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command('seed_dev_data', *args, stdout=out)
+        return out.getvalue()
+
+    def _counts(self):
+        from listings.models import Listing
+        return {
+            'users': User.objects.filter(email__contains='+demo@').count(),
+            'listings': Listing.objects.filter(title__endswith='(demo)').count(),
+            'amenities': Amenity.objects.count(),
+        }
+
+    def test_seed_runs_and_creates_demo_data(self):
+        output = self._seed()
+
+        counts = self._counts()
+        self.assertGreater(counts['users'], 0)
+        self.assertGreater(counts['listings'], 0)
+        self.assertIn('Seed complete', output)
+
+    def test_running_it_twice_creates_no_duplicates(self):
+        self._seed()
+        first = self._counts()
+
+        self._seed()
+
+        self.assertEqual(self._counts(), first)
+        # The command promises to be safe to re-run (get_or_create
+        # everywhere). This is the line that catches a plain create()
+        # sneaking in.
+
+    def test_flush_removes_demo_users_only(self):
+        real_user = User.objects.create_user(email='real-person@example.com', password='testpass123')
+        self._seed()
+
+        self._seed('--flush')
+
+        self.assertTrue(User.objects.filter(id=real_user.id).exists())
+        self.assertGreater(self._counts()['users'], 0)
+        # --flush deletes the demo rows and seeds them again; it must
+        # never touch an account that isn't a "+demo@" one.

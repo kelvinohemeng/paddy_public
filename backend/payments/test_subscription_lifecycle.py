@@ -518,3 +518,20 @@ class PlanChargeReplayTests(LifecycleTestBase):
         sub = self.subscription()
         self.assertIsNone(sub.past_due_since)
         self.assertGreater(sub.last_plan_charge_at, timezone.now() - timedelta(minutes=1))
+
+
+class CancelWithoutStoredTokenTests(LifecycleTestBase):
+
+    @patch('payments.paystack.disable_subscription', return_value=OK)
+    @patch('payments.paystack.fetch_subscription', return_value=PAYSTACK_DOWN)
+    def test_cancel_is_502_when_the_token_cant_be_fetched(self, mock_fetch, mock_disable):
+        # An older row with no email token, and Paystack is down when we
+        # ask for it: we can't disable the plan, so nothing may change.
+        self.active_plan(LandlordSubscription.Tier.AGENT, 'SUB_1', 'PLN_agent_test', token='')
+        self.client.force_authenticate(user=self.landlord)
+
+        response = self.client.post('/payments/subscription/cancel/')
+
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+        mock_disable.assert_not_called()
+        self.assertFalse(self.subscription().cancel_at_period_end)
