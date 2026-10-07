@@ -44,6 +44,9 @@ export default function InterceptedListingShowPanel({
           ? "Jump to any step — Save changes is on the last one."
           : listingStatusHint(status)
       }
+      // Rejected needs the landlord's attention, so its hint is red —
+      // same as the full-page fallback.
+      subtitleClassName={!editing && status === "rejected" ? "text-red-600" : undefined}
       dismissOnOutsideClick={!editing}
       // While editing, the stepper fills the header's actions slot with
       // its own Back / Next, so nothing is passed here.

@@ -120,6 +120,14 @@ class Listing(models.Model):
     # Defaults to draft — a brand new listing starts unpublished, matches
     # the staff-verification workflow (nothing goes live until reviewed)
 
+    rejection_reason = models.TextField(blank=True, default='')
+    # Why staff rejected this listing, written by the reviewer in
+    # review_listing (listings/views.py) and shown to the landlord so
+    # they know what to fix before resubmitting. Required on every
+    # rejection, cleared when the listing is published. Empty string,
+    # not NULL, for "no reason": Django's convention for text fields,
+    # so there's only one way to say "nothing" and checks stay simple.
+
     virtual_tour_url = models.URLField(blank=True)
     # URLField — NEW, a CharField variant that also validates the value
     # actually looks like a real URL. blank=True since the photosphere

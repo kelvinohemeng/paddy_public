@@ -56,6 +56,7 @@ export function SideDrawer({
   title,
   showTitle = false,
   subtitle,
+  subtitleClassName,
   expandHref,
   dismissOnOutsideClick = true,
   actions,
@@ -66,6 +67,10 @@ export function SideDrawer({
   title: string;
   showTitle?: boolean;
   subtitle?: string;
+  /** Extra classes for the subtitle line — e.g. the listing preview turns
+   *  it red when the listing was rejected. Keeps this drawer generic: it
+   *  never needs to know what it's showing. */
+  subtitleClassName?: string;
   /** Expand by opening this full page instead of widening in place. */
   expandHref?: string;
   /** Forms pass false so a stray click on the dimmed page can't discard
@@ -174,7 +179,7 @@ export function SideDrawer({
                 {title}
               </Dialog.Title>
               {showTitle && subtitle && (
-                <p className="font-label truncate text-xs font-medium text-black/60">
+                <p className={cn("font-label text-xs font-medium text-black/60", subtitleClassName)}>
                   {subtitle}
                 </p>
               )}

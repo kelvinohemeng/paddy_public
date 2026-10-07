@@ -625,6 +625,21 @@ class ListingViewSet(viewsets.ModelViewSet):
             # the status precondition so a malformed body reports the
             # malformed body, not the row's state.
 
+        reason = str(request.data.get('reason') or '').strip()
+        # request.data is whatever JSON the client sent: the reason could
+        # be missing, null, a number... str(... or '') turns all of those
+        # into a plain string, and .strip() means "   " counts as empty.
+
+        if decision == Listing.Status.REJECTED and not reason:
+            return Response(
+                {'error': 'A reason is required when rejecting a listing'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+            # A rejection with no reason leaves the landlord guessing what
+            # to fix. Checked here, with the other body checks and before
+            # the status precondition, and before anything is assigned to
+            # the listing — so a refused request changes nothing at all.
+
         if listing.status != Listing.Status.PENDING_REVIEW:
             return Response(
                 {'error': 'Only listings pending review can be reviewed'},
@@ -648,6 +663,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         # is_staff_verified badge keys off this (not verified_by_staff
         # — see serializers.py), precisely so an ADMIN approval shows
         # the badge too even though no StaffProfile exists behind it.
+        listing.rejection_reason = reason if decision == Listing.Status.REJECTED else ''
 
         if decision == Listing.Status.PUBLISHED:
             listing.published_at = now
@@ -668,7 +684,7 @@ class ListingViewSet(viewsets.ModelViewSet):
         # nullable by design — never the gate for the badge.
 
         listing.save(
-            update_fields=['status', 'verified_at', 'published_at', 'verified_by_staff']
+            update_fields=['status', 'verified_at', 'published_at', 'verified_by_staff', 'rejection_reason']
         )
         # Scoped write — same update_fields discipline as
         # submit-for-review: only the review columns change, a
