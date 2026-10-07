@@ -14,7 +14,8 @@
 //
 // Each card: the listing (cover, title, price, details, landlord row),
 // then Approve & publish (→ published) / Reject (→ rejected) via
-// use-review-listing.ts. A decided card drops out on the refetch (its
+// use-review-listing.ts. Reject opens a dialog for the reason, which the
+// landlord sees on their listing. A decided card drops out on the refetch (its
 // status no longer matches the filter) — that disappearance is the
 // confirmation, with a Published / Rejected badge in the meantime.
 
@@ -40,15 +41,29 @@ import {
   useReviewListing,
   type ReviewDecision,
 } from "@/hooks/use-review-listing";
+import { useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 
 // One card owns its own review hook — submitting states and errors stay
 // per card (approving card 3 must never disable card 5's buttons or show
 // card 5 an error from card 3's request).
 function ReviewCard({ listing }: { listing: any }) {
   const { review, isSubmitting, error, decidedAs } = useReviewListing(listing.id);
+  const [reason, setReason] = useState<string>("");
 
-  function decide(decision: ReviewDecision) {
-    review(decision);
+  function decide(decision: ReviewDecision, reason?: string) {
+    // Only a rejection needs a reason (the backend 400s without one);
+    // approving sends none.
+    if (decision === "rejected" && !reason?.trim()) return;
+
+    review(decision, reason);
   }
 
   return (
@@ -86,16 +101,30 @@ function ReviewCard({ listing }: { listing: any }) {
             onClick={() => decide("published")}
           >
             Approve &amp; publish
-          </PaddyButton>
-          <PaddyButton
-            variant="secondary"
-            size="sm"
-            leftIcon={X}
-            disabled={isSubmitting}
-            onClick={() => decide("rejected")}
-          >
-            Reject
-          </PaddyButton>
+            </PaddyButton>
+          <Dialog>
+            <DialogTrigger asChild>
+              <PaddyButton variant="secondary" size="sm" leftIcon={X} disabled={isSubmitting}>
+                Reject
+              </PaddyButton>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>What is the reason for the rejection?</DialogTitle>
+              </DialogHeader>
+                <Textarea id="firstName" className="h-8" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Blurry, low-quality image" />
+                <PaddyButton
+                  variant="secondary"
+                  size="sm"
+                  leftIcon={X}
+                  disabled={isSubmitting || !reason.trim()}
+                  onClick={() => decide('rejected', reason)}
+                >
+                  Reject
+                </PaddyButton>
+            </DialogContent>
+          </Dialog>
+
         </div>
       )}
     </div>
@@ -107,6 +136,7 @@ export default function ReviewsPage() {
   const userId = params.user;
   const { data: identity } = useMe();
   const role: string | undefined = identity?.role;
+
 
   // GET /listings/ with deliberately NO ?mine filter — the queue needs
   // every landlord's pending rows. The backend role-scopes this: staff /
@@ -173,7 +203,7 @@ export default function ReviewsPage() {
       title="Review Queue"
       action={<PaddyBadge state="warning">{pending.length} pending</PaddyBadge>}
     >
-      <ListingGrid className="gap-x-6 gap-y-[30px]">
+      <ListingGrid className="relative gap-x-6 gap-y-[30px]">
         {pending.map((listing: any) => (
           <ReviewCard key={listing.id} listing={listing} />
         ))}

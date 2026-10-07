@@ -142,7 +142,7 @@ export function Sidebar() {
       >
         <NavGroups />
       </ShadcnSidebarContent>
-      <SidebarFooter>
+      {/*<SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton>
@@ -150,7 +150,7 @@ export function Sidebar() {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
-      </SidebarFooter>
+      </SidebarFooter>*/}
     </ShadcnSidebar>
   );
 }

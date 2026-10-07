@@ -39,7 +39,7 @@ export function DashboardPage({
   return (
     <div
       className={cn(
-        "w-full px-4 pt-8 pb-16 md:px-8 md:pt-16",
+        "w-full px-4 pt-8 pb-16 md:px-8 md:pt-16 relative",
         width === "lg" ? "lg:pt-[115px]" : "lg:pt-[93px]",
         className,
       )}

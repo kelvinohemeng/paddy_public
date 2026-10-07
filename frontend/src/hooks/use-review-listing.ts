@@ -33,7 +33,7 @@ export function useReviewListing(listingId: string | number) {
   const [error, setError] = useState<string | null>(null);
   const [decidedAs, setDecidedAs] = useState<ReviewDecision | null>(null);
 
-  async function review(decision: ReviewDecision) {
+  async function review(decision: ReviewDecision, reason?: string) {
     if (phase === "submitting") return;
     setPhase("submitting");
     setError(null);
@@ -41,7 +41,7 @@ export function useReviewListing(listingId: string | number) {
     try {
       const res = await authedFetch(`/listings/${listingId}/review/`, {
         method: "POST",
-        json: { decision },
+        json: { decision, reason },
       });
 
       if (!res.ok) {

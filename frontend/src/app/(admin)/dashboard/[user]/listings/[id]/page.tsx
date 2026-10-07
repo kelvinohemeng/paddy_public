@@ -56,7 +56,7 @@ export default function ListingShowPage({
                 Listing preview
               </h1>
               {listingStatusHint(status) && (
-                <p className="font-label text-xs font-medium text-black/60">
+                <p className={`font-label text-xs font-medium ${status === "rejected" ? "text-red-600" : "text-black/60"}`}>
                   {listingStatusHint(status)}
                 </p>
               )}

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { FavoriteButton } from "@/components/favorite-button";
 import { useSavedListings } from "@/hooks/use-saved-listings";
+import type { ListingStatus } from "@/lib/listing-status";
 import { BookingCard, TrustNote, type LandlordContact } from "./booking-card";
 import { PhotoGallery } from "./photo-gallery";
 import { PropertyMap } from "./property-map";
@@ -23,27 +24,59 @@ function formatPrice(raw: string): string {
   return amount.toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
+// ListingPhotoSerializer: fields = ['id', 'image', 'order', 'is_cover'].
+export type DetailListingPhoto = {
+  id: number;
+  image: string;
+  order: number;
+  is_cover: boolean;
+};
+
+// AmenitySerializer: fields = ['id', 'name', 'slug'].
+export type DetailListingAmenity = { id: number; name: string; slug: string };
+
+// Mirrors backend ListingSerializer (listings/serializers.py): every
+// Listing field except landlord_profile, verified_at, published_at and
+// verified_by_staff, plus the computed fields. Empty text fields come
+// back as "" (Django's blank=True), not null.
 export type DetailListing = {
-  id: number | string;
-  slug?: string;
+  id: number;
+  slug: string;
   title: string;
-  description?: string | null;
-  city?: string | null;
-  neighborhood?: string | null;
+  description: string;
+  listing_type: "rent" | "buy";
+  // DRF sends decimals as strings ("4000.00"); null on the price that
+  // doesn't apply to the listing type.
+  price_monthly: string | null;
+  price_one_time: string | null;
+  advance_rent_period: "none" | "6_months" | "1_year" | null;
   bedrooms: number;
   bathrooms: number;
-  listing_type: "rent" | "buy";
-  price_monthly?: string | null;
-  price_one_time?: string | null;
-  advance_rent_period?: string | null;
-  location?: string | null;
-  photos?: any[];
-  is_unlocked?: boolean;
-  is_staff_verified?: boolean;
-  address_precise?: string | null;
-  landlord_contact?: LandlordContact;
-  landlord_public?: { full_name: string; id_verified: boolean } | null;
-  amenities_detail?: { id: number; name: string; slug: string }[];
+  // Amenity ids — the write shape. Display from amenities_detail.
+  amenities: number[];
+  amenities_detail: DetailListingAmenity[];
+  // EWKT, "SRID=4326;POINT (lng lat)". Snapped to a ~550 m grid cell
+  // unless the viewer has unlocked the listing, owns it, or is staff.
+  location: string | null;
+  // null until unlocked (same rule as location).
+  address_precise: string | null;
+  neighborhood: string;
+  city: string;
+  status: ListingStatus;
+  // Only sent to the owner and staff/admin — the key is missing for
+  // everyone else. "" when there's no reason (anything but rejected).
+  rejection_reason?: string;
+  // "" when there's no tour yet.
+  virtual_tour_url: string;
+  created_at: string;
+  photos: DetailListingPhoto[];
+  is_unlocked: boolean;
+  is_staff_verified: boolean;
+  // Always false for anyone who isn't a renter.
+  is_saved: boolean;
+  // null until unlocked.
+  landlord_contact: LandlordContact;
+  landlord_public: { full_name: string; id_verified: boolean };
 };
 
 // Figma "Property Details" (section 170:1917, panel 171:2624). One
@@ -76,7 +109,9 @@ export function ListingDetail({
     .filter((url): url is string => Boolean(url));
 
   const rawPrice =
-    listing.listing_type === "buy" ? listing.price_one_time : listing.price_monthly;
+    listing.listing_type === "buy"
+      ? listing.price_one_time
+      : listing.price_monthly;
   // Figma: "GHC 4,000/ month". Card and detail both say GHC to match
   // the design (the ISO code is GHS — see lib/listing-card-data.ts).
   const priceLabel = rawPrice
@@ -84,9 +119,12 @@ export function ListingDetail({
     : null;
 
   const area = listing.neighborhood || listing.city || "Ghana";
-  const areaLine = [listing.neighborhood, listing.city].filter(Boolean).join(", ");
+  const areaLine = [listing.neighborhood, listing.city]
+    .filter(Boolean)
+    .join(", ");
   const isUnlocked = Boolean(listing.is_unlocked);
-  const landlordName = listing.landlord_public?.full_name?.trim() || "Name Unknown";
+  const landlordName =
+    listing.landlord_public?.full_name?.trim() || "Name Unknown";
   const landlordVerified = Boolean(listing.landlord_public?.id_verified);
 
   const pills = [
@@ -102,7 +140,11 @@ export function ListingDetail({
     bookingRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     if (!isUnlocked) {
       bookingRef.current?.animate(
-        [{ transform: "scale(1)" }, { transform: "scale(1.03)" }, { transform: "scale(1)" }],
+        [
+          { transform: "scale(1)" },
+          { transform: "scale(1.03)" },
+          { transform: "scale(1)" },
+        ],
         { duration: 450, easing: "ease-out" },
       );
       toast("Unlock this listing to contact the landlord directly.", {
@@ -129,6 +171,12 @@ export function ListingDetail({
 
   return (
     <article className="mx-auto w-full max-w-[845px] px-5 pb-16 md:px-8">
+      {/*Rejection Reason*/}
+      {listing.rejection_reason && (
+        <div className="border-red-500 border bg-red-50 rounded-md p-4">
+          <p className="text-red-500">{listing.rejection_reason}</p>
+        </div>
+      )}
       {/* Title row */}
       <div className="animate-in fade-in slide-in-from-bottom-2 flex items-end justify-between gap-4 duration-500">
         <h1 className="text-2xl leading-tight font-medium tracking-tight text-black/80">
@@ -188,7 +236,10 @@ export function ListingDetail({
               </span>
               {landlordName}
               {landlordVerified && (
-                <BadgeCheck className="size-3.5 fill-black text-white" aria-label="ID verified" />
+                <BadgeCheck
+                  className="size-3.5 fill-black text-white"
+                  aria-label="ID verified"
+                />
               )}
             </p>
             <p className="flex items-start gap-1.5 text-xs text-black/60">
@@ -201,7 +252,9 @@ export function ListingDetail({
 
           {listing.description && (
             <section className="space-y-2.5">
-              <h3 className="text-[11px] font-medium text-black/50">About this property</h3>
+              <h3 className="text-[11px] font-medium text-black/50">
+                About this property
+              </h3>
               <p className="text-[13px] leading-[1.6] whitespace-pre-wrap text-black/80">
                 {listing.description}
               </p>
@@ -272,7 +325,8 @@ export function ListingDetail({
           />
           {!isUnlocked && (
             <p className="text-xs text-black/50">
-              Approximate area. The exact location unlocks with the landlord&apos;s contact.
+              Approximate area. The exact location unlocks with the
+              landlord&apos;s contact.
             </p>
           )}
         </section>

@@ -1870,14 +1870,20 @@ class ListingReviewTests(APITestCase):
         self.client.force_authenticate(user=self.staff_user)
 
         response = self.client.post(
-            f'/listings/{self.pending.id}/review/', {'decision': 'rejected'}, format='json'
+            f'/listings/{self.pending.id}/review/',
+            {'decision': 'rejected', 'reason': '  Photos are blurry  '},
+            format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['status'], Listing.Status.REJECTED)
+        self.assertEqual(response.data['rejection_reason'], 'Photos are blurry')
+        # The reviewer sees the saved reason straight back, with the
+        # stray spaces around it trimmed.
 
         self.pending.refresh_from_db()
         self.assertEqual(self.pending.status, Listing.Status.REJECTED)
+        self.assertEqual(self.pending.rejection_reason, 'Photos are blurry')
         self.assertEqual(self.pending.verified_by_staff, self.staff_profile)
         self.assertIsNotNone(self.pending.verified_at)
         self.assertIsNone(self.pending.published_at)
@@ -1941,11 +1947,15 @@ class ListingReviewTests(APITestCase):
         self.client.force_authenticate(user=self.staff_user)
 
         response = self.client.post(
-            f'/listings/{self.published.id}/review/', {'decision': 'rejected'}, format='json'
+            f'/listings/{self.published.id}/review/',
+            {'decision': 'rejected', 'reason': 'Wrong price'},
+            format='json'
         )
+        # A reason is sent so the request gets past the "reason is
+        # required" check and this test really exercises the status rule.
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('error', response.data)
+        self.assertEqual(response.data['error'], 'Only listings pending review can be reviewed')
 
     def test_invalid_decision_is_rejected(self):
         self.client.force_authenticate(user=self.staff_user)
@@ -1980,6 +1990,201 @@ class ListingReviewTests(APITestCase):
         self.assertIsNone(self.pending.verified_by_staff)
         self.assertIsNotNone(self.pending.verified_at)
         self.assertIsNotNone(self.pending.published_at)
+
+    # --- rejection reasons ---------------------------------------------
+
+    def test_reject_without_reason_is_refused(self):
+        # A rejection with no reason leaves the landlord guessing what to
+        # fix, so the backend refuses it — and changes nothing at all.
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/', {'decision': 'rejected'}, format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error'], 'A reason is required when rejecting a listing')
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PENDING_REVIEW)
+        self.assertIsNone(self.pending.verified_at)
+        self.assertEqual(self.pending.rejection_reason, '')
+
+    def test_reject_with_blank_reason_is_refused(self):
+        # Only spaces counts as no reason — the view strips it first.
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/',
+            {'decision': 'rejected', 'reason': '   '},
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, Listing.Status.PENDING_REVIEW)
+
+    def test_approval_clears_an_old_rejection_reason(self):
+        # A listing that was rejected, fixed and resubmitted still carries
+        # the old reason while it waits in review. Approving it wipes the
+        # reason, so a live listing never shows a stale rejection note.
+        Listing.objects.filter(pk=self.pending.pk).update(rejection_reason='Photos are blurry')
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.post(
+            f'/listings/{self.pending.id}/review/',
+            {'decision': 'published', 'reason': 'ignored on approval'},
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['rejection_reason'], '')
+
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.rejection_reason, '')
+
+
+class RejectionReasonVisibilityTests(APITestCase):
+    # Who can READ rejection_reason. It's a note from paddy staff to the
+    # landlord, so only the owner and staff/admin get it. Everyone else
+    # gets a response with no rejection_reason key at all — including a
+    # renter who PAID to unlock the listing (unlocking buys the address
+    # and contact details, not staff's notes).
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email='reason-owner@example.com', password='pass123456', role='landlord'
+        )
+        owner_profile = LandlordProfile.objects.create(
+            user=self.owner, full_name='Reason Owner', national_id_number='GHA-R1',
+            preferred_payout_method='momo'
+        )
+        self.staff_user = User.objects.create_user(
+            email='reason-staff@example.com', password='pass123456', role='staff'
+        )
+        self.admin_user = User.objects.create_user(
+            email='reason-admin@example.com', password='pass123456', role='admin'
+        )
+        self.renter_user = User.objects.create_user(
+            email='reason-renter@example.com', password='pass123456', role='renter'
+        )
+
+        self.other_landlord = User.objects.create_user(
+            email='reason-other@example.com', password='pass123456', role='landlord'
+        )
+
+        base = {
+            'landlord_profile': owner_profile, 'description': 'Test',
+            'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+            'address_precise': '1 Reason Rd', 'neighborhood': 'Osu', 'city': 'Accra',
+            'rejection_reason': 'Photos are blurry',
+        }
+        self.rejected = Listing.objects.create(
+            title='Rejected listing', status=Listing.Status.REJECTED, **base
+        )
+        self.published = Listing.objects.create(
+            title='Published listing', status=Listing.Status.PUBLISHED, **base
+        )
+        # The published row carries a reason on purpose. Approval clears
+        # it in real use, so this stands in for "any leftover note" — the
+        # point is to prove the serializer hides it from outsiders even
+        # when there IS something to leak.
+
+    def test_owner_sees_rejection_reason(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get(f'/listings/{self.rejected.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['rejection_reason'], 'Photos are blurry')
+
+    def test_staff_sees_rejection_reason(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        response = self.client.get(f'/listings/{self.rejected.id}/')
+
+        self.assertEqual(response.data['rejection_reason'], 'Photos are blurry')
+
+    def test_admin_sees_rejection_reason(self):
+        self.client.force_authenticate(user=self.admin_user)
+
+        response = self.client.get(f'/listings/{self.rejected.id}/')
+
+        self.assertEqual(response.data['rejection_reason'], 'Photos are blurry')
+
+    def test_anonymous_does_not_get_rejection_reason(self):
+        response = self.client.get(f'/listings/{self.published.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('rejection_reason', response.data)
+
+    def test_other_landlord_does_not_get_rejection_reason(self):
+        self.client.force_authenticate(user=self.other_landlord)
+
+        response = self.client.get(f'/listings/{self.published.id}/')
+
+        self.assertNotIn('rejection_reason', response.data)
+
+    def test_renter_who_unlocked_does_not_get_rejection_reason(self):
+        # The important one: this renter passes _has_access (they paid),
+        # so they see the precise address — but still not staff's notes.
+        from payments.models import ListingUnlock
+
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.published)
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get(f'/listings/{self.published.id}/')
+
+        self.assertTrue(response.data['is_unlocked'])
+        self.assertNotIn('rejection_reason', response.data)
+
+    def test_listing_list_hides_rejection_reason_from_public(self):
+        # Same rule on the list endpoint the Discovery Hub uses, not just
+        # the detail one.
+        response = self.client.get('/listings/')
+
+        rows = response.data['results'] if isinstance(response.data, dict) else response.data
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertNotIn('rejection_reason', row)
+
+    def test_saved_homes_hides_rejection_reason_from_renter(self):
+        # Saved Homes nests the same ListingSerializer, so the same rule
+        # has to hold inside listing_detail too.
+        renter_profile = RenterProfile.objects.create(
+            user=self.renter_user, full_name='Reason Renter'
+        )
+        SavedListing.objects.create(renter_profile=renter_profile, listing=self.published)
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get('/listings/saved/')
+
+        rows = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn('rejection_reason', rows[0]['listing_detail'])
+
+    def test_landlord_cannot_write_rejection_reason(self):
+        # rejection_reason is read_only on the serializer: only staff set
+        # it, through the review action. A landlord sending it in a PATCH
+        # is silently ignored, the same way status is.
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.patch(
+            f'/listings/{self.rejected.id}/',
+            {'rejection_reason': 'All fixed, trust me', 'title': 'Rejected listing, fixed'},
+            format='json'
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # The PATCH itself succeeds (the title change lands) — so the
+        # reason staying put below is the read_only rule at work, not
+        # the whole request being refused for some other reason.
+
+        self.rejected.refresh_from_db()
+        self.assertEqual(self.rejected.title, 'Rejected listing, fixed')
+        self.assertEqual(self.rejected.rejection_reason, 'Photos are blurry')
 
 
 class AdminVisibilityTests(APITestCase):

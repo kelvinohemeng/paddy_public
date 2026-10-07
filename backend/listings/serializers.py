@@ -86,6 +86,10 @@ class ListingSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'status': {'read_only': True},
             'slug': {'read_only': True},
+            'rejection_reason': {'read_only': True},
+            # Written only by staff, through review_listing — never by a
+            # landlord's PATCH (DRF silently ignores read-only fields in
+            # request bodies, same as status above).
         }
         # read_only (not writable) — THE load-bearing half of exposing
         # status safely. Without this, removing status from exclude
@@ -149,6 +153,21 @@ class ListingSerializer(serializers.ModelSerializer):
         # at someone else's listing): have THEY specifically paid to
         # unlock THIS listing? .exists() rather than .first() — we only
         # need a yes/no, no need to fetch the actual row's data here
+
+    def _is_owner_or_reviewer(self, listing):
+        # Narrower than _has_access on purpose: _has_access also says yes
+        # to anyone who PAID to unlock this listing, and a renter who
+        # bought the address has no business reading staff's notes to the
+        # landlord. Review notes are between the landlord and paddy.
+
+        request = self.context.get('request')
+        if request is None or not request.user.is_authenticated:
+            return False
+
+        user = request.user
+        if user.role in [user.Role.STAFF, user.Role.ADMIN]:
+            return True
+        return listing.landlord_profile.user == user
 
     def get_is_unlocked(self, listing):
         return self._has_access(listing)
@@ -251,6 +270,15 @@ class ListingSerializer(serializers.ModelSerializer):
                 # the OUTPUT changes — instance.location itself is never
                 # modified, and the bbox filter in get_queryset still
                 # queries the real column.
+
+        if not self._is_owner_or_reviewer(instance):
+            data.pop('rejection_reason', None)
+            # Deliberately OUTSIDE the `if not self._has_access` block
+            # above: a renter who paid to unlock this listing HAS access,
+            # so nesting this inside would skip it and show them staff's
+            # notes. Removed outright (not set to None like
+            # address_precise) — nobody outside owner/staff needs to know
+            # the field exists.
 
         return data
 
