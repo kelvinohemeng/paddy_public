@@ -2150,17 +2150,40 @@ class RejectionReasonVisibilityTests(APITestCase):
         for row in rows:
             self.assertNotIn('rejection_reason', row)
 
+    def test_saved_homes_hides_rejection_reason_from_renter(self):
+        # Saved Homes nests the same ListingSerializer, so the same rule
+        # has to hold inside listing_detail too.
+        renter_profile = RenterProfile.objects.create(
+            user=self.renter_user, full_name='Reason Renter'
+        )
+        SavedListing.objects.create(renter_profile=renter_profile, listing=self.published)
+        self.client.force_authenticate(user=self.renter_user)
+
+        response = self.client.get('/listings/saved/')
+
+        rows = response.data['results'] if 'results' in response.data else response.data
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn('rejection_reason', rows[0]['listing_detail'])
+
     def test_landlord_cannot_write_rejection_reason(self):
         # rejection_reason is read_only on the serializer: only staff set
         # it, through the review action. A landlord sending it in a PATCH
         # is silently ignored, the same way status is.
         self.client.force_authenticate(user=self.owner)
 
-        self.client.patch(
-            f'/listings/{self.rejected.id}/', {'rejection_reason': ''}, format='json'
+        response = self.client.patch(
+            f'/listings/{self.rejected.id}/',
+            {'rejection_reason': 'All fixed, trust me', 'title': 'Rejected listing, fixed'},
+            format='json'
         )
 
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # The PATCH itself succeeds (the title change lands) — so the
+        # reason staying put below is the read_only rule at work, not
+        # the whole request being refused for some other reason.
+
         self.rejected.refresh_from_db()
+        self.assertEqual(self.rejected.title, 'Rejected listing, fixed')
         self.assertEqual(self.rejected.rejection_reason, 'Photos are blurry')
 
 
