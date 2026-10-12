@@ -68,6 +68,12 @@ class RegisterTests(APITestCase):
         self.assertEqual(user.role, 'renter')
         # Confirm the role was saved correctly
 
+        self.assertEqual(user.first_name, 'Test')
+        self.assertEqual(user.last_name, 'Renter')
+        self.assertEqual(RenterProfile.objects.get(user=user).full_name, 'Test Renter')
+        # The sign-up names are saved (they used to be validated and then
+        # dropped), so the onboarding screen can pre-fill them.
+
         self.assertTrue(RenterProfile.objects.filter(user=user).exists())
         # This is the important one — confirms our create() logic actually
         # created the MATCHING profile row too, not just the User alone.
@@ -693,7 +699,26 @@ class PasswordResetTests(APITestCase):
 class OnboardingTests(APITestCase):
     # Covers the deferred-role-selection flow: registration without a
     # role, then the dedicated POST /accounts/onboarding/ endpoint that
-    # sets it exactly once, post-auth.
+    # sets the role, the username and the person's name, each exactly
+    # once, post-auth.
+
+    def _payload(self, **overrides):
+        # A complete, valid onboarding body. Each test changes only the
+        # part it's about, so it's obvious what makes that request fail.
+        data = {
+            'role': 'renter',
+            'username': 'ama_mensah',
+            'first_name': 'Ama',
+            'last_name': 'Mensah',
+        }
+        data.update(overrides)
+        return {key: value for key, value in data.items() if value is not None}
+        # Passing role=None (etc.) leaves that key out of the body
+        # entirely, the way the frontend omits fields it doesn't ask for.
+
+    def _onboard(self, user, **overrides):
+        self.client.force_authenticate(user=user)
+        return self.client.post('/accounts/onboarding/', self._payload(**overrides), format='json')
 
     def test_registration_without_role_leaves_role_unset(self):
         data = {
@@ -709,12 +734,13 @@ class OnboardingTests(APITestCase):
 
         user = User.objects.get(email='noroleyet@example.com')
         self.assertIsNone(user.role)
+        self.assertIsNone(user.username)
         # No profile row of either kind should exist yet — onboarding
         # creates it once a role is actually chosen
         self.assertFalse(RenterProfile.objects.filter(user=user).exists())
         self.assertFalse(LandlordProfile.objects.filter(user=user).exists())
 
-    def test_me_reports_null_role_when_unset(self):
+    def test_me_reports_null_role_and_username_when_unset(self):
         user = User.objects.create_user(email='unset@example.com', password='testpass123')
         self.assertIsNone(user.role)
 
@@ -723,29 +749,31 @@ class OnboardingTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIsNone(response.data['role'])
+        self.assertIsNone(response.data['username'])
+        # Both nulls are what send the frontend to /onboarding.
 
-    def test_onboarding_sets_role_and_creates_renter_profile(self):
+    def test_onboarding_sets_everything_and_creates_renter_profile(self):
         user = User.objects.create_user(email='pickme@example.com', password='testpass123')
-        self.client.force_authenticate(user=user)
 
-        response = self.client.post(
-            '/accounts/onboarding/', {'role': 'renter'}, format='json'
-        )
+        response = self._onboard(user)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['role'], 'renter')
+        self.assertEqual(response.data['username'], 'ama_mensah')
 
         user.refresh_from_db()
         self.assertEqual(user.role, User.Role.RENTER)
-        self.assertTrue(RenterProfile.objects.filter(user=user).exists())
+        self.assertEqual(user.username, 'ama_mensah')
+        self.assertEqual(user.first_name, 'Ama')
+        self.assertEqual(user.last_name, 'Mensah')
+        profile = RenterProfile.objects.get(user=user)
+        self.assertEqual(profile.full_name, 'Ama Mensah')
+        # The new profile starts with the name from the form, not ''.
 
     def test_onboarding_sets_role_and_creates_landlord_profile(self):
         user = User.objects.create_user(email='pickmetoo@example.com', password='testpass123')
-        self.client.force_authenticate(user=user)
 
-        response = self.client.post(
-            '/accounts/onboarding/', {'role': 'landlord'}, format='json'
-        )
+        response = self._onboard(user, role='landlord')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         user.refresh_from_db()
@@ -754,37 +782,158 @@ class OnboardingTests(APITestCase):
 
     def test_onboarding_rejects_staff_and_admin_roles(self):
         user = User.objects.create_user(email='sneaky@example.com', password='testpass123')
-        self.client.force_authenticate(user=user)
 
         for forbidden_role in ('staff', 'admin'):
-            response = self.client.post(
-                '/accounts/onboarding/', {'role': forbidden_role}, format='json'
-            )
+            response = self._onboard(user, role=forbidden_role)
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
         user.refresh_from_db()
         self.assertIsNone(user.role)
+        self.assertIsNone(user.username)
+        # The valid username/names in the same request weren't saved
+        # either: nothing is written unless the whole request is valid.
+
+    def test_onboarding_requires_a_role_when_the_account_has_none(self):
+        user = User.objects.create_user(email='norole@example.com', password='testpass123')
+
+        response = self._onboard(user, role=None)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        user.refresh_from_db()
+        self.assertIsNone(user.username)
 
     def test_onboarding_is_one_time_only(self):
         user = User.objects.create_user(
-            email='alreadyset@example.com', password='testpass123', role='renter'
+            email='alreadyset@example.com', password='testpass123',
+            role='renter', username='already_here',
         )
-        self.client.force_authenticate(user=user)
 
-        response = self.client.post(
-            '/accounts/onboarding/', {'role': 'landlord'}, format='json'
-        )
+        response = self._onboard(user, role=None, username=None, first_name='Changed')
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         user.refresh_from_db()
         self.assertEqual(user.role, User.Role.RENTER)
+        self.assertEqual(user.username, 'already_here')
+        self.assertEqual(user.first_name, '')
+        # A finished account can't come back and change anything here.
+
+    def test_existing_role_cannot_be_changed(self):
+        # An account from before usernames: role set, username missing.
+        user = User.objects.create_user(
+            email='oldaccount@example.com', password='testpass123', role='renter'
+        )
+
+        response = self._onboard(user, role='landlord')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.RENTER)
+        self.assertIsNone(user.username)
         # The original role must survive an attempted second call untouched
+
+    def test_account_with_a_role_can_add_its_username(self):
+        user = User.objects.create_user(
+            email='oldaccount2@example.com', password='testpass123', role='landlord'
+        )
+        LandlordProfile.objects.create(user=user, full_name='Kept Name')
+
+        response = self._onboard(user, role=None, username='kofi_asante')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.LANDLORD)
+        self.assertEqual(user.username, 'kofi_asante')
+        self.assertEqual(LandlordProfile.objects.get(user=user).full_name, 'Kept Name')
+        # The existing profile isn't touched; only a NEW profile row gets
+        # its name from the onboarding form.
+
+    def test_account_with_a_username_cannot_send_another(self):
+        # e.g. a staff member whose username was set in Django admin
+        user = User.objects.create_user(
+            email='named@example.com', password='testpass123', username='set_by_admin'
+        )
+
+        response = self._onboard(user, username='my_choice')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        user.refresh_from_db()
+        self.assertEqual(user.username, 'set_by_admin')
+        self.assertIsNone(user.role)
+
+    def test_account_with_a_username_can_pick_its_role(self):
+        user = User.objects.create_user(
+            email='named2@example.com', password='testpass123', username='set_by_admin'
+        )
+
+        response = self._onboard(user, username=None)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user.refresh_from_db()
+        self.assertEqual(user.role, User.Role.RENTER)
+        self.assertEqual(user.username, 'set_by_admin')
+
+    def test_names_are_required(self):
+        user = User.objects.create_user(email='noname@example.com', password='testpass123')
+
+        response = self._onboard(user, first_name='   ', last_name=None)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('first_name', response.data)
+        self.assertIn('last_name', response.data)
+        # Errors are keyed by field, so the form can show each one under
+        # its own input. "   " counts as empty (DRF trims whitespace).
+        user.refresh_from_db()
+        self.assertIsNone(user.role)
+
+    def test_username_is_required_when_the_account_has_none(self):
+        user = User.objects.create_user(email='nousername@example.com', password='testpass123')
+
+        response = self._onboard(user, username=None)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('username', response.data)
+        user.refresh_from_db()
+        self.assertIsNone(user.role)
+
+    def test_taken_username_is_rejected(self):
+        User.objects.create_user(email='first@example.com', password='testpass123', username='ama_mensah')
+        user = User.objects.create_user(email='second@example.com', password='testpass123')
+
+        response = self._onboard(user)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['username'], ['That username is taken. Try another one.'])
+        user.refresh_from_db()
+        self.assertIsNone(user.username)
+        self.assertIsNone(user.role)
+
+    def test_reserved_username_is_rejected(self):
+        user = User.objects.create_user(email='reserved@example.com', password='testpass123')
+
+        response = self._onboard(user, username='admin')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['username'], ['That username is reserved. Try another one.'])
+
+    def test_badly_formatted_usernames_are_rejected(self):
+        user = User.objects.create_user(email='format@example.com', password='testpass123')
+
+        for bad in ('Ama', '42ama', 'ab', 'ama-mensah', 'ama mensah', 'a' * 31):
+            response = self._onboard(user, username=bad)
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, bad)
+            self.assertIn('username', response.data, bad)
+            # Uppercase, starting with a digit (could look like an old
+            # numeric user id), too short, a hyphen, a space, too long.
+
+        user.refresh_from_db()
+        self.assertIsNone(user.username)
 
     def test_onboarding_requires_authentication(self):
         response = self.client.post(
-            '/accounts/onboarding/', {'role': 'renter'}, format='json'
+            '/accounts/onboarding/', self._payload(), format='json'
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
 
 class GoogleLoginRoleTests(APITestCase):
     # POST /accounts/login/google/ — focused on the `role` a first-time
@@ -863,6 +1012,11 @@ class GoogleLoginRoleTests(APITestCase):
         self.assertIsNone(user.role)
         # role=None is the "send them to /onboarding" signal the frontend
         # checks for, same as email/password sign-up without a role.
+        self.assertEqual(user.first_name, 'Ama')
+        self.assertEqual(user.last_name, 'Mensah')
+        self.assertIsNone(user.username)
+        # Google's given_name/family_name are what the onboarding form
+        # pre-fills; the username is still the person's own choice.
 
 
 class ResendVerificationEmailTests(APITestCase):

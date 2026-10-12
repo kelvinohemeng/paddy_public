@@ -59,20 +59,27 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             phone=validated_data.get('phone', ''),
             role=role,
+            first_name=validated_data['first_name'],
+            last_name=validated_data['last_name'],
         )
         # Calls OUR custom create_user (the manager we wrote earlier) —
         # this is what correctly hashes the password via set_password,
-        # instead of accidentally storing it as plain text
+        # instead of accidentally storing it as plain text.
+        # first_name/last_name: required by `extra_kwargs` above, but
+        # until now never passed on here, so the names people typed at
+        # sign-up were validated and then thrown away. The onboarding
+        # screen pre-fills from them, so they're saved now.
 
+        full_name = f"{user.first_name} {user.last_name}".strip()
         if role == User.Role.RENTER:
-            RenterProfile.objects.create(user=user, full_name='')
+            RenterProfile.objects.create(user=user, full_name=full_name)
         elif role == User.Role.LANDLORD:
-            LandlordProfile.objects.create(user=user, full_name='')
+            LandlordProfile.objects.create(user=user, full_name=full_name)
         # Only runs when a role WAS supplied at registration (still fully
         # supported, e.g. a client that hasn't moved to the deferred
         # onboarding flow yet) — role=None skips this, onboarding handles
-        # it later. full_name='' as a placeholder either way — the real
-        # name can be filled in later via a "complete your profile" step.
+        # it later. The profile starts with the sign-up name; the person
+        # can still change it on their profile page.
 
         return user
         # Return the created user — DRF uses this to build the response
@@ -179,6 +186,44 @@ class UserSerializer(serializers.ModelSerializer):
         # Returning None here is what makes the /accounts/me/ response
         # correctly show "profile": null for those accounts.
         return None
+
+
+class OnboardingSerializer(serializers.ModelSerializer):
+    # Validates the name + username part of POST /accounts/onboarding/
+    # (accounts/views.py onboarding). The `role` part is checked in the
+    # view instead, because whether role is allowed at all depends on the
+    # account's current state, not just on the value sent.
+    #
+    # Being a ModelSerializer means DRF copies the rules straight off the
+    # User model fields: for `username` that's max_length=30, the format
+    # and reserved-word validators, and a uniqueness check that uses the
+    # model's own "That username is taken" message. One set of rules,
+    # defined once in models.py, enforced here and in Django admin alike.
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'username']
+        extra_kwargs = {
+            'first_name': {'required': True, 'allow_blank': False},
+            'last_name': {'required': True, 'allow_blank': False},
+            'username': {'required': True, 'allow_blank': False, 'allow_null': False},
+        }
+        # extra_kwargs overrides what DRF would otherwise copy from the
+        # model. On the model all three are optional (blank=True, and
+        # username also null=True, because accounts exist before
+        # onboarding fills them in). Onboarding is exactly the step that
+        # fills them in, so here they're required and can't be empty.
+        # DRF also trims spaces by default, so "   " counts as empty.
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance is not None and self.instance.username is not None:
+            self.fields.pop('username')
+        # An account that already has a username (e.g. one a staff member
+        # set in Django admin) only fills in its names and role here.
+        # Removing the field means it's neither required nor writable:
+        # there's no self-service rename. The view rejects a request that
+        # tries to send one anyway, with a clear message.
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):

@@ -40,7 +40,13 @@ from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, Bl
 from rest_framework.response import Response
 from rest_framework import status
 from django.core.files.base import ContentFile
-from .serializers import RegisterSerializer, UserSerializer, UserUpdateSerializer
+from django.db import IntegrityError, transaction
+# transaction / IntegrityError — used by onboarding() below to make its
+# writes all-or-nothing and to catch a username claimed by someone else
+# in the same instant.
+from .serializers import (
+    OnboardingSerializer, RegisterSerializer, UserSerializer, UserUpdateSerializer,
+)
 # UserSerializer and UserUpdateSerializer used to be defined directly in
 # this file — moved into serializers.py to match Django/DRF convention
 # (all serializers live together in serializers.py, all view/request
@@ -879,30 +885,62 @@ confirm_password_reset.throttle_scope = 'password_reset'
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def onboarding(request: Request) -> Response:
-    # POST /accounts/onboarding/ — body: {"role": "renter" | "landlord"}
+    # POST /accounts/onboarding/
+    # body: {
+    #   "first_name": "Ama", "last_name": "Mensah",   always required
+    #   "username": "ama_mensah",                     only while the account has none
+    #   "role": "renter" | "landlord",                only while the account has none
+    # }
     # The post-auth gate every signup path (email/password with role
-    # omitted, Google OAuth first-time sign-in) funnels into once role
-    # is nullable. A SEPARATE endpoint from PATCH /accounts/me/ on
-    # purpose: UserUpdateSerializer deliberately blocks `role` as a
-    # security boundary (see serializers.py) — reusing /me/ here would
-    # mean punching a hole in that boundary instead of a single,
+    # omitted, Google OAuth first-time sign-in) funnels into. Onboarding
+    # is finished once the account has BOTH a role and a username; the
+    # frontend sends anyone missing either one here (see
+    # frontend/src/app/(admin)/dashboard/page.tsx).
+    #
+    # Why username can be missing on an account that already has a role:
+    # usernames arrived after roles, so accounts made before then have a
+    # role but no username, and so do staff/admin accounts created in
+    # Django admin. They come back here once, pick a username, and skip
+    # the role question.
+    #
+    # A SEPARATE endpoint from PATCH /accounts/me/ on purpose:
+    # UserUpdateSerializer deliberately blocks `role` (and now username)
+    # as a security boundary (see serializers.py) — reusing /me/ here
+    # would mean punching a hole in that boundary instead of a single,
     # narrowly-scoped action with its own one-time rule.
 
     user: User = request.user
+    needs_role = user.role is None
+    needs_username = user.username is None
 
-    if user.role is not None:
+    if not needs_role and not needs_username:
+        return Response(
+            {'error': 'This account has already finished onboarding.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        # Strictly one-time, per Kelvin's confirmation: once role and
+        # username are set, neither can change through this endpoint
+        # again. A genuine change after this point is a staff/admin
+        # action via Django admin, deliberately outside any self-service
+        # API surface.
+
+    if not needs_role and request.data.get('role') is not None:
         return Response(
             {'error': 'Role has already been set for this account and cannot be changed here.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
-        # Strictly one-time, per Kelvin's confirmation: once role is set,
-        # it can never change through this endpoint again — not even to
-        # the same value. A genuine role change after this point is a
-        # staff/admin action via Django admin, deliberately outside any
-        # self-service API surface.
+    if not needs_username and request.data.get('username') is not None:
+        return Response(
+            {'error': 'Username has already been set for this account and cannot be changed here.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        # Same one-time rule, applied to each field on its own: sending a
+        # value for something the account already has is refused (not
+        # quietly ignored), even when it's the same value, so a buggy
+        # client finds out instead of thinking it changed something.
 
     role = request.data.get('role')
-    if role not in (User.Role.RENTER, User.Role.LANDLORD):
+    if needs_role and role not in (User.Role.RENTER, User.Role.LANDLORD):
         return Response(
             {'error': 'role must be either "renter" or "landlord".'},
             status=status.HTTP_400_BAD_REQUEST,
@@ -911,18 +949,51 @@ def onboarding(request: Request) -> Response:
         # onboarding can never self-assign a staff or admin account either,
         # only the two self-service roles.
 
-    user.role = role
-    user.save()
+    serializer = OnboardingSerializer(user, data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Field-by-field errors, e.g.
+        # {"username": ["That username is taken. Try another one."]},
+        # the same shape register() returns, so the frontend can show
+        # each message under the matching input.
+        # Every check (role above, names and username here) runs BEFORE
+        # anything is written, so a 400 always leaves the account as it was.
 
-    if role == User.Role.RENTER:
-        RenterProfile.objects.get_or_create(user=user, defaults={'full_name': ''})
-    elif role == User.Role.LANDLORD:
-        LandlordProfile.objects.get_or_create(user=user, defaults={'full_name': ''})
-    # get_or_create, not create: mirrors RegisterSerializer.create()'s
-    # profile-row creation for the "role chosen at signup" path, but
-    # guards against a profile row somehow already existing (defensive —
-    # shouldn't happen given role was None, but a create() 500 here would
-    # be a strictly worse failure mode than a harmless no-op).
+    try:
+        with transaction.atomic():
+            # atomic() = the writes inside either ALL happen or NONE do.
+            # Without it, a failure while creating the profile row would
+            # leave a role saved with no profile behind it.
+            if needs_role:
+                serializer.save(role=role)
+                # save(role=...) adds role to the validated fields, so the
+                # names, username and role go into ONE update of the row.
+            else:
+                serializer.save()
+
+            if needs_role:
+                full_name = f"{user.first_name} {user.last_name}".strip()
+                if role == User.Role.RENTER:
+                    RenterProfile.objects.get_or_create(user=user, defaults={'full_name': full_name})
+                elif role == User.Role.LANDLORD:
+                    LandlordProfile.objects.get_or_create(user=user, defaults={'full_name': full_name})
+                # get_or_create, not create: mirrors RegisterSerializer.create()'s
+                # profile-row creation for the "role chosen at signup" path, but
+                # guards against a profile row somehow already existing (defensive —
+                # shouldn't happen given role was None, but a create() 500 here would
+                # be a strictly worse failure mode than a harmless no-op).
+                # The profile starts with the name from this form instead of ''.
+    except IntegrityError:
+        return Response(
+            {'username': ['That username is taken. Try another one.']},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+        # The serializer already checked the username is free, but two
+        # people could submit the same new username at nearly the same
+        # moment: both checks pass, then the database's unique constraint
+        # lets only the first write through. The second one lands here
+        # and gets the same message as a normal "taken" error, not a 500.
+        # (The atomic block has already undone that request's writes.)
 
     return Response(UserSerializer(user).data)
     # Same "return the full updated user" convention as PATCH /accounts/me/

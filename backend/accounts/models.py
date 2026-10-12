@@ -1,9 +1,57 @@
 from django.db import models
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.core.exceptions import ValidationError
+from django.core.validators import RegexValidator
 from core.models import Amenity
 from django.contrib.postgres.fields import ArrayField
 # BaseUserManager = Django's base class for building a custom manager
 # (a "manager" is the object behind User.objects — it handles creating new rows)
+
+
+# ---- Username rules -------------------------------------------------------
+# The username is the person's public handle and the slug in their page
+# URLs (/dashboard/<username>/listings instead of /dashboard/42/listings).
+# Because it ends up in URLs, the rules are strict on purpose:
+#   - lowercase only, so "Kofi" and "kofi" can never be two different
+#     accounts (unique=True on its own is case-SENSITIVE in Postgres).
+#     The frontend lowercases as you type, so people never hit this rule.
+#   - starts with a letter, so a username can never look like a numeric
+#     user id ("42") from the old URLs.
+#   - letters, numbers and underscores only: nothing that needs escaping
+#     in a URL.
+#   - 3 to 30 characters in total.
+# These live on the model field (validators=[...] below), so Django
+# admin, the onboarding serializer and anything else built on the field
+# all enforce exactly the same rules from this one place.
+
+USERNAME_PATTERN = r'^[a-z][a-z0-9_]{2,29}$'
+
+username_format_validator = RegexValidator(
+    regex=USERNAME_PATTERN,
+    message=(
+        'Use 3 to 30 lowercase letters, numbers or underscores, '
+        'starting with a letter.'
+    ),
+)
+# RegexValidator = a ready-made Django validator: it raises a
+# ValidationError with `message` whenever the value doesn't match `regex`.
+
+RESERVED_USERNAMES = {
+    'admin', 'administrator', 'api', 'dashboard', 'help', 'login',
+    'logout', 'me', 'null', 'onboarding', 'paddy', 'register', 'root',
+    'settings', 'signup', 'staff', 'support', 'system', 'undefined',
+}
+# Words nobody may claim: route names that could clash with real pages
+# later, and names that would let someone pose as the paddy team
+# ("paddy", "support", "staff"). Add to this set freely; it only blocks
+# NEW claims, it never touches a username someone already has.
+
+
+def validate_username_not_reserved(value):
+    # A plain function works as a Django validator: Django calls it with
+    # the value and treats a raised ValidationError as "invalid".
+    if value in RESERVED_USERNAMES:
+        raise ValidationError('That username is reserved. Try another one.')
 
 
 class UserManager(BaseUserManager):
@@ -60,8 +108,38 @@ class UserManager(BaseUserManager):
 
 
 class User(AbstractUser):
-    username = None
-    # Removes the inherited username field — we don't use it
+    username = models.CharField(
+        max_length=30,
+        unique=True,
+        null=True,
+        blank=True,
+        default=None,
+        validators=[username_format_validator, validate_username_not_reserved],
+        error_messages={'unique': 'That username is taken. Try another one.'},
+    )
+    # The public handle / URL slug (rules above the class). This REPLACES
+    # AbstractUser's own username field (it used to be `username = None`,
+    # which removed it). Login still uses email: USERNAME_FIELD below
+    # stays "email", so this field is only a display name and URL slug,
+    # never something you sign in with.
+    #
+    # null=True: accounts made before usernames existed, and brand-new
+    # accounts that haven't finished onboarding yet, have no username.
+    # NULL is the "not picked yet" signal, the same idea as role=None.
+    #
+    # Why null and not an empty string ''? unique=True would treat two ''
+    # values as a clash, so only ONE account could ever be username-less.
+    # Postgres never counts NULLs as equal to each other, so any number of
+    # accounts can sit at NULL while every real username stays unique.
+    # (Django's admin also saves an empty username box as NULL, not '',
+    # because of null=True.)
+    #
+    # error_messages['unique'] replaces Django's default "User with this
+    # username already exists." The onboarding serializer reuses this same
+    # message, so the frontend shows one friendly line either way.
+    #
+    # Set once, in POST /accounts/onboarding/ (accounts/views.py), and
+    # editable by staff in Django admin. There's no self-service rename yet.
 
     profile_image = models.ImageField(upload_to='profile_images/', blank=True, null=True)
 

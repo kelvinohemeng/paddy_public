@@ -63,13 +63,35 @@ export const confirmResetPasswordSchema = z.object({
 
 export type ConfirmResetPasswordFormValues = z.infer<typeof confirmResetPasswordSchema>
 
-// Post-auth onboarding (/onboarding): one-time role pick for every
-// auth path. Required — the form blocks submit until a card is picked
-// (RoleCard writes "landlord" | "renter" via Controller).
-export const onboardingSchema = z.object({
-    role: z.enum(["renter", "landlord"], {
-        error: "Pick how you'll use paddy",
-    }),
+// Same rule as the backend's User.username (USERNAME_PATTERN in
+// backend/accounts/models.py): 3-30 lowercase letters, numbers or
+// underscores, starting with a letter. The backend is the real check
+// (it also refuses taken and reserved names); this one just gives
+// feedback before the request goes out.
+export const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,29}$/
+
+const usernameSchema = z.string().trim().regex(USERNAME_PATTERN, {
+    error: "Use 3 to 30 lowercase letters, numbers or underscores, starting with a letter",
 })
 
-export type OnboardingFormValues = z.infer<typeof onboardingSchema>
+const roleSchema = z.enum(["renter", "landlord"], {
+    error: "Pick how you'll use paddy",
+})
+
+// Post-auth onboarding (/onboarding), for every auth path. First and
+// last name are always asked for. Username and role are each asked for
+// only while the account doesn't have one yet (an account from before
+// usernames already has a role, for example), so the schema is built
+// per person from what's still missing. The role is required while
+// it's asked for: the form blocks submit until a card is picked
+// (RoleCard writes "landlord" | "renter" via Controller).
+export function onboardingSchema(asks: { role: boolean; username: boolean }) {
+    return z.object({
+        firstName: z.string().trim().min(1, { error: "First name is required" }),
+        lastName: z.string().trim().min(1, { error: "Last name is required" }),
+        username: asks.username ? usernameSchema : usernameSchema.optional(),
+        role: asks.role ? roleSchema : roleSchema.optional(),
+    })
+}
+
+export type OnboardingFormValues = z.infer<ReturnType<typeof onboardingSchema>>
