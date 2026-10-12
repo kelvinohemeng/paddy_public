@@ -137,8 +137,9 @@ export function OnboardingForm({ account }: { account: OnboardingAccount }) {
     setPending(true);
     setFormError(null);
     try {
-      // authedFetch refreshes the 5-minute access token once if it ran
-      // out while the person was filling the form in.
+      // authedFetch goes through our /api/backend route, which refreshes
+      // the 5-minute access token if it ran out while the person was
+      // filling the form in.
       const res = await authedFetch("/accounts/onboarding/", {
         method: "POST",
         json: {
