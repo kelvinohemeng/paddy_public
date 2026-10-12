@@ -1,14 +1,18 @@
 "use client";
 
-// Shared authenticated-fetch helper — ONE home for the
-// Bearer-from-localStorage + one-silent-refresh + replay dance that was
-// previously copied inline in three places (dataProvider/index.ts's
-// customFetch, the old listing-create-form.tsx's uploadPhotos, and the first
-// lifecycle CTA). The dataProvider keeps its own copy for now (refactoring
-// the core data path mid-stream wasn't worth the risk this pass);
-// payments.ts ALSO deliberately keeps its own paymentsFetch — AGENTS.md
-// holds payment code to a higher review bar than the rest of the app, so
-// it doesn't get absorbed into a generic helper casually.
+// Shared authenticated-fetch helper for browser code. Every signed-in
+// call goes to OUR server's /api/backend/* route
+// (app/api/backend/[...path]/route.ts), never straight to Django. The
+// session tokens live in httpOnly cookies that this code can't read
+// (that's the point: an injected script can't steal them either), so
+// that route adds the Bearer header and refreshes expired tokens on the
+// server. The browser attaches the cookies by itself, since the request
+// is same-origin.
+//
+// payments.ts deliberately keeps its own paymentsFetch — AGENTS.md holds
+// payment code to a higher review bar than the rest of the app, so it
+// doesn't get absorbed into a generic helper casually. It shares
+// backendUrl() below.
 //
 // Body handling is explicit rather than magic:
 //   - pass `json`  → body becomes JSON.stringify(json) and
@@ -18,15 +22,6 @@
 //     Content-Type manually breaks multipart uploads (see the comment on
 //     uploadPhotos in listing-form-stepper.tsx)
 //   - pass neither → request with no body (GET, DELETE, no-payload POST)
-//
-// On a 401 (SimpleJWT's 5-minute default access lifetime), refreshes ONCE
-// via the shared refreshAccessToken helper and replays — refreshAccessToken
-// writes the new token back to localStorage before returning, so the
-// replaying call re-reads the fresh token naturally.
-
-import { refreshAccessToken } from "@/lib/auth-refresh";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
 type AuthedFetchOptions = {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -35,35 +30,34 @@ type AuthedFetchOptions = {
   headers?: Record<string, string>;
 };
 
+// Maps a Django path to the same-origin proxy route:
+//   "/accounts/me/"         → "/api/backend/accounts/me"
+//   "/listings/?mine=true"  → "/api/backend/listings?mine=true"
+// The trailing slash comes off because Next would redirect it away
+// anyway; the proxy route puts it back before calling Django.
+export function backendUrl(path: string): string {
+  const queryStart = path.indexOf("?");
+  const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
+  const query = queryStart === -1 ? "" : path.slice(queryStart);
+  return `/api/backend${pathname.replace(/\/+$/, "")}${query}`;
+}
+
 export async function authedFetch(
   path: string,
   options: AuthedFetchOptions = {},
-  retried = false,
 ): Promise<Response> {
   const { method = "GET", json, formData, headers } = options;
-  const token = localStorage.getItem("access_token");
 
-  const res = await fetch(`${API_URL}${path}`, {
+  // A 401 that comes back from here is final: the proxy route has already
+  // tried a refresh. Callers decide what to show (never auto-logout).
+  return fetch(backendUrl(path), {
     method,
     headers: {
       ...(json !== undefined ? { "Content-Type": "application/json" } : {}),
       ...headers,
-      Authorization: token ? `Bearer ${token}` : "",
     },
     body: json !== undefined ? JSON.stringify(json) : formData,
   });
-
-  if (res.status === 401 && !retried) {
-    const fresh = await refreshAccessToken();
-    if (fresh) {
-      return authedFetch(path, options, true);
-    }
-    // Refresh failed — return the original 401 and let the caller decide
-    // (surface the error, never auto-logout on a network blip; same call
-    // as auth-refresh.ts makes for its own failure mode).
-  }
-
-  return res;
 }
 
 // TS strict-mode catch narrowing: thrown values are `unknown`, and every

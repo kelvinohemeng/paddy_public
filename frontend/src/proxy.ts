@@ -16,10 +16,29 @@ import type { NextRequest } from "next/server";
 //
 // Deliberately self-contained (no imports from src/) — Next's docs warn
 // against shared modules between proxy and app code, so the small
-// decoder duplication with lib/auth-refresh.ts is intentional.
+// decoder and cookie-options duplication with lib/auth-cookies.ts is
+// intentional.
 
 const ACCESS_COOKIE = "access_token";
 const REFRESH_COOKIE = "refresh_token";
+// The readable "signed_in=1" hint (lib/session-hint.ts): set and cleared
+// together with the refresh token. Not httpOnly, and holds no secret.
+const SIGNED_IN_COOKIE = "signed_in";
+
+// Same cookie settings as authCookieOptions() in lib/auth-cookies.ts (kept
+// as a copy, not an import, for the reason above; keep the two in step).
+// httpOnly is the important one: browser JavaScript can't read these
+// cookies, so an injected script can't steal the session.
+function cookieOptions(maxAge: number) {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge,
+  };
+}
+const ONE_DAY_SECONDS = 60 * 60 * 24;
 
 // Refresh while still-valid-but-close, so a token never dies in the
 // seconds between this check and the layout's own /me/ fetch.
@@ -80,18 +99,31 @@ export async function proxy(request: NextRequest) {
     const data = await res.json();
     if (!data.access) throw new Error("no access token in refresh response");
 
-    const response = NextResponse.next();
-    response.cookies.set(ACCESS_COOKIE, data.access, {
-      path: "/",
-      maxAge: 60 * 60 * 24,
+    // The refreshed token has to reach the page being rendered RIGHT
+    // NOW, not just the browser. Server components read cookies from
+    // the request, so it goes on the forwarded request headers as well
+    // as on the response (which updates the browser for next time).
+    request.cookies.set(ACCESS_COOKIE, data.access);
+    const response = NextResponse.next({
+      request: { headers: request.headers },
     });
+    response.cookies.set(
+      ACCESS_COOKIE,
+      data.access,
+      cookieOptions(ONE_DAY_SECONDS),
+    );
     // Rotation is OFF backend-side by default (response holds only
     // `access`), but handle it anyway so enabling
     // ROTATE_REFRESH_TOKENS later doesn't silently kill sessions.
     if (data.refresh) {
-      response.cookies.set(REFRESH_COOKIE, data.refresh, {
-        path: "/",
-        maxAge: 60 * 60 * 24 * 7,
+      response.cookies.set(
+        REFRESH_COOKIE,
+        data.refresh,
+        cookieOptions(ONE_DAY_SECONDS),
+      );
+      response.cookies.set(SIGNED_IN_COOKIE, "1", {
+        ...cookieOptions(ONE_DAY_SECONDS),
+        httpOnly: false,
       });
     }
     return response;
@@ -103,8 +135,9 @@ export async function proxy(request: NextRequest) {
     // (which the backend would 401 even on public endpoints).
     if (!request.nextUrl.pathname.startsWith("/dashboard")) {
       const response = NextResponse.next();
-      response.cookies.set(ACCESS_COOKIE, "", { path: "/", maxAge: 0 });
-      response.cookies.set(REFRESH_COOKIE, "", { path: "/", maxAge: 0 });
+      response.cookies.set(ACCESS_COOKIE, "", cookieOptions(0));
+      response.cookies.set(REFRESH_COOKIE, "", cookieOptions(0));
+      response.cookies.set(SIGNED_IN_COOKIE, "", cookieOptions(0));
       return response;
     }
     // Refresh dead too (logged out elsewhere, refresh expired, backend
@@ -117,8 +150,9 @@ export async function proxy(request: NextRequest) {
     // Explicit expired-with-path="/" (not .delete(), whose default path
     // is version-dependent) — guaranteed to actually kill the cookies
     // that were set with path "/".
-    response.cookies.set(ACCESS_COOKIE, "", { path: "/", maxAge: 0 });
-    response.cookies.set(REFRESH_COOKIE, "", { path: "/", maxAge: 0 });
+    response.cookies.set(ACCESS_COOKIE, "", cookieOptions(0));
+    response.cookies.set(REFRESH_COOKIE, "", cookieOptions(0));
+    response.cookies.set(SIGNED_IN_COOKIE, "", cookieOptions(0));
     return response;
   }
 }

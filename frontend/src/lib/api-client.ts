@@ -1,7 +1,8 @@
 "use client";
 
-// Generic JSON API client over authedFetch (Bearer token + one silent
-// refresh + replay live in @/lib/api). This replaces the Refine
+// Generic JSON API client over authedFetch (@/lib/api), which sends every
+// call through our /api/backend route; that route adds the Bearer token
+// and refreshes it server-side. This replaces the Refine
 // dataProvider's customFetch — same DRF conventions, no framework:
 //   - GET /{resource}/?{field=value...} for lists (filters append verbatim,
 //     exactly what ListingViewSet.get_queryset reads via query_params)

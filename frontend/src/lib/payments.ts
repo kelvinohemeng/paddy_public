@@ -10,16 +10,14 @@
 //
 // All of these are money-adjacent, so the shapes here mirror the backend
 // EXACTLY as read from payments/views.py + payments/serializers.py — no
-// defensive guessing beyond what the documented contract allows. Everything
-// reuses dataProvider's customFetch pattern (Bearer from localStorage + one
-// silent refresh + replay) because these calls have identical auth needs;
-// importing that fetch directly would couple this module to the Refine data
-// provider's lifecycle, so the same 401-refresh dance is reproduced here
-// via the shared refreshAccessToken helper instead.
+// defensive guessing beyond what the documented contract allows. Requests go
+// through our own /api/backend/* route, like authedFetch in lib/api.ts: the
+// session lives in httpOnly cookies this code can't read, and that route
+// adds the Bearer header and refreshes an expired token on the server.
+// paymentsFetch stays separate from authedFetch on purpose (payment code
+// gets the higher review bar) and only shares the URL mapping.
 
-import { refreshAccessToken } from "@/lib/auth-refresh";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL!;
+import { backendUrl } from "@/lib/api";
 
 // ---- Shapes (mirror the backend responses exactly) ----
 
@@ -135,37 +133,20 @@ async function toPaymentsError(res: Response): Promise<PaymentsError> {
   return new PaymentsError(extractErrorMessage(body), res.status, code);
 }
 
-// ---- Shared fetch with the standard 401-refresh-retry dance ----
+// ---- Shared fetch (session cookie → Bearer happens server-side) ----
+// A 401 from here is final: the /api/backend route has already tried a
+// token refresh before answering.
 async function paymentsFetch(
   path: string,
   options: RequestInit = {},
-  retried = false,
 ): Promise<Response> {
-  const token = localStorage.getItem("access_token");
-  const res = await fetch(`${API_URL}${path}`, {
+  return fetch(backendUrl(path), {
     ...options,
     headers: {
       "Content-Type": "application/json",
       ...options.headers,
-      Authorization: token ? `Bearer ${token}` : "",
     },
   });
-
-  if (res.status === 401 && !retried) {
-    const fresh = await refreshAccessToken();
-    if (fresh) {
-      return paymentsFetch(
-        path,
-        {
-          ...options,
-          headers: { ...options.headers, Authorization: `Bearer ${fresh}` },
-        },
-        true,
-      );
-    }
-  }
-
-  return res;
 }
 
 // ---- API calls ----

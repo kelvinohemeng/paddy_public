@@ -5,25 +5,25 @@
 // getIdentity/onError) with the same backend contracts and the same
 // token handling, owned here instead of behind Refine's interface:
 //
-// Token storage (unchanged semantics): BOTH tokens go in BOTH stores —
-// cookies (path "/", 1-day expiry) for server-side reads (proxy.ts,
-// (admin)/layout.tsx) and localStorage for client-side reads
-// (authedFetch, this file). Removing both on logout is what logs a
-// browser out; path: "/" is required on remove because the cookies were
-// set with path "/". Logout also revokes the refresh token server-side
-// (see useLogout).
+// Token storage: none in the browser. The JWTs live in httpOnly cookies
+// that only our Next server reads and writes (lib/auth-cookies.ts), so
+// nothing here ever sees a token, and neither can an injected script.
+// Signing in, signing in with Google and signing out go through our own
+// route handlers (app/api/auth/*), which talk to Django and set or clear
+// the cookies. Everything else goes through authedFetch (lib/api.ts).
 //
-// Endpoints: POST /accounts/login/, /accounts/register/,
-// /accounts/login/google/, /accounts/logout/, GET /accounts/me/. Field
-// naming: the app speaks camelCase, Django speaks snake_case —
-// translation happens at these network boundaries only.
+// Endpoints: POST /api/auth/login, /api/auth/google, /api/auth/logout
+// (ours), POST /accounts/register/ (Django directly: registering signs
+// nobody in, so no tokens are involved), GET /accounts/me/ via
+// authedFetch. Field naming: the app speaks camelCase, Django speaks
+// snake_case — translation happens at these network boundaries only.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import Cookies from "js-cookie";
 import { toast } from "sonner";
 
 import { authedFetch } from "@/lib/api";
+import { hasSessionHint } from "@/lib/session-hint";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!;
 
@@ -39,31 +39,31 @@ export type Me = {
 
 export const ME_QUERY_KEY = ["api", "accounts/me"];
 
-export function storeTokens(access: string, refresh: string) {
-  Cookies.set("access_token", access, { expires: 1, path: "/" });
-  Cookies.set("refresh_token", refresh, { expires: 1, path: "/" });
-  localStorage.setItem("access_token", access);
-  localStorage.setItem("refresh_token", refresh);
-}
-
-export function clearTokens() {
-  localStorage.removeItem("access_token");
-  localStorage.removeItem("refresh_token");
-  Cookies.remove("access_token", { path: "/" });
-  Cookies.remove("refresh_token", { path: "/" });
-}
-
 async function fetchMe(): Promise<Me> {
-  if (!localStorage.getItem("access_token")) return null;
+  // This code can't see the httpOnly session cookies, so it checks the
+  // readable signed_in hint instead (lib/session-hint.ts). Without it,
+  // every logged-out visitor's browser would ask /accounts/me/ on every
+  // public page just to be told 401.
+  if (!hasSessionHint()) return null;
 
-  // authedFetch, not plain fetch: access tokens live 5 minutes, and
-  // proxy.ts only refreshes them on dashboard navigations. On the
-  // public pages a plain fetch 401'd once the token expired, so a
-  // signed-in renter read as logged out (the heart asked them to sign
-  // in). authedFetch refreshes once on 401 and retries.
+  // The /api/backend route refreshes an expired access token first, so a
+  // signed-in renter on a public page doesn't read as logged out once
+  // their 5-minute token runs out. A 401 that still comes back means the
+  // session is over, and the route has cleared the cookies, hint included.
   const res = await authedFetch("/accounts/me/");
   if (!res.ok) return null;
   return (await res.json()) as Me;
+}
+
+// Our own auth routes (app/api/auth/*). They answer with Django's status
+// and error body when sign-in fails, and set the session cookies when it
+// works.
+async function postAuthRoute(path: string, body: unknown): Promise<Response> {
+  return fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 // Identity for nav gates and role checks. No retries: a 401 here means
@@ -83,26 +83,17 @@ export type LoginInput = EmailLogin | GoogleAuth;
 
 async function loginRequest(input: LoginInput): Promise<void> {
   if ("providerName" in input && input.providerName === "google") {
-    const res = await fetch(`${API_URL}/accounts/login/google/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: input.token, role: input.role }),
+    const res = await postAuthRoute("/api/auth/google", {
+      token: input.token,
+      role: input.role,
     });
     if (!res.ok) throw new Error("Social Login failed");
-    const data = await res.json();
-    storeTokens(data.access, data.refresh);
     return;
   }
 
   const { email, password } = input as EmailLogin;
-  const res = await fetch(`${API_URL}/accounts/login/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
+  const res = await postAuthRoute("/api/auth/login", { email, password });
   if (!res.ok) throw new Error("Invalid email or password");
-  const data = await res.json();
-  storeTokens(data.access, data.refresh);
 }
 
 export function useLogin() {
@@ -134,17 +125,14 @@ export type RegisterInput = {
 
 async function registerRequest(input: RegisterInput | GoogleAuth): Promise<void> {
   if ("providerName" in input && input.providerName === "google") {
-    const res = await fetch(`${API_URL}/accounts/login/google/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: input.token, role: input.role }),
+    const res = await postAuthRoute("/api/auth/google", {
+      token: input.token,
+      role: input.role,
     });
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(errorData.error || "Google Sign Up Failed");
     }
-    const data = await res.json();
-    storeTokens(data.access, data.refresh);
     return;
   }
 
@@ -178,7 +166,7 @@ export function useRegister() {
       const isGoogle =
         "providerName" in input && input.providerName === "google";
       if (isGoogle) {
-        // Google register authenticates immediately (tokens stored) —
+        // Google register authenticates immediately (session cookies set) —
         // same landing as login.
         await queryClient.invalidateQueries({ queryKey: ME_QUERY_KEY });
         router.push("/dashboard");
@@ -197,35 +185,28 @@ export function useLogout() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      // Clearing both stores logs THIS browser out, but the refresh token
-      // itself stays valid for the rest of its ~1-day life — anyone who
-      // copied it could keep minting access tokens. POST /accounts/logout/
-      // blacklists it, so /accounts/login/refresh/ rejects it from then on.
-      // Read it before clearing, since clearing deletes our only copy.
-      const refresh = localStorage.getItem("refresh_token");
-      clearTokens();
-
-      // Not awaited: the backend runs on Render's free tier, which can
-      // take most of a minute to wake up, and logout must never wait on
-      // that. The request carries on after the redirect (it's a client-
-      // side navigation, the page isn't unloaded). It only needs the
-      // refresh token in the body, no access token, so an expired access
-      // token can't block it. Failures are ignored: a 400 means the token
-      // was already unusable, and a network error leaves us no worse off
-      // than before this call existed.
-      if (refresh) {
-        fetch(`${API_URL}/accounts/logout/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh }),
-        }).catch(() => {});
-      }
+      // Only the server can delete httpOnly cookies, so signing out is a
+      // request to app/api/auth/logout/route.ts. That route clears both
+      // cookies and revokes the refresh token at Django. It answers
+      // straight away (the Django call runs after the response), so this
+      // never waits on the backend waking up.
+      //
+      // Awaited before redirecting: /login sends anyone who still has a
+      // session cookie on to /dashboard, so the cookies must be gone
+      // first.
+      const res = await fetch("/api/auth/logout", { method: "POST" });
+      if (!res.ok) throw new Error(`Logout failed (HTTP ${res.status})`);
     },
     onSuccess: async () => {
       // Drop cached identity/data so the next session can't flash the
       // previous user's dashboard.
       queryClient.clear();
       router.push("/login");
+    },
+    onError: () => {
+      toast.error("Couldn't sign you out", {
+        description: "Check your connection and try again.",
+      });
     },
   });
 }
