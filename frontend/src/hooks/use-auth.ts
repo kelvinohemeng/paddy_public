@@ -31,6 +31,8 @@ export type Me = {
   id: number | string;
   email?: string;
   role?: string;
+  /** URL slug for /dashboard/<username>/…; null until onboarding. */
+  username?: string | null;
   profile?: any;
   [key: string]: any;
 } | null;

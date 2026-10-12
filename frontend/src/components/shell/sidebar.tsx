@@ -185,9 +185,11 @@ function NavGroups() {
   const { isMobile, setOpenMobile } = useShadcnSidebar();
   const { mutate: logout, isPending: isLoggingOut } = useLogout();
 
-  // Route param first (every dashboard page carries [user]); identity id
-  // as a fallback for admin pages without that segment.
-  const userId = params.user ?? identity?.id;
+  // Route param first (every dashboard page carries [user], the
+  // username); the identity's username as a fallback for admin pages
+  // without that segment. The numeric id is the last resort, for an
+  // account that hasn't picked a username yet.
+  const userId = params.user ?? identity?.username ?? identity?.id;
   const role: string | undefined = identity?.role;
   if (!userId) return null;
 

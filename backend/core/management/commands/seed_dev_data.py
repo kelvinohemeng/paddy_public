@@ -54,6 +54,19 @@ LISTING_TITLES = [
 ]
 
 
+def _name_fields(full_name):
+    # "Kofi Asante" -> first/last name plus the username "kofi_asante".
+    # Demo accounts get a role AND a username up front, so logging in as
+    # one goes straight to the dashboard instead of the onboarding screen
+    # (onboarding is only for accounts missing either one).
+    first, last = full_name.split(' ', 1)
+    return {
+        'first_name': first,
+        'last_name': last,
+        'username': f'{first}_{last}'.lower(),
+    }
+
+
 class Command(BaseCommand):
     help = 'Seed the local database with realistic dev/demo data across every app'
 
@@ -120,7 +133,7 @@ class Command(BaseCommand):
     def _seed_staff(self):
         user, created = User.objects.get_or_create(
             email='staff+demo@paddy.dev',
-            defaults={'role': User.Role.STAFF, 'is_verified': True},
+            defaults={'role': User.Role.STAFF, 'is_verified': True, **_name_fields('Ama Staff')},
         )
         if created:
             user.set_password('demo-pass-123')
@@ -141,7 +154,10 @@ class Command(BaseCommand):
         for i, name in enumerate(names):
             user, created = User.objects.get_or_create(
                 email=f'landlord{i}+demo@paddy.dev',
-                defaults={'role': User.Role.LANDLORD, 'is_verified': True, 'phone': f'02440000{i}'},
+                defaults={
+                    'role': User.Role.LANDLORD, 'is_verified': True, 'phone': f'02440000{i}',
+                    **_name_fields(name),
+                },
             )
             if created:
                 user.set_password('demo-pass-123')
@@ -163,7 +179,7 @@ class Command(BaseCommand):
         for i, name in enumerate(names):
             user, created = User.objects.get_or_create(
                 email=f'renter{i}+demo@paddy.dev',
-                defaults={'role': User.Role.RENTER, 'is_verified': True},
+                defaults={'role': User.Role.RENTER, 'is_verified': True, **_name_fields(name)},
             )
             if created:
                 user.set_password('demo-pass-123')
