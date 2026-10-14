@@ -377,7 +377,14 @@ DATABASES = {
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT'),
+        'PORT': config('DB_PORT', default='5432'),
+        # Neon (the dev database) refuses connections without SSL, so
+        # 'require' is the default. A Postgres on the same machine as the
+        # app — CI's PostGIS container, or the planned production database
+        # on the VPS — can set DB_SSLMODE=disable, since that traffic never
+        # leaves the machine
+        'OPTIONS': {'sslmode': config('DB_SSLMODE', default='require')},
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
