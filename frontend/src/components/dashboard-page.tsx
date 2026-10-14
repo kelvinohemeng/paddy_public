@@ -4,6 +4,7 @@ import { ChevronRight, Loader2 } from "lucide-react";
 
 import { paddyButtonClassName } from "@/components/paddy-button";
 import { cn } from "@/lib/utils";
+import { PaddyIcon } from "./paddy-icons";
 
 // Page building blocks for the dashboard, drawn from the Accounts frames
 // (Figma 181:22493 Landlord, 174:20049 Renter, 181:23169 Dashboard),
@@ -98,11 +99,10 @@ export function DashboardSection({
 }
 
 // Empty state — Figma "No Property" (181:22625) / "No Saved Homes"
-// (175:21179): a character pose, 36px gap, then a 22px title, a 14px
-// line and a primary button, 12px apart, all centred in the panel.
-// The frames hold a placeholder box marked "Character Pose relevant to
-// page"; until those poses exist, the logo mascot stands in (at its 1x
-// export size, 108x122).
+// (175:21179): a character pose, then a 22px title, a 14px line and a
+// primary button, all centred in the panel. The frames hold a
+// placeholder box marked "Character Pose relevant to page"; until those
+// poses exist, the listings icon stands in.
 export function DashboardEmptyState({
   title,
   description,
@@ -113,26 +113,17 @@ export function DashboardEmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-9 px-4 py-16 text-center">
-      {/* Decorative. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src="/brand/paddy-mascot.png"
-        alt=""
-        aria-hidden
-        width={108}
-        height={122}
-        className="h-[122px] w-[108px]"
-      />
-      <div className="flex max-w-[421px] flex-col items-center gap-3">
+    <div className="flex flex-1 flex-col items-center justify-center gap-5 px-4 py-16 text-center">
+      <PaddyIcon name="listings" className="size-12" />
+      <div className="flex max-w-[421px] flex-col items-center gap-2">
         <h1 className={PAGE_TITLE_CLASS}>{title}</h1>
         {description && (
-          <p className="font-display text-sm leading-[17px] font-medium tracking-[-0.02em] text-black/80">
+          <p className="font-sans text-sm leading-[17px] font-medium tracking-[-0.02em] text-black/80">
             {description}
           </p>
         )}
-        {action}
       </div>
+      {action}
     </div>
   );
 }

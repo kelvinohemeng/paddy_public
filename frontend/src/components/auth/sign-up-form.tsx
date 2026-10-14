@@ -164,7 +164,6 @@ export const SignUpForm = () => {
               size="lg"
               type="button"
               className="w-full"
-              isLoading={isPending}
             >
               <GoogleIcon className="size-5" />
               Signup with Google
