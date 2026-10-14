@@ -224,6 +224,19 @@ class ListingUnlock(models.Model):
     # user actually paid for this exact listing"), same reasoning as
     # storing paystack_customer_code/subscription_code above
 
+    amount_pesewas = models.PositiveIntegerField(null=True, blank=True)
+    # What the user ACTUALLY paid, in pesewas (500 = GH¢5.00), copied
+    # from Paystack's own report of the charge when the unlock is granted
+    # (_handle_successful_charge in views.py). Stored, never recomputed
+    # from settings.LISTING_UNLOCK_PRICE_PESEWAS: that setting can change
+    # later, and a receipt must keep showing what was paid on the day.
+    # null = unknown, which is true for every unlock granted before this
+    # field existed, and for unlocks staff grant by hand in the admin.
+    # null=True is right for a number (unlike text fields, where "" means
+    # empty): there's no "empty number", so None is the honest "we don't
+    # know". Old rows are deliberately NOT backfilled with today's price,
+    # because nobody knows what those people actually paid.
+
     created_at = models.DateTimeField(auto_now_add=True)
     # When the unlock actually completed (webhook-confirmed), not when
     # they merely started checkout — set once, never touched again,

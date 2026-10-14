@@ -19,7 +19,7 @@ from rest_framework.response import Response
 from accounts.models import User, LandlordProfile
 from accounts.permissions import require_verified_email
 from .models import LandlordSubscription, ListingUnlock
-from .serializers import LandlordSubscriptionSerializer
+from .serializers import LandlordSubscriptionSerializer, ListingUnlockSerializer
 from . import limits, paystack
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,44 @@ def my_subscription(request):
     # paid_access_ends_at is when the paid plan stops counting (period
     # end, plus the 3-day grace unless the plan was cancelled) — None on
     # Free.
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def my_unlocks(request):
+    # The signed-in user's unlocked listings, newest first. Backs both the
+    # renter's Unlocked Listings page (address + landlord contact for each
+    # home they paid for) and their receipts on the Payment page. Works for
+    # any role: a landlord who unlocked someone else's listing sees theirs
+    # too.
+
+    unlocks = (
+        ListingUnlock.objects
+        .filter(user=request.user)
+        # THE security boundary of this endpoint: only the requester's own
+        # rows, always. No ?user= parameter exists, by design, so nobody
+        # can ask for someone else's unlocks.
+        .select_related('listing__landlord_profile__user')
+        .prefetch_related('listing__photos', 'listing__amenities')
+        # Fetches every nested listing's landlord, photos and amenities in
+        # a few queries total, instead of a few queries per unlock.
+        .order_by('-created_at', '-id')
+        # Newest first. '-id' breaks ties between two unlocks with the
+        # same timestamp, so the order never flips between requests.
+    )
+    # No status filter on the listing on purpose: an unlock stays listed
+    # even after the home is archived, paused or leased. They paid for
+    # that contact, and the frontend shows a "No longer listed" badge.
+
+    serializer = ListingUnlockSerializer(unlocks, many=True, context={'request': request})
+    # context={'request': ...} is load-bearing: ListingSerializer's
+    # _has_access() needs to know who's asking, and fails closed (hides
+    # the address and contact) without it. ViewSets pass this
+    # automatically via get_serializer(); a function view must pass it
+    # by hand.
+    return Response(serializer.data)
+    # A plain list, not paginated: a renter unlocks a handful of homes.
+    # The frontend's list helper already accepts both shapes.
 
 
 @api_view(['POST'])
@@ -541,7 +579,19 @@ def _handle_successful_charge(data):
         ListingUnlock.objects.get_or_create(
             user=user,
             listing=listing,
-            defaults={'paystack_reference': data.get('reference', '')},
+            defaults={
+                'paystack_reference': data.get('reference', ''),
+                'amount_pesewas': data.get('amount'),
+                # Already proven a whole number of GHS pesewas, at least
+                # the unlock price, by _unlock_charge_paid_in_full above,
+                # so it's safe to store as-is. It comes from `data` (what
+                # Paystack reported about the money that actually moved),
+                # never from the request and never from settings (that's
+                # only what we ASKED for). In `defaults`, so only the
+                # FIRST confirmation of this payment writes it; a repeat
+                # webhook or a verify-after-webhook finds the existing row
+                # and changes nothing.
+            },
         )
         # get_or_create rather than a plain .create() — protects
         # against a genuine edge case: Paystack CAN deliver the same
