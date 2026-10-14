@@ -93,6 +93,10 @@ jobs:
           DB_PASSWORD: paddy
           DB_HOST: localhost
           DB_PORT: 5432
+          # settings.py defaults to sslmode=require (Neon needs it), but
+          # the PostGIS service container above has no SSL set up — and
+          # doesn't need it, the traffic never leaves this runner
+          DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
           ALLOWED_HOSTS: 'localhost'
@@ -126,6 +130,7 @@ jobs:
           DB_PASSWORD: paddy
           DB_HOST: localhost
           DB_PORT: 5432
+          DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
           ALLOWED_HOSTS: 'localhost'
@@ -167,6 +172,7 @@ jobs:
           DB_PASSWORD: paddy
           DB_HOST: localhost
           DB_PORT: 5432
+          DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
           ALLOWED_HOSTS: 'localhost'
