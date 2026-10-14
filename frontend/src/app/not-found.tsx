@@ -5,7 +5,7 @@ import Link from "next/link";
 // just needs to point lost visitors somewhere useful.
 export default function NotFound() {
   return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-4 px-6 text-center">
+    <div className="flex min-h-(--page-h) flex-col items-center justify-center gap-4 px-6 text-center">
       <p className="text-6xl font-bold">404</p>
       <h1 className="text-2xl font-semibold">This page doesn&apos;t exist</h1>
       <p className="text-muted-foreground max-w-sm text-sm">

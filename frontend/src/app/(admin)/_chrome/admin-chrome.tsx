@@ -21,7 +21,7 @@ export function AdminChrome({
   modal: React.ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen bg-red-400 w-full items-stretch">
+    <div className="flex min-h-(--page-h) bg-red-400 w-full items-stretch">
       <div className="min-w-0 flex-1 ">
         <Layout>{children}</Layout>
       </div>

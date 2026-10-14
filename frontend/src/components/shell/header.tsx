@@ -22,7 +22,7 @@ function MobileHeader() {
   return (
     <header
       className={cn(
-        "sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 bg-white px-3",
+        "sticky top-(--demo-banner-h) z-40 flex h-14 shrink-0 items-center gap-2 bg-white px-3",
       )}
     >
       <SidebarTrigger className="text-subtle-foreground" />

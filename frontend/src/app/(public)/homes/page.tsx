@@ -90,7 +90,7 @@ export default async function HomesHubPage({
     rawType === "rent" || rawType === "buy" ? rawType : undefined;
 
   return (
-    <div className="flex h-svh flex-col overflow-hidden">
+    <div className="flex h-(--page-h) flex-col overflow-hidden">
       <header className="shrink-0 border-b p-3 md:p-4">
         <div className="mx-auto max-w-6xl space-y-3 md:space-y-4">
           <DiscoveryHeader />

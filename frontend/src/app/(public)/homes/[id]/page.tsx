@@ -33,7 +33,7 @@ export default async function PropertyDetailPage({
   const { listing, isAuthenticated } = await fetchListingForViewer(slug);
 
   return (
-    <div className="min-h-svh bg-white">
+    <div className="min-h-(--page-h) bg-white">
       <header className="border-b p-3 md:p-4">
         <div className="mx-auto max-w-6xl">
           <DiscoveryHeader />

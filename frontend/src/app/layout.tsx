@@ -5,6 +5,7 @@ import { QueryProvider } from "@/providers/query-provider";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 import { ConsentProvider } from "@/providers/consent-provider";
 import { CookieConsentBanner } from "@/components/cookie-consent-banner";
+import { DemoBanner } from "@/components/demo-banner";
 import { fontVariables } from "@/lib/fonts";
 
 export const metadata: Metadata = {
@@ -24,6 +25,7 @@ export default async function RootLayout({
   return (
     <html lang="en" className={fontVariables}>
       <body>
+        <DemoBanner />
         <Suspense>
           <GoogleOAuthProvider
             clientId={process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!}

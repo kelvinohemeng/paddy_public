@@ -551,7 +551,7 @@ function DesktopActions({ children }: { children: ReactNode }) {
   const bar = <div className="hidden items-center gap-2 md:flex">{children}</div>;
   if (slot) return createPortal(bar, slot);
   return (
-    <div className="sticky top-16 z-10 -mt-2 mb-6 hidden justify-end bg-white py-2 md:flex">
+    <div className="sticky top-[calc(4rem+var(--demo-banner-h))] z-10 -mt-2 mb-6 hidden justify-end bg-white py-2 md:flex">
       {bar}
     </div>
   );
