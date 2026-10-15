@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { ChartColumn, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
+import { ChartColumn, LockOpen, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
 
 import { useLogout, useMe } from "@/hooks/use-auth";
 import {
@@ -33,7 +33,7 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 // The rows themselves are set per role (Kelvin, 2026-10-01), with the
 // frames' look but not their exact list — see navFor() below:
 //   landlord        My Listings · Analytics (soon) | Payment · About me
-//   renter          Browse Homes · Saved Homes | About me
+//   renter          Browse Homes · Unlocked Listings · Saved Homes | Payment · About me
 //   staff           Review Queue · Browse Homes | About me
 //   admin           Review Queue · Admin panel ↗ · Browse Homes | About me
 //   everyone        | Logout
@@ -43,9 +43,9 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 // app/(admin)/dashboard/page.tsx) and "Active Lease" (leases are out of
 // the MVP; the pages and backend stay, unlinked).
 //
-// Left out until they have pages behind them: Settings, Viewings,
-// Unlocked Listings and the renter's Payment row (Viewings is also hidden
-// for the portfolio MVP, so its row needs VIEWINGS_ENABLED). A nav row
+// Left out until they have pages behind them: Settings and Viewings
+// (Viewings is also hidden for the portfolio MVP, so its row needs
+// VIEWINGS_ENABLED). A nav row
 // that 404s is worse than no row. Marker comments in navFor() show where
 // each one goes. Analytics is the one deliberate exception: shown
 // disabled with a "Soon" badge, so landlords know it's coming.
@@ -97,12 +97,13 @@ function navFor(role: string | undefined, base: string): NavGroupsForRole {
       return {
         main: [
           browseHomes,
-          // Unlocked Listings row goes here once that page exists.
+          { href: `${base}/unlocked`, label: "Unlocked Listings", icon: LockOpen },
           { href: `${base}/saved`, label: "Saved Homes", icon: "heart" },
           // Viewings row goes here once its page exists (behind VIEWINGS_ENABLED).
         ],
         account: [
-          // Payment row goes here once renters have receipts to show.
+          // Receipts for their unlocks.
+          { href: `${base}/payment`, label: "Payment", icon: "payments" },
           aboutMe,
         ],
       };
