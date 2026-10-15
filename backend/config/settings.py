@@ -204,6 +204,11 @@ REST_FRAMEWORK = {
     },
 }
 
+TEST_RUNNER = 'config.test_runner.CacheClearingTestRunner'
+# Django's test runner, except every test starts with an empty cache, so
+# the rate-limit counters above can't leak from one test into the next
+# (see config/test_runner.py).
+
 
 AUTH_USER_MODEL = 'accounts.User'
 
