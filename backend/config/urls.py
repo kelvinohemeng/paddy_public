@@ -17,7 +17,6 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
-from django.conf.urls.static import static
 
 urlpatterns = [
     path(settings.ADMIN_URL, admin.site.urls),
@@ -30,9 +29,8 @@ urlpatterns = [
     path('core/', include('core.urls'))
 ]
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-    # Only in DEBUG (local dev) — production serves media differently
-    # (via Cloudflare R2 directly, per your AGENTS.md), this line is
-    # purely a local-dev convenience so uploaded images are actually
-    # viewable through the dev server
+# No local media route. There used to be one for DEBUG
+# (`static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)`), but
+# uploads go to R2 in every environment, so it served nothing useful, and
+# with MEDIA_URL/MEDIA_ROOT unset it became "serve any file from the
+# backend folder": /.env included, with every secret in it.

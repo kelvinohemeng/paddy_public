@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes, throttle_scope
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('payments')
+# Protects OUR server from a bug or malicious client hammering this
+# endpoint, which would in turn hammer Paystack's real API on our
+# behalf — repeated rapid-fire calls here could trigger Paystack's own
+# abuse detection against our account, or just waste real API quota
 def initiate_subscription(request):
     # A landlord hits this when they need to upgrade beyond what their
     # current tier allows. Same @api_view function-based pattern as
@@ -122,9 +127,22 @@ def initiate_subscription(request):
     # The new plan is charged in full straight away. Paystack can't
     # prorate, so unused time on the old plan isn't refunded.
 
+    try:
+        amount_kobo = int(request.data.get('amount_kobo'))
+    except (TypeError, ValueError):
+        return Response(
+            {'error': 'amount_kobo must be a whole number.', 'code': 'invalid_amount'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    # A missing value (int(None) -> TypeError) or text like "abc"
+    # (ValueError) used to crash this view with a 500. Only the format is
+    # checked, not the size: Paystack charges the plan's own price whatever
+    # we send (see the comment below), so the number can't change what the
+    # landlord pays.
+
     result = paystack.initialize_transaction(
         email=user.email,
-        amount_kobo=int(request.data.get('amount_kobo')),
+        amount_kobo=amount_kobo,
         # Sent from the frontend rather than hardcoded here, since the
         # actual GHS price of the plan lives in Paystack's Plan object,
         # not duplicated in our own code — though in practice this
@@ -146,11 +164,6 @@ def initiate_subscription(request):
     # result['data'] contains authorization_url + access_code + reference
     # — exactly what the frontend needs to open Paystack's Popup
 
-initiate_subscription.throttle_scope = 'payments'
-# Protects OUR server from a bug or malicious client hammering this
-# endpoint, which would in turn hammer Paystack's real API on our
-# behalf — repeated rapid-fire calls here could trigger Paystack's own
-# abuse detection against our account, or just waste real API quota
 
 
 @api_view(['GET'])
@@ -237,6 +250,9 @@ def my_unlocks(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('payments')
+# Calls Paystack's real API, so it gets the same rate limit as the other
+# payment endpoints.
 def cancel_subscription(request):
     # POST /payments/subscription/cancel/ — the landlord stops their paid
     # plan from renewing. They keep it until current_period_end (they've
@@ -295,9 +311,6 @@ def cancel_subscription(request):
     data.update(limits.usage_for(user.landlordprofile))
     return Response(data)
 
-cancel_subscription.throttle_scope = 'payments'
-# Calls Paystack's real API, so it gets the same rate limit as the other
-# payment endpoints.
 
 
 PAYSTACK_ALREADY_STOPPED = ('non-renewing', 'cancelled', 'complete', 'completed')
@@ -386,6 +399,9 @@ def retire_superseded_subscription(subscription):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('payments')
+# Same reasoning as initiate_subscription — protects against a client
+# hammering this endpoint into repeatedly calling Paystack's real API
 def initiate_listing_unlock(request):
     # ANY authenticated user hits this — renter, or a landlord without
     # an active subscription browsing someone else's listing. Unlike
@@ -461,9 +477,6 @@ def initiate_listing_unlock(request):
 
     return Response(result['data'])
 
-initiate_listing_unlock.throttle_scope = 'payments'
-# Same reasoning as initiate_subscription — protects against a client
-# hammering this endpoint into repeatedly calling Paystack's real API
 
 
 UNLOCK_CURRENCY = 'GHS'
@@ -751,6 +764,9 @@ def _parse_paid_at(data):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('payments')
+# Same scope/reasoning as initiate_subscription/initiate_listing_unlock
+# — this also proxies to Paystack's real API per call
 def verify_payment(request):
     # THE synchronous half of payment confirmation. Paystack's popup
     # closing on the frontend only means the CHECKOUT UI finished —
@@ -797,9 +813,6 @@ def verify_payment(request):
 
     return Response({'verified': True, 'status': 'success'})
 
-verify_payment.throttle_scope = 'payments'
-# Same scope/reasoning as initiate_subscription/initiate_listing_unlock
-# — this also proxies to Paystack's real API per call
 
 
 def _verify_paystack_signature(request):
@@ -901,6 +914,7 @@ def _period_end_from_paystack_data(data):
 # check here at all. The signature verification below IS the real
 # security check for this endpoint, replacing authentication entirely
 
+@throttle_scope('webhook')
 def paystack_webhook(request):
     if not _verify_paystack_signature(request):
         return Response(status=status.HTTP_401_UNAUTHORIZED)
@@ -1151,4 +1165,3 @@ def paystack_webhook(request):
     # want for genuine failures on OUR end, not "we simply don't act on
     # this particular event type"
 
-paystack_webhook.throttle_scope = 'webhook'
