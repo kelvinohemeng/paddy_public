@@ -19,14 +19,16 @@ import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useMe } from "@/hooks/use-auth";
 import { authedFetch } from "@/lib/api";
+import { VIEWINGS_ENABLED } from "@/lib/features";
 import { cn } from "@/lib/utils";
 import { useUnlockCheckout } from "./unlock-cta";
 
 export type LandlordContact = { phone?: string | null; email?: string | null } | null;
 
 // Figma booking card (Property Details 171:2635): price + commitment,
-// "Reserve a viewing slot" field, neutral "Message Landlord" button and
-// the dark primary button, with the trust line underneath.
+// "Reserve a viewing slot" field (only with VIEWINGS_ENABLED, see
+// lib/features.ts), neutral "Message Landlord" button and the dark
+// primary button, with the trust line underneath.
 //
 // Decisions (Kelvin, 2026-09-24):
 // - Primary button = pay-to-unlock (Figma showed the rent as its label;
@@ -88,11 +90,13 @@ export const BookingCard = forwardRef<
 
         {showRenterActions && (
           <div className="space-y-2.5">
-            <ViewingSlotPicker
-              listingId={listingId}
-              isUnlocked={isUnlocked}
-              onUnlock={startUnlock}
-            />
+            {VIEWINGS_ENABLED && (
+              <ViewingSlotPicker
+                listingId={listingId}
+                isUnlocked={isUnlocked}
+                onUnlock={startUnlock}
+              />
+            )}
 
             <button
               type="button"

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { useMe } from "@/hooks/use-auth";
 import { apiPost } from "@/lib/api-client";
 import { errorMessage } from "@/lib/api";
+import { VIEWINGS_ENABLED } from "@/lib/features";
 
 // Shown across the dashboard until the signed-in user has verified their
 // email. Paying (unlocks, subscriptions), creating listings and booking
@@ -45,7 +46,9 @@ export function VerifyEmailBanner() {
     >
       <MailWarning className="size-4 shrink-0" />
       <p className="min-w-0 flex-1">
-        Verify your email to unlock homes, create listings and book viewings.
+        {VIEWINGS_ENABLED
+          ? "Verify your email to unlock homes, create listings and book viewings."
+          : "Verify your email to unlock homes and create listings."}
         {me.email ? <> We sent a link to <strong>{me.email}</strong>.</> : null}
       </p>
       <button
