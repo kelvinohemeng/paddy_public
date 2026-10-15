@@ -156,7 +156,7 @@ REST_FRAMEWORK = {
 
         'login': '5/min',
         'register': '5/min',
-        'password_reset': '5/min',
+        'password_reset': '5/min',  # nosec B105: a rate limit, not a password
         # Same strict tier as login/register — a forgot-password request
         # endpoint is a prime target for email-enumeration and spam-abuse
         # (hammering someone else's inbox with reset emails), and the
@@ -347,7 +347,74 @@ if DEBUG:
     # habit is dangerous to generalize from; production must keep using
     # the strict allow-list, never a regex.
 
+if not DEBUG:
+    # PRODUCTION SECURITY. Only when DEBUG is off, because local dev runs
+    # over plain http://localhost, and every setting below assumes HTTPS.
+    # `python manage.py check --deploy` checks these (see the PR that
+    # added them for what each remaining warning means).
+
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    # The host's proxy (Render's today; Traefik if it moves to Coolify)
+    # handles HTTPS and passes requests to gunicorn over plain HTTP.
+    # Django therefore sees every request as http:// unless it trusts the
+    # header the proxy adds, "X-Forwarded-Proto: https", saying what the
+    # browser actually used.
+    # Without this, the redirect below would bounce every request forever
+    # and secure cookies would never be sent. Only safe because nothing
+    # reaches gunicorn except through that proxy, which overwrites any
+    # X-Forwarded-Proto a client tries to send itself.
+
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    # Any http:// request is redirected to https://. Switchable because
+    # some callers talk plain HTTP on purpose and must not be redirected:
+    # CI's test client and boot check, and possibly the host's health
+    # check. Render (and Traefik) already redirect browsers to HTTPS
+    # before requests reach us, so turning this off on the server is safe
+    # if a health check needs it.
+
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    # The browser only sends these cookies over HTTPS, never plain HTTP,
+    # where anyone on the network could read them. They belong to the
+    # Django admin (the API itself uses JWTs, not these cookies).
+
+    CSRF_TRUSTED_ORIGINS = config(
+        'CSRF_TRUSTED_ORIGINS', default='', cast=lambda v: [o.strip() for o in v.split(',') if o.strip()],
+    )
+    # Full origins (https://admin.example.com) allowed to send POSTs, such
+    # as an admin login form, from a DIFFERENT origin than the backend's
+    # own. Empty is fine while the admin is used on the backend's own
+    # domain: Django already trusts same-origin requests.
+
+    SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=3600, cast=int)
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    # HSTS: the response tells the browser "only ever use HTTPS for this
+    # domain, for the next N seconds", even if someone types http://.
+    # Browsers remember it, so a mistake (HTTPS breaking) would lock users
+    # out until it expires. Hence one hour to start; raise it via the env
+    # var (e.g. 31536000 = a year) once HTTPS has run cleanly for a while.
+    # Including subdomains only covers subdomains of the backend's own
+    # host (e.g. *.api.example.com), never the frontend's domain.
+
+    X_FRAME_OPTIONS = 'DENY'
+    # No other site may show our pages (the admin) inside a frame, which
+    # blocks "clickjacking": an invisible admin page layered under a fake
+    # button. Already Django's default; written out so it's deliberate.
+
+    SILENCED_SYSTEM_CHECKS = ['security.W021']
+    # W021 asks for SECURE_HSTS_PRELOAD, which puts the domain on a list
+    # built into browsers. It needs a max-age of at least a year and takes
+    # months to undo, so it's deliberately off while HSTS is on a short
+    # trial. Remove this line when turning preload on.
+
 ROOT_URLCONF = 'config.urls'
+
+ADMIN_URL = config('ADMIN_URL', default='admin/').strip('/') + '/'
+# Where the Django admin lives. Moving it off the well-known /admin/ cuts
+# the automated login attempts that every public /admin/ gets; it hides
+# nothing from a real attacker, so the admin's real protection is still
+# its passwords. The strip/append makes "secret-admin", "/secret-admin"
+# and "secret-admin/" all work.
 
 TEMPLATES = [
     {

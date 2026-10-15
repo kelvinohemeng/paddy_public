@@ -22,6 +22,12 @@ boto3 = "*"
 django-location-field = "*"
 
 [dev-packages]
+bandit = "*"
+
+[scripts]
+# pipenv run security: Bandit (a security linter) over the app code. Tests
+# and migrations are skipped: their fake passwords are all false alarms.
+security = "bandit -r . -x ./*/tests.py,./*/test_*.py,./*/migrations,./staticfiles,./static"
 
 [requires]
 python_version = "3.11"

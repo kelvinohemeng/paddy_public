@@ -1321,7 +1321,7 @@ class GoogleLoginTokenTests(APITestCase):
             response = self._post({'token': 'fake', 'role': 'renter'}, payload=payload)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        mock_get.assert_called_once_with('https://lh3.googleusercontent.com/a/photo')
+        mock_get.assert_called_once_with('https://lh3.googleusercontent.com/a/photo', timeout=10)
         user = User.objects.get(email=self.PAYLOAD['email'])
         self.assertTrue(user.profile_image.name.endswith('_google.jpg'))
 
@@ -1336,6 +1336,17 @@ class GoogleLoginTokenTests(APITestCase):
         user = User.objects.get(email=self.PAYLOAD['email'])
         self.assertFalse(user.profile_image)
         # No photo, but the person is signed in.
+
+    def test_photo_download_timeout_does_not_block_login(self):
+        import requests
+
+        payload = dict(self.PAYLOAD, picture='https://lh3.googleusercontent.com/a/slow')
+        with patch('accounts.views.requests.get', side_effect=requests.Timeout):
+            response = self._post({'token': 'fake', 'role': 'renter'}, payload=payload)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        user = User.objects.get(email=self.PAYLOAD['email'])
+        self.assertFalse(user.profile_image)
 
 
 class MeProfileChoiceValidationTests(APITestCase):

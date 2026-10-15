@@ -454,9 +454,17 @@ def google_login(request):
 
         picture_url = idinfo.get('picture')
         if picture_url:
-            response = requests.get(picture_url)
-            if response.status_code == 200:
-                user.profile_image.save(f"{user.id}_google.jpg", ContentFile(response.content), save=False)
+            try:
+                response = requests.get(picture_url, timeout=10)
+                # timeout: without one, a slow or stuck image server would
+                # hold this request (and a whole gunicorn worker) open
+                # forever. 10 seconds is plenty for a small avatar.
+                if response.status_code == 200:
+                    user.profile_image.save(f"{user.id}_google.jpg", ContentFile(response.content), save=False)
+            except requests.RequestException:
+                logger.warning('Could not download the Google profile photo for user id %s.', user.id)
+                # A timeout or network error only costs the photo: the
+                # person still signs in, same as a 404 from Google.
 
         user.save()
         # sign_in_method and oauth_data were set on the Python object above,
