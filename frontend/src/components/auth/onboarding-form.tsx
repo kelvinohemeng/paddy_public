@@ -171,7 +171,7 @@ export function OnboardingForm({ account }: { account: OnboardingAccount }) {
   };
 
   return (
-    <div className="flex min-h-svh flex-col items-center justify-center gap-10 px-6 py-10">
+    <div className="flex min-h-(--page-h) flex-col items-center justify-center gap-10 px-6 py-10">
       <Logo className="text-3xl" />
 
       <div className="w-full max-w-sm">

@@ -38,7 +38,7 @@ export function Layout({ children }: PropsWithChildren) {
       open
       onOpenChange={noop}
       style={{ "--sidebar-width": "16rem" } as CSSProperties}
-      className="bg-white"
+      className="min-h-(--page-h) bg-white"
     >
       <Sidebar />
       <SidebarInset className="min-w-0 bg-white">
@@ -53,8 +53,9 @@ export function Layout({ children }: PropsWithChildren) {
             "m-2 rounded-2xl",
             "md:mt-[47px] md:mr-[45px] md:mb-12 md:ml-[12px] md:rounded-[20px]",
             // At least the viewport height minus the margins (1024 − 95 =
-            // Figma's 929px panel); longer pages grow and the window scrolls.
-            "md:min-h-[calc(100svh-95px)]",
+            // Figma's 929px panel), below the demo banner; longer pages grow
+            // and the window scrolls.
+            "md:min-h-[calc(var(--page-h)-95px)]",
           )}
         >
           {/* The banner renders nothing once the email is verified, which

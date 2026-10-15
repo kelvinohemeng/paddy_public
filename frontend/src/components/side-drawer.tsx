@@ -101,7 +101,7 @@ export function SideDrawer({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-black/30 backdrop-blur-[2px]" />
+        <Dialog.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 top-(--demo-banner-h) z-50 bg-black/30 backdrop-blur-[2px]" />
         <Dialog.Content
           aria-describedby={undefined}
           onInteractOutside={(e) => {
@@ -123,7 +123,7 @@ export function SideDrawer({
             }
           }}
           className={cn(
-            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-hidden bg-white shadow-2xl ease-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
+            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right fixed inset-y-0 top-(--demo-banner-h) right-0 z-50 flex w-full flex-col overflow-hidden bg-white shadow-2xl ease-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
             "transition-[max-width,border-radius] duration-300",
             // Below md: always the whole screen. From md up: the 845px
             // drawer with its rounded corner, or full width once expanded.

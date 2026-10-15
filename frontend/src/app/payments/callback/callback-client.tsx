@@ -160,7 +160,7 @@ export function PaymentCallbackClient() {
 // identical without duplicating the wrapper classes.
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center p-6">
+    <div className="bg-background flex min-h-(--page-h) items-center justify-center p-6">
       <div className="w-full max-w-md space-y-4 rounded-lg border p-8 text-center">
         {children}
       </div>

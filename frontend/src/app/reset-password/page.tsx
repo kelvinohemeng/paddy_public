@@ -28,7 +28,7 @@ export default async function ResetPassword({
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-svh items-center justify-center">
+        <div className="flex min-h-(--page-h) items-center justify-center">
           <Loader2 className="size-8 animate-spin" />
         </div>
       }

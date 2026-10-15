@@ -129,7 +129,11 @@ export function Sidebar() {
   const { isMobile } = useShadcnSidebar();
 
   return (
-    <ShadcnSidebar collapsible="icon" className="border-none">
+    <ShadcnSidebar
+      collapsible="icon"
+      // The desktop nav is position: fixed; start it under the demo banner.
+      className="top-(--demo-banner-h) h-(--page-h) border-none"
+    >
       <SidebarLogo />
       <ShadcnSidebarContent
         className={cn(

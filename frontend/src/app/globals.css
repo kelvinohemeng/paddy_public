@@ -201,6 +201,26 @@
   --sidebar-accent-foreground: #18181b;
   --sidebar-border: #e4e4e7;
   --sidebar-ring: #3b82f6;
+  /* Demo banner (components/demo-banner.tsx), stuck to the top of every
+     page. Fixed/sticky things offset by its height; full-height layouts
+     use --page-h, the screen below it. The banner sets its measured
+     height at runtime; these defaults match the current copy at first
+     paint (three lines under 344px, two on phones, one from sm) so
+     nothing shifts. */
+  --demo-banner-h: 44px;
+  --page-h: calc(100svh - var(--demo-banner-h));
+}
+
+@media (width < 344px) {
+  :root {
+    --demo-banner-h: 60px;
+  }
+}
+
+@media (width >= 40rem) {
+  :root {
+    --demo-banner-h: 28px;
+  }
 }
 
 @layer base {

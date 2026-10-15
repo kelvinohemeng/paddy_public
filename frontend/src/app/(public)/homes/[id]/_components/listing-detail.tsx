@@ -297,7 +297,7 @@ export function ListingDetail({
 
         {/* Mobile: booking card right after the gallery, so price and
             the unlock action are above the fold. Desktop: sticky right. */}
-        <aside className="animate-in fade-in slide-in-from-bottom-3 order-first duration-500 [animation-delay:180ms] [animation-fill-mode:both] md:sticky md:top-6 md:order-none md:self-start">
+        <aside className="animate-in fade-in slide-in-from-bottom-3 order-first duration-500 [animation-delay:180ms] [animation-fill-mode:both] md:sticky md:top-[calc(1.5rem+var(--demo-banner-h))] md:order-none md:self-start">
           <BookingCard
             ref={bookingRef}
             listingId={listing.id}

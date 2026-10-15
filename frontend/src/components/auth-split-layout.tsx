@@ -13,7 +13,7 @@ export function AuthSplitLayout({ children }: { children: React.ReactNode }) {
   return (
     // min-h, not h: a fixed height clips the top of a form taller than
     // the screen (sign-up on a short laptop or a phone held sideways)
-    <div className="flex min-h-svh w-full">
+    <div className="flex min-h-(--page-h) w-full">
       <div className="hidden flex-1 flex-col items-center justify-center gap-3 bg-[url('/brand/sign-gradient.jpg')] bg-cover bg-no-repeat lg:flex">
         <PaddyEyes curve={0} />
       </div>
