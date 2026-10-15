@@ -631,9 +631,40 @@ class VerifyPaymentTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['verified'])
-        self.assertTrue(ListingUnlock.objects.filter(
-            user=self.renter_user, listing=self.listing
-        ).exists())
+        unlock = ListingUnlock.objects.get(user=self.renter_user, listing=self.listing)
+        self.assertEqual(unlock.amount_pesewas, settings.LISTING_UNLOCK_PRICE_PESEWAS)
+        # The receipt amount is what Paystack reported, stored at the
+        # moment the unlock was granted.
+
+    def test_repeat_confirmation_does_not_overwrite_amount(self):
+        # The same unlock confirmed twice: once by verify, then by a later
+        # webhook carrying a different amount and reference (e.g. a second
+        # charge for a listing that's already unlocked). The first
+        # confirmation's receipt must stand, because get_or_create only
+        # applies `defaults` when it creates the row.
+        price = settings.LISTING_UNLOCK_PRICE_PESEWAS
+        metadata = {
+            'purpose': 'listing_unlock',
+            'listing_id': self.listing.id,
+            'user_id': self.renter_user.id,
+        }
+
+        self.client.force_authenticate(user=self.renter_user)
+        first = {'status': 'success', 'reference': 'T_FIRST', 'amount': price, 'currency': 'GHS', 'metadata': metadata}
+        with patch('payments.paystack.verify_transaction', return_value={'status': True, 'data': first}):
+            self.client.get('/payments/verify/?reference=T_FIRST')
+
+        second = {'status': 'success', 'reference': 'T_SECOND', 'amount': price + 500, 'currency': 'GHS', 'metadata': metadata}
+        body = json.dumps({'event': 'charge.success', 'data': second}).encode('utf-8')
+        response = self.client.post(
+            '/payments/webhook/', data=body, content_type='application/json',
+            HTTP_X_PAYSTACK_SIGNATURE=sign(body),
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        unlock = ListingUnlock.objects.get(user=self.renter_user, listing=self.listing)
+        self.assertEqual(unlock.amount_pesewas, price)
+        self.assertEqual(unlock.paystack_reference, 'T_FIRST')
 
     def test_successful_subscription_verification_activates_subscription(self):
         self.client.force_authenticate(user=self.landlord_user)
@@ -703,6 +734,144 @@ class VerifyPaymentTests(APITestCase):
         self.assertEqual(ListingUnlock.objects.filter(
             user=self.renter_user, listing=self.listing
         ).count(), 1)
+
+
+class MyUnlocksTests(APITestCase):
+    # GET /payments/unlocks/ — the signed-in user's own unlocks, newest
+    # first, each with the full listing (address + landlord contact).
+    # Unlock rows are created directly: these tests are about the list,
+    # not the payment, so there's no need to go through Paystack.
+
+    URL = '/payments/unlocks/'
+
+    def setUp(self):
+        self.renter_user = User.objects.create_user(
+            email='unlocks-renter@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.renter_user, full_name='Unlocks Renter')
+
+        self.other_renter = User.objects.create_user(
+            email='unlocks-other@example.com', password='pass123456', role='renter'
+        )
+        RenterProfile.objects.create(user=self.other_renter, full_name='Other Renter')
+
+        self.landlord_user = User.objects.create_user(
+            email='unlocks-landlord@example.com', password='pass123456', role='landlord',
+            phone='0241234567',
+        )
+        self.landlord_profile = LandlordProfile.objects.create(
+            user=self.landlord_user, full_name='Unlocks Landlord',
+            national_id_number='GHA-51', preferred_payout_method='momo'
+        )
+
+        self.listing = self._listing('First home', '1 Unlock Rd')
+        self.second_listing = self._listing('Second home', '2 Unlock Rd')
+
+    def _listing(self, title, address):
+        from listings.models import Listing
+        return Listing.objects.create(
+            landlord_profile=self.landlord_profile,
+            title=title, description='Test', listing_type='rent',
+            price_monthly='1200.00', advance_rent_period='1_year',
+            bedrooms=1, bathrooms=1, address_precise=address,
+            neighborhood='Osu', city='Accra', status='published',
+        )
+
+    def test_requires_authentication(self):
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_lists_own_unlock_with_address_and_contact(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing, paystack_reference='T_OWN')
+
+        self.client.force_authenticate(user=self.renter_user)
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        row = response.data[0]
+        self.assertEqual(row['listing'], self.listing.id)
+        self.assertEqual(row['paystack_reference'], 'T_OWN')
+        self.assertNotIn('user', row)
+        self.assertEqual(row['listing_detail']['address_precise'], '1 Unlock Rd')
+        self.assertEqual(row['listing_detail']['landlord_contact'], {
+            'phone': '0241234567', 'email': 'unlocks-landlord@example.com',
+        })
+        # Revealed only because the view passes the request into the
+        # serializer context. Without it, _has_access() fails closed and
+        # both of these come back None.
+
+    def test_never_shows_other_users_unlocks(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        # Renter A has paid for this listing...
+
+        self.client.force_authenticate(user=self.other_renter)
+        response = self.client.get(self.URL)
+        # ...renter B asks for THEIR unlocks
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+        # B has unlocked nothing, so B gets nothing: never A's address
+        # and landlord phone number for free.
+
+    def test_newest_first(self):
+        older = ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        newer = ListingUnlock.objects.create(user=self.renter_user, listing=self.second_listing)
+        now = timezone.now()
+        ListingUnlock.objects.filter(pk=older.pk).update(created_at=now - timedelta(days=2))
+        ListingUnlock.objects.filter(pk=newer.pk).update(created_at=now - timedelta(days=1))
+        # Set by hand: two rows made in the same test can share a
+        # timestamp, and auto_now_add ignores a value passed to create().
+
+        self.client.force_authenticate(user=self.renter_user)
+        response = self.client.get(self.URL)
+
+        self.assertEqual([row['id'] for row in response.data], [newer.id, older.id])
+
+    def test_amount_is_returned(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing, amount_pesewas=500)
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.second_listing)
+        # The second one has no amount: an unlock from before the field
+        # existed, or one staff granted by hand.
+
+        self.client.force_authenticate(user=self.renter_user)
+        response = self.client.get(self.URL)
+
+        amounts = {row['listing']: row['amount_pesewas'] for row in response.data}
+        self.assertEqual(amounts, {self.listing.id: 500, self.second_listing.id: None})
+
+    def test_unpublished_listing_still_listed(self):
+        ListingUnlock.objects.create(user=self.renter_user, listing=self.listing)
+        self.listing.status = 'archived'
+        self.listing.save()
+        # They paid for this contact; the home leaving the market doesn't
+        # take it back.
+
+        self.client.force_authenticate(user=self.renter_user)
+        response = self.client.get(self.URL)
+
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['listing_detail']['status'], 'archived')
+        self.assertEqual(response.data[0]['listing_detail']['address_precise'], '1 Unlock Rd')
+
+    def test_works_for_landlords_too(self):
+        # A landlord who unlocked ANOTHER landlord's listing sees it here
+        # as well; the endpoint has no role check.
+        other_landlord = User.objects.create_user(
+            email='unlocks-landlord2@example.com', password='pass123456', role='landlord'
+        )
+        LandlordProfile.objects.create(
+            user=other_landlord, full_name='Second Landlord',
+            national_id_number='GHA-52', preferred_payout_method='momo'
+        )
+        ListingUnlock.objects.create(user=other_landlord, listing=self.listing)
+
+        self.client.force_authenticate(user=other_landlord)
+        response = self.client.get(self.URL)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([row['listing'] for row in response.data], [self.listing.id])
 
 
 class ForgedChargeTests(APITestCase):

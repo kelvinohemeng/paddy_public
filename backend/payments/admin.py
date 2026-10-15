@@ -54,5 +54,9 @@ class LandlordSubscriptionAdmin(ModelAdmin):
 
 @admin.register(ListingUnlock)
 class ListingUnlockAdmin(ModelAdmin):
-    list_display = ['user', 'listing', 'created_at']
+    list_display = ['user', 'listing', 'amount_pesewas', 'created_at']
     search_fields = ['user__email', 'listing__title']
+    readonly_fields = ['amount_pesewas']
+    # Read-only: the amount is a receipt of what Paystack says was paid,
+    # written only by _handle_successful_charge. A hand-granted unlock
+    # keeps it empty ("unknown") rather than a number typed in by staff.
