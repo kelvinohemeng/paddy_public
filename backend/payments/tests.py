@@ -99,14 +99,14 @@ class InitiateSubscriptionTests(APITestCase):
         self.client.force_authenticate(user=self.renter_user)
 
         response = self.client.post(
-            '/payments/subscribe/', {'amount_kobo': 5000, 'callback_url': 'http://x.com'}, format='json'
+            '/payments/subscribe/', {'callback_url': 'http://x.com'}, format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_initiate_requires_authentication(self):
         response = self.client.post(
-            '/payments/subscribe/', {'amount_kobo': 5000, 'callback_url': 'http://x.com'}, format='json'
+            '/payments/subscribe/', {'callback_url': 'http://x.com'}, format='json'
         )
 
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -118,20 +118,25 @@ class InitiateSubscriptionTests(APITestCase):
         # the actual paystack.initialize_transaction() call itself
         # would be tested via mocking in a more thorough test suite
 
-    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test')
-    def test_missing_or_bad_amount_is_400_not_a_crash(self):
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test', PAYSTACK_LORD_PLAN_CODE='PLN_lord_test')
+    def test_plan_price_comes_from_the_server_not_the_request(self):
         self.landlord_user.is_verified = True
         self.landlord_user.save()
         self.client.force_authenticate(user=self.landlord_user)
 
-        with patch('payments.paystack.initialize_transaction') as mock_init:
-            missing = self.client.post('/payments/subscribe/', {'tier': 'agent'}, format='json')
-            text = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 'abc'}, format='json')
+        for tier, price in (('agent', 25000), ('lord', 100000)):
+            with self.subTest(tier=tier), patch('payments.paystack.initialize_transaction') as mock_init:
+                mock_init.return_value = {'status': True, 'data': {'reference': 'ref_sub'}}
+                response = self.client.post(
+                    '/payments/subscribe/',
+                    {'tier': tier, 'amount': 1, 'amount_pesewas': 1},
+                    # A client trying to pay 1 pesewa; every amount field is ignored
+                    format='json',
+                )
 
-        for response in (missing, text):
-            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-            self.assertEqual(response.data['code'], 'invalid_amount')
-        mock_init.assert_not_called()
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(mock_init.call_args.kwargs['amount_pesewas'], price)
+                self.assertEqual(mock_init.call_args.kwargs['plan_code'], f'PLN_{tier}_test')
 
     def test_payment_endpoints_are_limited_to_ten_a_minute(self):
         self.client.force_authenticate(user=self.landlord_user)
@@ -186,9 +191,9 @@ class InitiateListingUnlockTests(APITestCase):
 
         response = self.client.post(
             '/payments/unlock-listing/',
-            {'listing_id': self.listing.id, 'amount_kobo': 1, 'amount': 1,
+            {'listing_id': self.listing.id, 'amount': 1, 'amount_pesewas': 1,
              'callback_url': 'http://x.com'},
-            # amount_kobo/amount = 1 — a malicious client trying to
+            # amount = 1 — a malicious client trying to
             # unlock for a single pesewa; the view must ignore both
             format='json',
         )
@@ -196,8 +201,8 @@ class InitiateListingUnlockTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         mock_init.assert_called_once()
         kwargs = mock_init.call_args.kwargs
-        self.assertEqual(kwargs['amount_kobo'], settings.LISTING_UNLOCK_PRICE_PESEWAS)
-        self.assertEqual(kwargs['amount_kobo'], 1234)
+        self.assertEqual(kwargs['amount_pesewas'], settings.LISTING_UNLOCK_PRICE_PESEWAS)
+        self.assertEqual(kwargs['amount_pesewas'], 1234)
         self.assertIsNone(kwargs.get('plan_code'))
         self.assertEqual(kwargs['metadata']['purpose'], 'listing_unlock')
         self.assertEqual(kwargs['metadata']['listing_id'], self.listing.id)
@@ -534,7 +539,7 @@ class PaystackClientResilienceTests(APITestCase):
             mock_request.return_value.json.return_value = {'status': True, 'data': {}}
 
             paystack.initialize_transaction(
-                email='timeout-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+                email='timeout-test@example.com', amount_pesewas=5000, callback_url='http://x.com',
             )
 
             self.assertTrue(mock_request.called)
@@ -543,7 +548,7 @@ class PaystackClientResilienceTests(APITestCase):
     def test_initialize_transaction_degrades_gracefully_on_timeout(self):
         with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
             result = paystack.initialize_transaction(
-                email='timeout-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+                email='timeout-test@example.com', amount_pesewas=5000, callback_url='http://x.com',
             )
 
         self.assertFalse(result['status'])
@@ -557,7 +562,7 @@ class PaystackClientResilienceTests(APITestCase):
             side_effect=requests.exceptions.ConnectionError,
         ):
             result = paystack.initialize_transaction(
-                email='conn-test@example.com', amount_kobo=5000, callback_url='http://x.com',
+                email='conn-test@example.com', amount_pesewas=5000, callback_url='http://x.com',
             )
 
         self.assertFalse(result['status'])
@@ -585,7 +590,7 @@ class PaystackClientResilienceTests(APITestCase):
         with patch('payments.paystack.requests.request', side_effect=requests.exceptions.Timeout):
             response = self.client.post(
                 '/payments/subscribe/',
-                {'tier': 'agent', 'amount_kobo': 25000, 'callback_url': 'http://x.com'},
+                {'tier': 'agent', 'callback_url': 'http://x.com'},
                 format='json',
             )
 
@@ -1087,7 +1092,7 @@ class PaymentAccessRuleTests(APITestCase):
     def test_unverified_landlord_cannot_start_subscription(self, mock_init):
         self.client.force_authenticate(user=self.landlord_user)
 
-        response = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 25000}, format='json')
+        response = self.client.post('/payments/subscribe/', {'tier': 'agent'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(response.data['code'], 'email_not_verified')
@@ -1358,7 +1363,7 @@ class PaystackClientRequestTests(APITestCase):
             mock_request.return_value.json.return_value = {'status': True, 'data': {}}
 
             paystack.initialize_transaction(
-                email='payer@example.com', amount_kobo=25000, callback_url='http://x.com',
+                email='payer@example.com', amount_pesewas=25000, callback_url='http://x.com',
                 plan_code='PLN_agent_test', metadata={'purpose': 'subscription'},
             )
 

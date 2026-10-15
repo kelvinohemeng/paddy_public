@@ -268,13 +268,12 @@ LISTING_UNLOCK_PRICE_PESEWAS = config('LISTING_UNLOCK_PRICE_PESEWAS', default=50
 # The price (in the smallest currency unit — pesewas for GHS, same
 # convention Paystack itself uses) to unlock ONE listing's protected
 # details. Deliberately a SETTINGS value, never trusted from the
-# frontend request — unlike initiate_subscription (where Paystack's own
-# plan_code overrides whatever amount we send, making the frontend's
-# number harmless either way), a one-off listing-unlock charge has NO
-# plan attached, so whatever amount we pass to Paystack is genuinely
-# what gets charged. If we trusted request.data here, a malicious
-# client could request amount_kobo=1 and unlock a listing for a
-# fraction of a pesewa. Price genuinely TBD (default GHS 5.00 here is a
+# frontend request: a one-off listing-unlock charge has NO Paystack plan
+# attached, so whatever amount we pass to Paystack is genuinely what gets
+# charged. If we trusted request.data here, a malicious client could
+# send an amount of 1 and unlock a listing for a single pesewa.
+# (Subscriptions follow the same rule: their price comes from
+# LandlordSubscription.PRICES_PESEWAS.) Price genuinely TBD (default GHS 5.00 here is a
 # placeholder) — change via .env, not by editing this file, so it can
 # be adjusted without a code deploy
 

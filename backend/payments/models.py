@@ -52,6 +52,17 @@ class LandlordSubscription(models.Model):
         # another row on the same tier
     }
 
+    PRICES_PESEWAS = {
+        Tier.AGENT: 25000,  # GHS 250 a month
+        Tier.LORD: 100000,  # GHS 1,000 a month
+        # Monthly price of each paid plan in pesewas (GHS x 100), the unit
+        # Paystack wants. Sent as `amount` when a landlord subscribes, so
+        # the price comes from the server, never from the request. The
+        # real price lives on the Paystack plan itself, which overrides
+        # this amount, so keep both in step when a price changes (and
+        # TIER_META in frontend/src/lib/payments.ts, which shows it).
+    }
+
     paystack_customer_code = models.CharField(max_length=100, blank=True)
     # Paystack's own ID for this landlord as a "customer" in their
     # system (e.g. "CUS_xnxdt6s1zg1f4nx") — needed to reference them in
