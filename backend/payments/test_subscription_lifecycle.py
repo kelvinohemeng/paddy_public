@@ -277,7 +277,7 @@ class InitiateSwitchGuardTests(LifecycleTestBase):
         self.active_plan(LandlordSubscription.Tier.AGENT, 'SUB_1', 'PLN_agent_test')
         self.client.force_authenticate(user=self.landlord)
 
-        response = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 25000}, format='json')
+        response = self.client.post('/payments/subscribe/', {'tier': 'agent'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(response.data['code'], 'already_on_plan')
@@ -288,7 +288,7 @@ class InitiateSwitchGuardTests(LifecycleTestBase):
         self.active_plan(LandlordSubscription.Tier.AGENT, 'SUB_1', 'PLN_agent_test')
         self.client.force_authenticate(user=self.landlord)
 
-        response = self.client.post('/payments/subscribe/', {'tier': 'lord', 'amount_kobo': 100000}, format='json')
+        response = self.client.post('/payments/subscribe/', {'tier': 'lord'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(mock_init.call_args.kwargs['plan_code'], 'PLN_lord_test')
@@ -301,7 +301,7 @@ class InitiateSwitchGuardTests(LifecycleTestBase):
         )
         self.client.force_authenticate(user=self.landlord)
 
-        response = self.client.post('/payments/subscribe/', {'tier': 'lord', 'amount_kobo': 100000}, format='json')
+        response = self.client.post('/payments/subscribe/', {'tier': 'lord'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
         mock_init.assert_not_called()
@@ -311,7 +311,7 @@ class InitiateSwitchGuardTests(LifecycleTestBase):
         self.active_plan(LandlordSubscription.Tier.AGENT, 'SUB_1', 'PLN_agent_test', days=-10)
         self.client.force_authenticate(user=self.landlord)
 
-        response = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 25000}, format='json')
+        response = self.client.post('/payments/subscribe/', {'tier': 'agent'}, format='json')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 

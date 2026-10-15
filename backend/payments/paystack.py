@@ -66,7 +66,7 @@ def _request(method, url, **kwargs):
         return {'status': False, 'message': 'Paystack returned an unexpected response.'}
 
 
-def initialize_transaction(email, amount_kobo, callback_url, plan_code=None, metadata=None):
+def initialize_transaction(email, amount_pesewas, callback_url, plan_code=None, metadata=None):
     # plan_code is now OPTIONAL (default None) — subscriptions (landlord
     # tiers) pass a real plan_code, which makes Paystack also set up
     # RECURRING billing. A one-off charge (e.g. a renter unlocking a
@@ -81,13 +81,11 @@ def initialize_transaction(email, amount_kobo, callback_url, plan_code=None, met
 
     payload = {
         'email': email,
-        'amount': amount_kobo,
-        # NOTE: "amount_kobo" is a bit of a misnomer for Ghana —
-        # Paystack's API always expects the SMALLEST currency unit
-        # regardless of country (kobo for NGN, pesewas for GHS,
-        # cents for USD) — same underlying reason DecimalField
-        # matters on our Payment/pricing fields: avoiding
-        # fractional-currency rounding issues. GHS 50.00 must be
+        'amount': amount_pesewas,
+        # Paystack's API always expects the SMALLEST currency unit:
+        # pesewas for GHS. (Its docs often say "kobo", Nigeria's
+        # equivalent, because Paystack started there.) Whole numbers
+        # avoid fractional-currency rounding issues. GHS 50.00 must be
         # sent as 5000
         'callback_url': callback_url,
         # Where Paystack redirects the browser after the popup

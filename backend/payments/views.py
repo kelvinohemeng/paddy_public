@@ -127,28 +127,13 @@ def initiate_subscription(request):
     # The new plan is charged in full straight away. Paystack can't
     # prorate, so unused time on the old plan isn't refunded.
 
-    try:
-        amount_kobo = int(request.data.get('amount_kobo'))
-    except (TypeError, ValueError):
-        return Response(
-            {'error': 'amount_kobo must be a whole number.', 'code': 'invalid_amount'},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    # A missing value (int(None) -> TypeError) or text like "abc"
-    # (ValueError) used to crash this view with a 500. Only the format is
-    # checked, not the size: Paystack charges the plan's own price whatever
-    # we send (see the comment below), so the number can't change what the
-    # landlord pays.
-
     result = paystack.initialize_transaction(
         email=user.email,
-        amount_kobo=amount_kobo,
-        # Sent from the frontend rather than hardcoded here, since the
-        # actual GHS price of the plan lives in Paystack's Plan object,
-        # not duplicated in our own code — though in practice this
-        # should match the real plan price; Paystack's plan param
-        # OVERRIDES whatever amount we send anyway, per their docs, so
-        # this value mostly just needs to be a valid positive number
+        amount_pesewas=LandlordSubscription.PRICES_PESEWAS[requested_tier],
+        # The price comes from our own table, never from the request, the
+        # same rule as the unlock price. Any amount the browser still
+        # sends is ignored. (Paystack's plan param overrides this amount
+        # anyway, per their docs, but we don't rely on that.)
         callback_url=request.data.get('callback_url', ''),
         plan_code=plan_code,
     )
@@ -450,11 +435,9 @@ def initiate_listing_unlock(request):
 
     result = paystack.initialize_transaction(
         email=request.user.email,
-        amount_kobo=settings.LISTING_UNLOCK_PRICE_PESEWAS,
+        amount_pesewas=settings.LISTING_UNLOCK_PRICE_PESEWAS,
         # From OUR settings, never request.data — see the comment on
-        # LISTING_UNLOCK_PRICE_PESEWAS in settings.py for why this one
-        # specifically can't be trusted from the frontend the way
-        # initiate_subscription's amount_kobo safely can be
+        # LISTING_UNLOCK_PRICE_PESEWAS in settings.py for why
 
         callback_url=request.data.get('callback_url', ''),
         metadata={
