@@ -99,6 +99,10 @@ jobs:
           DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
+          SECURE_SSL_REDIRECT: 'False'
+          # DEBUG=False turns on the production HTTPS settings, but the
+          # test client and the boot check's curl speak plain HTTP, so the
+          # http->https redirect is switched off here (settings.py).
           ALLOWED_HOSTS: 'localhost'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
           PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
@@ -133,6 +137,7 @@ jobs:
           DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
+          SECURE_SSL_REDIRECT: 'False'
           ALLOWED_HOSTS: 'localhost'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
           PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'
@@ -175,6 +180,7 @@ jobs:
           DB_SSLMODE: disable
           SECRET_KEY: 'dummy-ci-secret-key-not-used-in-production'
           DEBUG: 'False'
+          SECURE_SSL_REDIRECT: 'False'
           ALLOWED_HOSTS: 'localhost'
           GOOGLE_CLIENT_ID: 'dummy-for-ci'
           PAYSTACK_SECRET_KEY: 'sk_test_dummyplaceholderforci'

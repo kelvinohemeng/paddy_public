@@ -20,7 +20,8 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path(settings.ADMIN_URL, admin.site.urls),
+    # From the ADMIN_URL env var, default 'admin/' (see settings.py).
     path('accounts/', include('accounts.urls')),
     path('listings/', include('listings.urls')),
     path('viewings/', include('viewings.urls')),

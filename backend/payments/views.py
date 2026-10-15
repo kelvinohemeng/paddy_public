@@ -283,7 +283,7 @@ def cancel_subscription(request):
 
     subscription.cancel_at_period_end = True
     subscription.superseded_subscription_code = ''
-    subscription.superseded_email_token = ''
+    subscription.superseded_email_token = ''  # nosec B105: clearing a used token, not a password
     subscription.save(update_fields=[
         'cancel_at_period_end', 'superseded_subscription_code', 'superseded_email_token', 'updated_at',
     ])
@@ -378,7 +378,7 @@ def retire_superseded_subscription(subscription):
         # subscription that would keep charging.
 
     subscription.superseded_subscription_code = ''
-    subscription.superseded_email_token = ''
+    subscription.superseded_email_token = ''  # nosec B105: clearing a used token, not a password
     subscription.save(update_fields=['superseded_subscription_code', 'superseded_email_token', 'updated_at'])
     return True
 
