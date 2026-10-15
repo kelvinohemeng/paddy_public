@@ -1,0 +1,96 @@
+name: Scheduled jobs
+
+# The backend's daily chores, run by GitHub instead of a paid Render Cron
+# Job. Each run checks out the code, installs the backend, and runs two
+# management commands directly against the live demo database (Neon):
+#
+#   1. enforce_listing_caps        pauses/restores listings when a paid plan
+#                                  has run out, retries switching off old
+#                                  Paystack subscriptions.
+#   2. seed_demo_data --reset      wipes the +demo@paddy.dev accounts and
+#                                  everything they own, then seeds the demo
+#                                  again, undoing whatever visitors did.
+#
+# Run it by hand from the Actions tab ("Run workflow") to seed the demo
+# database for the first time: the reset on an empty database just seeds.
+#
+# Needs these repository secrets (Settings > Secrets and variables >
+# Actions): DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, PAYSTACK_SECRET_KEY,
+# R2_STORAGE_ACCOUNT_ID, R2_STORAGE_ACCESS_KEY_ID,
+# R2_STORAGE_SECRET_ACCESS_KEY, R2_STORAGE_BUCKET_NAME,
+# AWS_S3_CUSTOM_DOMAIN, DEMO_ACCOUNT_PASSWORD.
+#
+# Note: GitHub pauses scheduled workflows in a public repo after 60 days
+# with no commits. The Actions tab shows a button to turn it back on.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+    # Every day at 02:00 UTC (02:00 in Accra), when the demo is quietest.
+  workflow_dispatch:
+
+concurrency:
+  group: scheduled-jobs
+  # Never two runs at once: a manual run while the nightly one is still
+  # going would make two resets fight over the same rows.
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      # DB_SSLMODE is left at its default, 'require', which Neon needs.
+      PAYSTACK_SECRET_KEY: ${{ secrets.PAYSTACK_SECRET_KEY }}
+      # Real (test-mode) key: enforce_listing_caps may call Paystack to
+      # switch off a subscription left over from a plan change.
+      R2_STORAGE_ACCOUNT_ID: ${{ secrets.R2_STORAGE_ACCOUNT_ID }}
+      R2_STORAGE_ACCESS_KEY_ID: ${{ secrets.R2_STORAGE_ACCESS_KEY_ID }}
+      R2_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.R2_STORAGE_SECRET_ACCESS_KEY }}
+      R2_STORAGE_BUCKET_NAME: ${{ secrets.R2_STORAGE_BUCKET_NAME }}
+      AWS_S3_CUSTOM_DOMAIN: ${{ secrets.AWS_S3_CUSTOM_DOMAIN }}
+      # Real R2 access: the seed checks its demo photos are in the bucket
+      # (uploading any that are missing) and deletes files visitors
+      # uploaded as demo accounts.
+      DEMO_ACCOUNT_PASSWORD: ${{ secrets.DEMO_ACCOUNT_PASSWORD }}
+      # Placeholders: settings.py needs these to load, but neither command
+      # signs anything or sends email.
+      SECRET_KEY: 'scheduled-jobs-placeholder-not-used-for-signing'
+      DEBUG: 'False'
+      ALLOWED_HOSTS: 'localhost'
+      RESEND_API_KEY: 'not-used-by-these-commands'
+      DEFAULT_FROM_EMAIL: 'jobs@example.com'
+
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install GDAL (GeoDjango's system library)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev
+
+      - name: Install Python dependencies
+        run: |
+          pip install pipenv
+          pipenv install --deploy
+
+      - name: Enforce listing limits
+        run: pipenv run python manage.py enforce_listing_caps
+
+      - name: Reset the demo
+        if: ${{ !cancelled() }}
+        # Runs even if the step above failed: the two jobs are unrelated.
+        run: pipenv run python manage.py seed_demo_data --reset
