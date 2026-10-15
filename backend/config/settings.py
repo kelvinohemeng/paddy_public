@@ -354,10 +354,11 @@ if not DEBUG:
     # added them for what each remaining warning means).
 
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    # On the VPS, Traefik (Coolify's proxy) handles HTTPS and talks to
-    # gunicorn over plain HTTP inside the server. Django therefore sees
-    # every request as http:// unless it trusts the header Traefik adds,
-    # "X-Forwarded-Proto: https", saying what the browser actually used.
+    # The host's proxy (Render's today; Traefik if it moves to Coolify)
+    # handles HTTPS and passes requests to gunicorn over plain HTTP.
+    # Django therefore sees every request as http:// unless it trusts the
+    # header the proxy adds, "X-Forwarded-Proto: https", saying what the
+    # browser actually used.
     # Without this, the redirect below would bounce every request forever
     # and secure cookies would never be sent. Only safe because nothing
     # reaches gunicorn except through that proxy, which overwrites any
@@ -366,10 +367,10 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
     # Any http:// request is redirected to https://. Switchable because
     # some callers talk plain HTTP on purpose and must not be redirected:
-    # CI's test client and boot check, and a container health check that
-    # calls http://localhost inside the server. Traefik already redirects
-    # browsers to HTTPS at the edge, so turning this off on the VPS is
-    # safe if a health check needs it.
+    # CI's test client and boot check, and possibly the host's health
+    # check. Render (and Traefik) already redirect browsers to HTTPS
+    # before requests reach us, so turning this off on the server is safe
+    # if a health check needs it.
 
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
