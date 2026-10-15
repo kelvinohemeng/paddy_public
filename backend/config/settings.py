@@ -278,6 +278,15 @@ LISTING_UNLOCK_PRICE_PESEWAS = config('LISTING_UNLOCK_PRICE_PESEWAS', default=50
 # placeholder) — change via .env, not by editing this file, so it can
 # be adjusted without a code deploy
 
+DEMO_ACCOUNT_PASSWORD = config('DEMO_ACCOUNT_PASSWORD', default='')
+# The one shared password for the public demo logins that
+# `manage.py seed_demo_data` creates (renter+demo@, landlord+demo@,
+# staff+demo@paddy.dev). It is meant to be public: the frontend shows it
+# on the login page from NEXT_PUBLIC_DEMO_ACCOUNT_PASSWORD, which must be
+# the same value. Empty by default, and the command refuses to run
+# without it, so no demo login ever exists with a guessable built-in
+# password.
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
