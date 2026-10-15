@@ -257,7 +257,7 @@ PAYSTACK_PLAN_CODE = config('PAYSTACK_PLAN_CODE', default='')
 
 PAYSTACK_AGENT_PLAN_CODE = config('PAYSTACK_AGENT_PLAN_CODE', default='')
 PAYSTACK_LORD_PLAN_CODE = config('PAYSTACK_LORD_PLAN_CODE', default='')
-# One real Paystack Plan per PAID tier (GHS 250/mo and GHS 1,000/mo
+# One real Paystack Plan per PAID tier (GHS 500/mo and GHS 1,000/mo
 # respectively, created via a one-off API call, not through the
 # dashboard — Paystack's dashboard doesn't have an obvious standalone
 # "Plans" page, it's buried under Payment Pages). The FREE tier

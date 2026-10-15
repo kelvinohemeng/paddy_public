@@ -53,7 +53,7 @@ class LandlordSubscription(models.Model):
     }
 
     PRICES_PESEWAS = {
-        Tier.AGENT: 25000,  # GHS 250 a month
+        Tier.AGENT: 50000,  # GHS 500 a month
         Tier.LORD: 100000,  # GHS 1,000 a month
         # Monthly price of each paid plan in pesewas (GHS x 100), the unit
         # Paystack wants. Sent as `amount` when a landlord subscribes, so

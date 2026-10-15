@@ -124,7 +124,7 @@ class InitiateSubscriptionTests(APITestCase):
         self.landlord_user.save()
         self.client.force_authenticate(user=self.landlord_user)
 
-        for tier, price in (('agent', 25000), ('lord', 100000)):
+        for tier, price in (('agent', 50000), ('lord', 100000)):
             with self.subTest(tier=tier), patch('payments.paystack.initialize_transaction') as mock_init:
                 mock_init.return_value = {'status': True, 'data': {'reference': 'ref_sub'}}
                 response = self.client.post(
@@ -1363,7 +1363,7 @@ class PaystackClientRequestTests(APITestCase):
             mock_request.return_value.json.return_value = {'status': True, 'data': {}}
 
             paystack.initialize_transaction(
-                email='payer@example.com', amount_pesewas=25000, callback_url='http://x.com',
+                email='payer@example.com', amount_pesewas=50000, callback_url='http://x.com',
                 plan_code='PLN_agent_test', metadata={'purpose': 'subscription'},
             )
 
