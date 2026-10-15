@@ -7,6 +7,7 @@
 //   POST /payments/subscription/cancel/  — stop the plan renewing
 //   POST /payments/unlock-listing/       — start a one-time unlock checkout
 //   GET  /payments/verify/?reference     — confirm a charge after Paystack redirects back
+//   GET  /payments/unlocks/              — the caller's own unlocks (receipts), newest first
 //
 // All of these are money-adjacent, so the shapes here mirror the backend
 // EXACTLY as read from payments/views.py + payments/serializers.py — no
@@ -18,6 +19,8 @@
 // gets the higher review bar) and only shares the URL mapping.
 
 import { backendUrl } from "@/lib/api";
+import type { LandlordContact } from "@/components/landlord-contact";
+import type { PublicListing } from "@/lib/listing-card-data";
 
 // ---- Shapes (mirror the backend responses exactly) ----
 
@@ -78,6 +81,24 @@ export type PaystackInitResponse = {
 export type VerifyResponse = {
   verified: boolean;
   status: string;
+};
+
+// GET /payments/unlocks/ (my_unlocks, ListingUnlockSerializer): a plain
+// array, read through useApiList("payments/unlocks"). listing_detail is
+// the full ListingSerializer output with the address and contact
+// revealed (the caller paid for them), whatever the listing's status now.
+export type ListingUnlock = {
+  id: number;
+  listing: number;
+  listing_detail: PublicListing & {
+    address_precise: string;
+    landlord_contact: LandlordContact;
+  };
+  paystack_reference: string;
+  /** What Paystack reported, in pesewas. null = not recorded (unlocks
+   *  from before it was stored, or granted by staff). */
+  amount_pesewas: number | null;
+  created_at: string;
 };
 
 // ---- Tier metadata (single source of truth for display values) ----
