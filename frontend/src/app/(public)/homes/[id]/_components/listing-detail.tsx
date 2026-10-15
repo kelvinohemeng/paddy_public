@@ -8,7 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { FavoriteButton } from "@/components/favorite-button";
 import { useSavedListings } from "@/hooks/use-saved-listings";
 import type { ListingStatus } from "@/lib/listing-status";
-import { BookingCard, TrustNote, type LandlordContact } from "./booking-card";
+import { BookingCard, TrustNote } from "./booking-card";
+import type { LandlordContact } from "@/components/landlord-contact";
 import { PhotoGallery } from "./photo-gallery";
 import { PropertyMap } from "./property-map";
 
