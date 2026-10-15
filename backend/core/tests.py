@@ -243,3 +243,21 @@ class SeedDevDataCommandTests(APITestCase):
         self.assertGreater(self._counts()['users'], 0)
         # --flush deletes the demo rows and seeds them again; it must
         # never touch an account that isn't a "+demo@" one.
+
+
+class ThrottleIsolationTests(APITestCase):
+    # Rate-limit counters live in the cache, which outlives a single test.
+    # config/test_runner.py empties it before every test; these two prove
+    # it. They run in name order, so _a fills the anonymous limit and _b
+    # must still start fresh.
+
+    def test_a_uses_up_the_anonymous_limit(self):
+        statuses = [self.client.get('/listings/').status_code for _ in range(31)]
+
+        self.assertEqual(statuses[-1], status.HTTP_429_TOO_MANY_REQUESTS)
+        # 30/min for anonymous visitors, so the 31st is refused.
+
+    def test_b_next_test_starts_with_a_fresh_limit(self):
+        response = self.client.get('/listings/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
