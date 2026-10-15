@@ -44,7 +44,8 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 // the MVP; the pages and backend stay, unlinked).
 //
 // Left out until they have pages behind them: Settings, Viewings,
-// Unlocked Listings and the renter's Payment row. A nav row
+// Unlocked Listings and the renter's Payment row (Viewings is also hidden
+// for the portfolio MVP, so its row needs VIEWINGS_ENABLED). A nav row
 // that 404s is worse than no row. Marker comments in navFor() show where
 // each one goes. Analytics is the one deliberate exception: shown
 // disabled with a "Soon" badge, so landlords know it's coming.
@@ -83,7 +84,7 @@ function navFor(role: string | undefined, base: string): NavGroupsForRole {
       return {
         main: [
           { href: `${base}/listings`, label: "My Listings", icon: "listings" },
-          // Viewings row goes here once the viewings page exists.
+          // Viewings row goes here once its page exists (behind VIEWINGS_ENABLED).
           { href: `${base}/analytics`, label: "Analytics", icon: ChartColumn, soon: true },
         ],
         account: [
@@ -98,7 +99,7 @@ function navFor(role: string | undefined, base: string): NavGroupsForRole {
           browseHomes,
           // Unlocked Listings row goes here once that page exists.
           { href: `${base}/saved`, label: "Saved Homes", icon: "heart" },
-          // Viewings row goes here once the viewings page exists.
+          // Viewings row goes here once its page exists (behind VIEWINGS_ENABLED).
         ],
         account: [
           // Payment row goes here once renters have receipts to show.
@@ -110,7 +111,7 @@ function navFor(role: string | undefined, base: string): NavGroupsForRole {
       return {
         main: [
           { href: `${base}/reviews`, label: "Review Queue", icon: ShieldCheck },
-          // Viewings row goes here once the viewings page exists.
+          // Viewings row goes here once its page exists (behind VIEWINGS_ENABLED).
           ...(role === "admin"
             ? [{ href: DJANGO_ADMIN_URL, label: "Admin panel", icon: Wrench, external: true }]
             : []),

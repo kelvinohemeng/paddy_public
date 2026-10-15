@@ -89,7 +89,7 @@ export type DetailListing = {
 //
 // ownerView: the landlord's own preview in the dashboard drawer. Same
 // page renters see, minus the renter-only actions (save, unlock, book a
-// viewing, message the landlord) — those make no sense on your own
+// viewing when VIEWINGS_ENABLED, message the landlord) — those make no sense on your own
 // listing, and the backend would refuse most of them anyway.
 export function ListingDetail({
   listing,

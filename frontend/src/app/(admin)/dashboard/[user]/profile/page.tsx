@@ -44,6 +44,7 @@ import { ChevronDown } from "lucide-react";
 import { useMe } from "@/hooks/use-auth";
 import { useApiList } from "@/hooks/use-api";
 import { authedFetch, errorMessage } from "@/lib/api";
+import { VIEWINGS_ENABLED } from "@/lib/features";
 import { cn } from "@/lib/utils";
 import { PaddyBadge } from "@/components/paddy-badge";
 import { PaddyButton } from "@/components/paddy-button";
@@ -270,9 +271,11 @@ function ProfileDetails({ identity, onEdit }: { identity: any; onEdit: () => voi
             <Detail label="Can approve listings">
               {profile.can_approve_listings ? "Yes" : "No"}
             </Detail>
-            <Detail label="Can host viewings">
-              {profile.can_host_viewings ? "Yes" : "No"}
-            </Detail>
+            {VIEWINGS_ENABLED && (
+              <Detail label="Can host viewings">
+                {profile.can_host_viewings ? "Yes" : "No"}
+              </Detail>
+            )}
           </>
         )}
 
