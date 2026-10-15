@@ -118,6 +118,29 @@ class InitiateSubscriptionTests(APITestCase):
         # the actual paystack.initialize_transaction() call itself
         # would be tested via mocking in a more thorough test suite
 
+    @override_settings(PAYSTACK_AGENT_PLAN_CODE='PLN_agent_test')
+    def test_missing_or_bad_amount_is_400_not_a_crash(self):
+        self.landlord_user.is_verified = True
+        self.landlord_user.save()
+        self.client.force_authenticate(user=self.landlord_user)
+
+        with patch('payments.paystack.initialize_transaction') as mock_init:
+            missing = self.client.post('/payments/subscribe/', {'tier': 'agent'}, format='json')
+            text = self.client.post('/payments/subscribe/', {'tier': 'agent', 'amount_kobo': 'abc'}, format='json')
+
+        for response in (missing, text):
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            self.assertEqual(response.data['code'], 'invalid_amount')
+        mock_init.assert_not_called()
+
+    def test_payment_endpoints_are_limited_to_ten_a_minute(self):
+        self.client.force_authenticate(user=self.landlord_user)
+
+        statuses = [self.client.post('/payments/subscribe/', {}, format='json').status_code for _ in range(11)]
+
+        self.assertNotIn(status.HTTP_429_TOO_MANY_REQUESTS, statuses[:10])
+        self.assertEqual(statuses[10], status.HTTP_429_TOO_MANY_REQUESTS)
+
 
 class InitiateListingUnlockTests(APITestCase):
     # The one-off unlock charge has NO Paystack plan attached, so the

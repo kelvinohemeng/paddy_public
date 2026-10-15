@@ -147,6 +147,20 @@ REST_FRAMEWORK = {
     # isn't sharing their rate limit with anonymous traffic from the
     # same IP (e.g. behind a shared office/mobile network NAT)
 
+    'NUM_PROXIES': config('NUM_PROXIES', default=None, cast=lambda v: int(v) if v not in (None, '') else None),
+    # How many proxies sit between the visitor and Django, which tells the
+    # throttles which entry of the X-Forwarded-For header is the visitor's
+    # real IP (each proxy appends the address it saw to the END of that
+    # header; anything before those entries was written by the client and
+    # can be faked). Unset (the default) = DRF uses the WHOLE header as the
+    # IP, so a client sending a random X-Forwarded-For on each request
+    # gets a fresh rate limit every time. Set it to the real number of
+    # hops once hosting is final: it differs between requests that go
+    # browser -> Next -> host proxy -> Django and those that go browser ->
+    # host proxy -> Django directly (register, email verification,
+    # password reset), so the right value depends on routing every
+    # request the same way first.
+
     'DEFAULT_THROTTLE_RATES': {
         'anon': '30/min',
         'user': '120/min',

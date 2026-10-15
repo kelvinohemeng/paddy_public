@@ -23,7 +23,7 @@ from django.core.exceptions import ValidationError
 # non-integer IDs) makes the id__in lookup itself raise instead of
 # returning empty; caught and turned into a clean 400, never a 500.
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes, throttle_scope
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.request import Request
 from django.contrib.auth.tokens import PasswordResetTokenGenerator
@@ -297,6 +297,14 @@ def me(request: Request) -> Response:
 # — register gets ONLY the scoped limit below, not the generic anon/user
 # ones on top of it (which would just add redundant, looser limits)
 
+@throttle_scope('register')
+# Tells ScopedRateThrottle WHICH rate from DEFAULT_THROTTLE_RATES applies:
+# the 'register': '5/min' entry in settings.py. It must be a decorator
+# BELOW @api_view, like the ones above: @api_view builds the real view
+# class right away and copies these settings onto it. This used to be
+# `register.throttle_scope = 'register'` after the function, which ran
+# too late (the class was already built), so the limit never applied
+# and every view written that way had no rate limit at all.
 def register(request: Request) -> Response:
     serializer = RegisterSerializer(data=request.data)
     # Hand the incoming request body to the Serializer we wrote.
@@ -348,16 +356,13 @@ def register(request: Request) -> Response:
     # (e.g. {"email": ["This field is required."]}) so the frontend can
     # show the right error message. 400 = the request itself was invalid.
 
-register.throttle_scope = 'register'
-# ScopedRateThrottle looks for a `throttle_scope` attribute on the view
-# function to know WHICH rate from DEFAULT_THROTTLE_RATES to apply —
-# matches the 'register': '5/min' entry in settings.py. Set ONCE here,
-# right after the function is defined (not inside the function body,
-# which would just re-set the same value on every single request —
-# harmless but wasteful and not the idiomatic pattern)
 
 @api_view(['POST'])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('login')
+# Same login-attempt abuse concern as password login — 'login' scope
+# (5/min) applies here too, since this is also fundamentally "someone
+# trying to authenticate," just via a different mechanism
 def google_login(request):
     # A new endpoint, same @api_view pattern as `register`
     token = request.data.get('token')
@@ -382,7 +387,23 @@ def google_login(request):
         # app, garbage input), Google's library raises ValueError
         return Response({'error': 'Invalid Google token'}, status=status.HTTP_400_BAD_REQUEST)
         # Reject the request — never trust an unverifiable token
-        
+
+    if idinfo.get('email_verified') is not True:
+        return Response(
+            {'error': 'Google has not verified this email address, so it can\'t be used to sign in.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    # SECURITY: a valid Google token proves who the GOOGLE account is, not
+    # that its owner controls the email address on it. A Google account
+    # can be made with any email address (a work address, someone else's
+    # address) before that address is ever confirmed; Google then says
+    # email_verified: false. Below, sign-in finds the paddy account BY
+    # EMAIL, so trusting an unverified one would let a stranger create a
+    # Google account with YOUR email and sign straight into your paddy
+    # account. `is not True` (rather than `not ...`) also refuses a
+    # missing value. Gmail addresses are always verified, so normal
+    # sign-ins are unaffected.
+
     first_name = idinfo.get('given_name', '')
     last_name = idinfo.get('family_name', '')
     email = idinfo['email']
@@ -489,10 +510,6 @@ def google_login(request):
     # Same shape of response as normal login — the frontend doesn't need
     # to treat Google login any differently once it gets this back
 
-google_login.throttle_scope = 'login'
-# Same login-attempt abuse concern as password login — 'login' scope
-# (5/min) applies here too, since this is also fundamentally "someone
-# trying to authenticate," just via a different mechanism
 
 @api_view(['POST'])
 def logout(request):
@@ -504,6 +521,13 @@ def logout(request):
         refresh_token = request.data.get('refresh')
         # The frontend sends back the refresh token it currently holds —
         # this is the one we're going to revoke
+
+        if not refresh_token:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+            # Nothing to revoke. Without this check, RefreshToken(None)
+            # below doesn't fail: given no token it MINTS a brand-new one,
+            # which blacklist() then saves, so every empty logout wrote two
+            # junk rows to the token tables and answered "205 success".
 
         token = RefreshToken(refresh_token)
         # Wrap the raw token string in SimpleJWT's RefreshToken class,
@@ -527,7 +551,20 @@ def logout(request):
         # or missing 'refresh' in the request body — all just result in
         # a generic 400, we don't need to distinguish the exact reason here
 
-email_verification_token = PasswordResetTokenGenerator()
+class EmailVerificationTokenGenerator(PasswordResetTokenGenerator):
+    key_salt = 'accounts.views.EmailVerificationTokenGenerator'
+    # A token is a signature of (user id, password hash, last login, email,
+    # timestamp) made with SECRET_KEY plus this "salt". Django's
+    # PasswordResetTokenGenerator uses one fixed salt, so two instances of
+    # it make IDENTICAL tokens for the same user: a verify-email link (sent
+    # to whoever signs up) used to be a working password-reset token too.
+    # Its own salt means a verification token can never pass the
+    # password-reset check, and the reverse. Changing the salt makes
+    # verification links sent before this change stop working; the
+    # "resend" button sends a fresh one.
+
+
+email_verification_token = EmailVerificationTokenGenerator()
 # One shared instance of the token generator, reused for every user —
 # it doesn't store anything itself, it just knows HOW to generate/check
 # tokens based on a user's current data (see below)
@@ -614,6 +651,10 @@ def send_verification_email(user):
 
 @api_view(['POST'])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('sensitive')
+# A real user might legitimately click an old/already-used verification
+# link a couple of times by mistake — 'sensitive' (10/min) is a looser
+# limit than login/register, while still blocking automated abuse
 def verify_email(request: Request) -> Response:
     uid = request.data.get('uid')
     token = request.data.get('token')
@@ -639,15 +680,17 @@ def verify_email(request: Request) -> Response:
 
     return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
 
-verify_email.throttle_scope = 'sensitive'
-# A real user might legitimately click an old/already-used verification
-# link a couple of times by mistake — 'sensitive' (10/min) is a looser
-# limit than login/register, while still blocking automated abuse
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('password_reset')
+# Reuses the strict 5-per-minute bucket from password reset — both
+# endpoints exist to send an email on demand, so both share the same
+# "don't let this be used to flood an inbox or burn email quota" limit.
+# attempts against this endpoint (e.g. trying to guess valid uid/token
+# combinations)
 def resend_verification_email(request: Request) -> Response:
     # POST /accounts/verify-email/resend/ — sends a fresh verification
     # link to the LOGGED-IN user's own address.
@@ -691,27 +734,20 @@ def resend_verification_email(request: Request) -> Response:
 
     return Response({'message': 'Verification email sent. Check your inbox.'})
 
-resend_verification_email.throttle_scope = 'password_reset'
-# Reuses the strict 5-per-minute bucket from password reset — both
-# endpoints exist to send an email on demand, so both share the same
-# "don't let this be used to flood an inbox or burn email quota" limit.
-# attempts against this endpoint (e.g. trying to guess valid uid/token
-# combinations)
 
 
 password_reset_token = PasswordResetTokenGenerator()
-# A SEPARATE instance from email_verification_token above, even though
-# they're the same class. Deliberately not shared: PasswordResetTokenGenerator
-# tokens are already scoped correctly per-user (hashing the user's current
-# password + last_login into the token, so a token is invalid the moment
-# either changes), but keeping the two instances distinct means a future
-# change to one flow's expiry/behavior can never silently leak into the
-# other, and a verify-email link can never double as a password-reset link
-# by accident.
+# Django's own generator, unchanged. Tokens are scoped per user (hashing
+# the user's current password + last_login into the token, so a token is
+# invalid the moment either changes). It stays distinct from
+# email_verification_token because that one has its own salt (see
+# EmailVerificationTokenGenerator above): separate instances of the SAME
+# class would not be enough, they'd make identical tokens.
 
 
 @api_view(['POST'])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('password_reset')
 def request_password_reset(request: Request) -> Response:
     # POST /accounts/password-reset/ — body: {"email": "..."}
     # Step 1 of the forgot-password flow: given an email, (maybe) send a
@@ -815,11 +851,11 @@ def request_password_reset(request: Request) -> Response:
 
     return generic_response
 
-request_password_reset.throttle_scope = 'password_reset'
 
 
 @api_view(['POST'])
 @throttle_classes([ScopedRateThrottle])
+@throttle_scope('password_reset')
 def confirm_password_reset(request: Request) -> Response:
     # POST /accounts/password-reset/confirm/
     # body: {"uid": "...", "token": "...", "new_password": "..."}
@@ -887,11 +923,16 @@ def confirm_password_reset(request: Request) -> Response:
 
     return Response({'message': 'Password has been reset successfully.'})
 
-confirm_password_reset.throttle_scope = 'password_reset'
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ScopedRateThrottle])
+@throttle_scope('sensitive')
+# Not a brute-forceable endpoint (no secret being guessed — it's gated on
+# an already-authenticated session), but still an account-mutating action,
+# so it gets the same looser-than-login 'sensitive' scope as verify_email
+# rather than no throttling at all.
 def onboarding(request: Request) -> Response:
     # POST /accounts/onboarding/
     # body: {
@@ -1008,8 +1049,3 @@ def onboarding(request: Request) -> Response:
     # above — the frontend has everything it needs to proceed past
     # onboarding without a separate follow-up GET.
 
-onboarding.throttle_scope = 'sensitive'
-# Not a brute-forceable endpoint (no secret being guessed — it's gated on
-# an already-authenticated session), but still an account-mutating action,
-# so it gets the same looser-than-login 'sensitive' scope as verify_email
-# rather than no throttling at all.
