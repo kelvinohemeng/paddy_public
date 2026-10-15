@@ -106,16 +106,16 @@ export type ListingUnlock = {
 // LandlordSubscription.LISTING_CAPS in payments/models.py (free: 3,
 // agent: 10, lord: unlimited). It's only for describing a plan the
 // landlord ISN'T on yet (the upgrade buttons) — their own current limit
-// always comes from the API's listing_cap. Prices mirror the Paystack
-// plans noted in config/settings.py (GHS 250/mo agent, GHS 1,000/mo lord)
-// — the plan on Paystack's side is authoritative at charge time; these
-// labels only exist to show humans what they're buying before checkout.
+// always comes from the API's listing_cap. Prices mirror
+// LandlordSubscription.PRICES_PESEWAS in payments/models.py (GHS 500/mo
+// agent, GHS 1,000/mo lord), which the backend charges; these labels only
+// show humans what they're buying before checkout.
 export const TIER_META: Record<
   SubscriptionTier,
   { label: string; cap: number | null; priceGhs: number | null }
 > = {
   free: { label: "Free", cap: 3, priceGhs: null },
-  agent: { label: "paddy agent", cap: 10, priceGhs: 250 },
+  agent: { label: "paddy agent", cap: 10, priceGhs: 500 },
   lord: { label: "paddy lord", cap: null, priceGhs: 1000 },
 };
 
@@ -179,9 +179,8 @@ export async function fetchMySubscription(): Promise<LandlordSubscription> {
   return res.json();
 }
 
-// POST /payments/subscribe/ — tier is "agent"|"lord"; amount must be sent in
-// pesewas (the backend passes it straight to Paystack, whose plan then
-// overrides it anyway — see the amount_kobo comment in initiate_subscription).
+// POST /payments/subscribe/ — tier is "agent"|"lord". No amount: the
+// backend charges the plan's price from its own table.
 // callback_url is where Paystack sends the browser AFTER checkout completes;
 // the page at that URL is what calls verifyPayment with the ?reference= param.
 //
@@ -198,7 +197,6 @@ export async function startSubscriptionCheckout(params: {
     method: "POST",
     body: JSON.stringify({
       tier: params.tier,
-      amount_kobo: TIER_META[params.tier].priceGhs! * 100,
       callback_url: params.callbackUrl,
     }),
   });
