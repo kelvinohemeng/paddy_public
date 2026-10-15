@@ -10,6 +10,7 @@ import { PaddyButton } from "@/components/paddy-button";
 import { AuthSplitLayout } from "@/components/auth-split-layout";
 import { GoogleIcon } from "@/components/google-icon";
 import { cn } from "@/lib/utils";
+import { GOOGLE_SIGN_IN_ENABLED } from "@/lib/features";
 import { CredentialResponse, GoogleLogin } from "@react-oauth/google";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -158,30 +159,32 @@ export const SignUpForm = () => {
         </div>
 
         <div className="flex flex-col gap-3 pt-2">
-          <div className="relative w-full">
-            <PaddyButton
-              variant="secondary"
-              size="lg"
-              type="button"
-              className="w-full"
-            >
-              <GoogleIcon className="size-5" />
-              Signup with Google
-            </PaddyButton>
-            <div className="absolute inset-0 cursor-pointer overflow-hidden opacity-0 [&_iframe]:h-full [&_iframe]:w-full [&_iframe]:max-w-full">
-              <GoogleLogin
-                onSuccess={(credentialResponse) => {
-                  handleGoogleSignUp(credentialResponse);
-                }}
-                onError={() => {
-                  toast.error("Google Sign Up Failed", {
-                    description:
-                      "Could not retrieve your identity token from Google.",
-                  });
-                }}
-              />
+          {GOOGLE_SIGN_IN_ENABLED && (
+            <div className="relative w-full">
+              <PaddyButton
+                variant="secondary"
+                size="lg"
+                type="button"
+                className="w-full"
+              >
+                <GoogleIcon className="size-5" />
+                Signup with Google
+              </PaddyButton>
+              <div className="absolute inset-0 cursor-pointer overflow-hidden opacity-0 [&_iframe]:h-full [&_iframe]:w-full [&_iframe]:max-w-full">
+                <GoogleLogin
+                  onSuccess={(credentialResponse) => {
+                    handleGoogleSignUp(credentialResponse);
+                  }}
+                  onError={() => {
+                    toast.error("Google Sign Up Failed", {
+                      description:
+                        "Could not retrieve your identity token from Google.",
+                    });
+                  }}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <PaddyButton
             type="submit"

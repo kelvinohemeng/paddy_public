@@ -15,6 +15,8 @@ import { PaddyButton } from "@/components/paddy-button";
 import { AuthSplitLayout } from "@/components/auth-split-layout";
 import { GoogleIcon } from "@/components/google-icon";
 import { cn } from "@/lib/utils";
+import { GOOGLE_SIGN_IN_ENABLED } from "@/lib/features";
+import { DemoLogins } from "@/components/auth/demo-logins";
 import { CredentialResponse, GoogleLogin } from "@react-oauth/google";
 import { useForm } from "react-hook-form";
 import { SignInFormValue, signInSchema } from "@schemas/auth.schema";
@@ -35,6 +37,7 @@ export const SignInForm = () => {
   const {
     register: registerField,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm({
     resolver: zodResolver(signInSchema),
@@ -54,6 +57,14 @@ export const SignInForm = () => {
     );
   };
 
+  // "Try the demo": fill the form so the visitor sees what was used, then
+  // sign in through the same path as typing it.
+  const signInAsDemo = (email: string, password: string) => {
+    setValue("email", email);
+    setValue("password", password);
+    void handleSubmit(handleSignIn)();
+  };
+
   const handleGoogleLogin = async (credentialResponse: CredentialResponse) => {
     if (credentialResponse.credential) {
       login(
@@ -70,6 +81,8 @@ export const SignInForm = () => {
       <h1 className="mb-6 text-[28px] font-semibold text-[#111111]">
         Login to your account
       </h1>
+
+      <DemoLogins onSignIn={signInAsDemo} disabled={isPending} />
 
       <form onSubmit={handleSubmit(handleSignIn)} className="space-y-4">
         <div className="space-y-2">
@@ -114,30 +127,32 @@ export const SignInForm = () => {
         </div>
 
         <div className="flex flex-col gap-3 pt-2">
-          <div className="relative w-full">
-            <PaddyButton
-              variant="secondary"
-              size="lg"
-              type="button"
-              className="w-full"
-            >
-              <GoogleIcon className="size-5" />
-              Log in with Google
-            </PaddyButton>
-            <div className="absolute inset-0 cursor-pointer overflow-hidden opacity-0 [&_iframe]:h-full [&_iframe]:w-full [&_iframe]:max-w-full">
-              <GoogleLogin
-                onSuccess={(credentialResponse) => {
-                  handleGoogleLogin(credentialResponse);
-                }}
-                onError={() => {
-                  toast.error("Google Signin Failed", {
-                    description:
-                      "Could not retrieve your identity token from Google.",
-                  });
-                }}
-              />
+          {GOOGLE_SIGN_IN_ENABLED && (
+            <div className="relative w-full">
+              <PaddyButton
+                variant="secondary"
+                size="lg"
+                type="button"
+                className="w-full"
+              >
+                <GoogleIcon className="size-5" />
+                Log in with Google
+              </PaddyButton>
+              <div className="absolute inset-0 cursor-pointer overflow-hidden opacity-0 [&_iframe]:h-full [&_iframe]:w-full [&_iframe]:max-w-full">
+                <GoogleLogin
+                  onSuccess={(credentialResponse) => {
+                    handleGoogleLogin(credentialResponse);
+                  }}
+                  onError={() => {
+                    toast.error("Google Signin Failed", {
+                      description:
+                        "Could not retrieve your identity token from Google.",
+                    });
+                  }}
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <PaddyButton
             type="submit"
