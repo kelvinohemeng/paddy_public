@@ -67,7 +67,7 @@ class ListingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Listing
-        exclude = ['landlord_profile', 'verified_at', 'published_at', 'verified_by_staff']
+        exclude = ['landlord_profile', 'verified_at', 'published_at', 'verified_by_staff', 'created_by']
         # exclude = "every field on the model EXCEPT these" — status is
         # deliberately NOT in this list anymore (it used to be): the
         # owner and staff genuinely need to READ it (dashboard lifecycle
@@ -83,6 +83,10 @@ class ListingSerializer(serializers.ModelSerializer):
         # these are staff-controlled fields. verified_by_staff identity
         # must stay private in particular; is_staff_verified above gives
         # the frontend a safe yes/no without exposing WHO verified it.
+        #
+        # created_by is excluded for both reasons: the view sets it (a
+        # client must never claim someone else typed a listing in), and
+        # which staff account added a home isn't public information.
         extra_kwargs = {
             'status': {'read_only': True},
             'slug': {'read_only': True},

@@ -121,6 +121,22 @@ class ListingCreateTests(APITestCase):
         # proving the exclude genuinely blocks it rather than trusting
         # the client's input
 
+    def test_client_cannot_set_or_see_created_by(self):
+        # created_by (who typed the listing in) is set by the server only,
+        # and which staff account added a home isn't public.
+        self.client.force_authenticate(user=self.landlord_user)
+        response = self.client.post('/listings/', {
+            'title': 'Claims someone else made it',
+            'description': 'Test', 'listing_type': 'rent', 'price_monthly': '2000.00',
+            'advance_rent_period': '1_year', 'bedrooms': 1, 'bathrooms': 1,
+            'address_precise': '1 Test St', 'neighborhood': 'Osu', 'city': 'Accra',
+            'created_by': self.renter_user.id,
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn('created_by', response.data)
+        self.assertIsNone(Listing.objects.get(title='Claims someone else made it').created_by)
+
     def test_first_listing_is_free_for_landlord(self):
         self.client.force_authenticate(user=self.landlord_user)
 

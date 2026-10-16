@@ -244,3 +244,45 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         # controlled — none of these are safe to let a user change on
         # themselves via a simple PATCH
 
+
+
+class StaffLandlordSerializer(serializers.ModelSerializer):
+    # Read-only card for one landlord, as staff see it while listing a home
+    # for them (GET/POST /accounts/landlords/, accounts/views.py landlords).
+    # Built on User, with the two LandlordProfile fields pulled through
+    # `source`. Deliberately a short include-list (`fields`, not
+    # `exclude`): it shows a landlord's contact details to staff, so a new
+    # User column must never appear here by accident.
+
+    landlord_profile_id = serializers.IntegerField(source='landlordprofile.id', read_only=True)
+    # The id staff send as landlord_profile_id when creating a listing.
+    full_name = serializers.CharField(source='landlordprofile.full_name', read_only=True)
+    has_claimed = serializers.BooleanField(source='has_usable_password', read_only=True)
+    # True once the landlord has set a password (from the invite link or
+    # "forgot password"). Staff-created accounts start with an UNUSABLE
+    # password, so False means "invite pending". `source` can name a
+    # method: DRF calls has_usable_password() for us.
+
+    class Meta:
+        model = User
+        fields = ['id', 'landlord_profile_id', 'full_name', 'email', 'phone', 'username', 'has_claimed']
+
+
+class StaffCreateLandlordSerializer(serializers.ModelSerializer):
+    # Validates POST /accounts/landlords/ (staff creating a landlord in the
+    # field). Only these four fields are read; role, password, username and
+    # is_verified are set by the view, never by the request.
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'email', 'phone']
+        extra_kwargs = {
+            'first_name': {'required': True, 'allow_blank': False},
+            'last_name': {'required': True, 'allow_blank': False},
+            'phone': {'required': True, 'allow_blank': False},
+            'email': {'validators': []},
+            # validators=[] drops the uniqueness check DRF copies from the
+            # model (email is unique=True). The view checks for a taken
+            # email itself, case-insensitively, and answers with the
+            # machine-readable `code: "email_taken"` the frontend expects.
+        }
