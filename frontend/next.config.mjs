@@ -1,6 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  // There's no landing page yet, so "/" (the logo, the 404 page's link, the
+  // payment callback, a bare link to the site) goes to the Discovery Hub.
+  // Keep in step with DISCOVERY_PATH in (public)/_components/discovery-path.ts.
+  async redirects() {
+    return [{ source: "/", destination: "/homes", permanent: false }];
+  },
   // On every response, pages and /api routes alike. Google sign-in, Maps
   // and Paystack keep working: they're frames and redirects WE open, and
   // frame-ancestors only stops other sites framing paddy (clickjacking).
