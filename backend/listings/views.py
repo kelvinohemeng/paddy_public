@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.request import Request
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from django.db import transaction
 # transaction.atomic — used by the photo-cover management below (and only
@@ -15,7 +15,7 @@ from django.db import transaction
 # clear-then-set in an interleaved order and leave two covers behind.
 
 from .models import Listing, ListingPhoto, SavedListing
-from accounts.models import User, StaffProfile
+from accounts.models import User, StaffProfile, LandlordProfile
 from accounts.permissions import require_verified_email
 # User — for the Role enum in the review action + admin-visibility
 # branches below. Safe as a top-level import: accounts/models.py
@@ -167,7 +167,17 @@ class ListingViewSet(viewsets.ModelViewSet):
             # with all of them via normal chaining (city/max_price/
             # bbox/etc. just keep narrowing this own-only base).
 
-        city = self.request.query_params.get('city')
+        if self.request.query_params.get('created_by') == 'me' and user.is_authenticated:
+            queryset = queryset.filter(created_by=user).order_by('-created_at')
+            # ?created_by=me: staff's "Homes I added" list, newest first.
+            # It NARROWS the queryset above instead of replacing it (unlike
+            # ?mine=true), so it can only ever return rows this user may
+            # already see. That makes it safe for every role with no role
+            # check: a landlord just gets the listings they typed in
+            # themselves, and someone whose role changed since can't use
+            # it to reach drafts they no longer have access to.
+
+        city =self.request.query_params.get('city')
         # self.request.query_params — DRF's parsed version of the URL's
         # query string (?city=Accra&...). .get('city') returns None if
         # 'city' wasn't provided at all, which is exactly what we want
@@ -270,19 +280,39 @@ class ListingViewSet(viewsets.ModelViewSet):
         # "create" flow (POST) — this REPLACES our old create_listing
         # function entirely, same underlying logic though
 
-        if self.request.user.role != self.request.user.Role.LANDLORD:
+        user = self.request.user
+        is_staff_or_admin = user.role in (User.Role.STAFF, User.Role.ADMIN)
+
+        if is_staff_or_admin:
+            landlord_profile = self._landlord_profile_from_request()
+            # STAFF ONBOARDING (Kelvin's Phase 2 decisions): staff go door
+            # to door and list a home FOR its landlord, standing in it. So
+            # staff must say whose home it is; the listing belongs to that
+            # landlord, never to the staff member.
+            #
+            # No require_verified_email here: staff accounts are made by
+            # paddy, not by sign-up, and the landlord's own email is proven
+            # later, when they claim their account through the invite link.
+        elif user.role == User.Role.LANDLORD:
+            if 'landlord_profile_id' in self.request.data:
+                raise ValidationError({
+                    'landlord_profile_id': ['Landlords can only create listings for themselves.'],
+                })
+                # A 400 rather than silently ignoring it: a landlord sending
+                # this is either a bug or someone probing, and either way
+                # they should hear that it didn't do what they asked.
+
+            require_verified_email(user, 'create a listing')
+            # See accounts/permissions.py. A listing ends up in front of the
+            # public and in the staff review queue, so its owner's email must
+            # be proven (it's also the contact renters get after unlocking).
+
+            landlord_profile = user.landlordprofile
+        else:
             raise PermissionDenied('Only landlords can create listings')
-            # Different mechanism than before (raising an exception
-            # instead of manually returning a Response) — ModelViewSet
-            # expects errors to be raised this way, and it automatically
-            # converts this into the correct 403 response for us
-
-        require_verified_email(self.request.user, 'create a listing')
-        # See accounts/permissions.py. A listing ends up in front of the
-        # public and in the staff review queue, so its owner's email must
-        # be proven (it's also the contact renters get after unlocking).
-
-        landlord_profile = self.request.user.landlordprofile
+            # Renters, and accounts that haven't picked a role yet.
+            # ModelViewSet expects errors to be raised (not returned), and
+            # turns PermissionDenied into a 403 for us.
 
         from payments import limits
         # Imported here, inside the method, rather than at the top of
@@ -320,9 +350,85 @@ class ListingViewSet(viewsets.ModelViewSet):
             # `code` lets the frontend show an upgrade/archive prompt
             # instead of a bare error.
 
-            serializer.save(landlord_profile=landlord_profile)
-            # Exact same line as before — landlord_profile always comes from
-            # whoever's logged in, never from the request body
+            publishing = {}
+            if is_staff_or_admin:
+                publishing = self._staff_publishing_fields(landlord_profile)
+                # A landlord's new listing is a draft (the model default).
+                # A staff member's goes live or to review straight away;
+                # see _staff_publishing_fields.
+
+            serializer.save(landlord_profile=landlord_profile, created_by=user, **publishing)
+            # landlord_profile is the logged-in landlord, or the one staff
+            # chose above; never a value the serializer read from the body.
+            # created_by records who typed it in (B5's field), for every
+            # listing from now on.
+
+        if serializer.instance.status == Listing.Status.PUBLISHED:
+            limits.enforce_listing_caps(landlord_profile)
+            serializer.instance.refresh_from_db(fields=['status'])
+            # Same safety net as review_listing: publishing can never leave
+            # a landlord above their live limit. The cap was checked above,
+            # so this normally changes nothing.
+
+    def _landlord_profile_from_request(self):
+        # The landlord a staff member is creating a listing for, from the
+        # `landlord_profile_id` in the body. Only real landlords count (the
+        # same rule as the staff landlord search in accounts/views.py), so
+        # staff can't attach a listing to a renter's or a colleague's row.
+        try:
+            return LandlordProfile.objects.get(
+                pk=int(self.request.data.get('landlord_profile_id')),
+                user__role=User.Role.LANDLORD,
+            )
+        except (TypeError, ValueError, LandlordProfile.DoesNotExist):
+            raise ValidationError({'landlord_profile_id': ['Choose the landlord this home belongs to.']})
+            # TypeError: the field is missing (int(None)). ValueError: it
+            # isn't a number. DoesNotExist: no such landlord. All three
+            # mean the same thing to the person filling in the form.
+
+    def _staff_publishing_fields(self, landlord_profile):
+        # Where a staff-created listing starts, as extra fields for save().
+        # MUST run inside perform_create's locked transaction: it counts
+        # the landlord's live listings.
+        from django.utils import timezone
+        from payments import limits
+
+        usage = limits.usage_for(landlord_profile)
+        cap = usage['listing_cap']
+        if cap is not None and usage['listings_used'] >= cap:
+            raise PermissionDenied({
+                'detail': (
+                    f'This landlord\'s plan allows {cap} live listings (published or in review), '
+                    'and they are using all of them. Upgrade their plan or archive a listing first.'
+                ),
+                'code': 'listing_limit_reached',
+            })
+        # KELVIN'S DECISION: plan limits apply to the LANDLORD the listing
+        # is for, and staff can't bypass them. A staff listing goes live
+        # (or into review) immediately, so the live limit is checked now,
+        # the same check submit_for_review does for a landlord.
+
+        staff_profile = StaffProfile.objects.filter(user=self.request.user).first()
+        # .filter().first(): admins have no StaffProfile (see review_listing).
+
+        if self.request.user.role == User.Role.ADMIN or (
+            staff_profile is not None and staff_profile.can_approve_listings
+        ):
+            now = timezone.now()
+            return {
+                'status': Listing.Status.PUBLISHED,
+                'verified_by_staff': staff_profile,
+                'verified_at': now,
+                'published_at': now,
+            }
+            # KELVIN'S DECISION: the in-person visit IS the verification.
+            # A staff member trusted to approve listings, or an admin, has
+            # just stood in the home, so it's published straight away,
+            # stamped exactly as review_listing would stamp an approval.
+
+        return {'status': Listing.Status.PENDING_REVIEW}
+        # Any other staff member: someone with approval rights reviews it
+        # in the normal review queue.
 
     def perform_update(self, serializer):
         # Called automatically during "update" (PATCH/PUT) — this is
@@ -332,11 +438,14 @@ class ListingViewSet(viewsets.ModelViewSet):
         # Fetches the specific listing being updated (ModelViewSet
         # already found it via the URL's <id>, this just retrieves it)
 
-        if listing.landlord_profile.user != self.request.user:
+        if listing.landlord_profile.user != self.request.user and self.request.user.role not in (
+            User.Role.STAFF, User.Role.ADMIN
+        ):
             raise PermissionDenied("You can only edit your own listings")
-            # THE actual "only the owner can edit this" check we've been
-            # talking about conceptually since the permissions discussion
-            # — now finally written, for real
+            # Only the owner, or paddy staff/admins (Kelvin's decision:
+            # staff create listings for landlords and keep supporting them
+            # after). Status still can't change here: it's read_only on
+            # the serializer.
 
         serializer.save()
 
@@ -728,9 +837,12 @@ class ListingViewSet(viewsets.ModelViewSet):
         # respecting get_queryset() (so a non-owner still can't reach a
         # listing they can't see, same 404-not-403 behavior as before)
 
-        if listing.landlord_profile.user != request.user:
+        if listing.landlord_profile.user != request.user and request.user.role not in (
+            User.Role.STAFF, User.Role.ADMIN
+        ):
             raise PermissionDenied("You can only upload photos to your own listings")
-            # Same ownership check pattern as perform_update/perform_destroy
+            # Same rule as perform_update: the owner, or staff/admins
+            # (who take the photos when they list a home in person).
 
         images = request.FILES.getlist('images')
         # request.FILES — where Django puts uploaded FILES specifically
@@ -858,7 +970,7 @@ class ListingPhotoViewSet(viewsets.ModelViewSet):
     # Class-level IsAuthenticated with NO AllowAny branch — photos are
     # never public CRUD. Listing bodies are publicly readable (with
     # address/contact gated inside the serializer), but reordering or
-    # deleting someone's gallery is an owner-only write, full stop.
+    # deleting someone's gallery is a write for the owner or staff/admins only.
 
     http_method_names = ['get', 'patch', 'delete', 'head', 'options']
     # By default ModelViewSet would also wire up POST (create) and PUT
@@ -876,6 +988,10 @@ class ListingPhotoViewSet(viewsets.ModelViewSet):
     #   blocked set is just different (POST/PUT instead of all writes).
 
     def get_queryset(self):
+        if self.request.user.role in (User.Role.STAFF, User.Role.ADMIN):
+            return ListingPhoto.objects.all()
+            # Staff/admins manage any listing's photos (reorder, cover,
+            # delete), the same as they can upload to any listing.
         return ListingPhoto.objects.filter(listing__landlord_profile__user=self.request.user)
         # Owner-scoped — get_object() then 404s (not 403s) for
         # non-owners automatically, matching this codebase's existing
@@ -884,7 +1000,7 @@ class ListingPhotoViewSet(viewsets.ModelViewSet):
         # listing__landlord_profile__user — the same double-hop lookup
         # ViewingViewSet uses (Viewing -> listing -> landlord_profile
         # -> user), just starting from ListingPhoto instead of Viewing.
-        # .filter (not user.landlordprofile) so renters/staff without a
+        # .filter (not user.landlordprofile) so renters (and anyone else) without a
         # LandlordProfile simply match nothing instead of raising
         # RelatedObjectDoesNotExist.
 
