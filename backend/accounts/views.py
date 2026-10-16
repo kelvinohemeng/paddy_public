@@ -1,5 +1,6 @@
 
 import logging
+import re
 
 import requests
 from decouple import config
@@ -45,8 +46,14 @@ from django.db import IntegrityError, transaction
 # writes all-or-nothing and to catch a username claimed by someone else
 # in the same instant.
 from .serializers import (
-    OnboardingSerializer, RegisterSerializer, UserSerializer, UserUpdateSerializer,
+    OnboardingSerializer, RegisterSerializer, StaffCreateLandlordSerializer,
+    StaffLandlordSerializer, UserSerializer, UserUpdateSerializer,
 )
+from django.db.models import Q
+from django.utils.text import slugify
+from .models import RESERVED_USERNAMES, USERNAME_PATTERN
+from .permissions import IsStaffOrAdmin
+# Used by the staff onboarding views at the bottom of this file.
 # UserSerializer and UserUpdateSerializer used to be defined directly in
 # this file — moved into serializers.py to match Django/DRF convention
 # (all serializers live together in serializers.py, all view/request
@@ -897,6 +904,11 @@ def confirm_password_reset(request: Request) -> Response:
         # bare min_length=8) just for this one endpoint.
 
     user.set_password(new_password)
+    user.is_verified = True
+    # The reset link was emailed to user.email, so using it proves this
+    # person owns that inbox: the same proof verify_email accepts. This is
+    # what makes a staff-created landlord verified once they claim their
+    # account from the invite email (send_landlord_invite_email below).
     user.save()
 
     try:
@@ -1048,4 +1060,242 @@ def onboarding(request: Request) -> Response:
     # Same "return the full updated user" convention as PATCH /accounts/me/
     # above — the frontend has everything it needs to proceed past
     # onboarding without a separate follow-up GET.
+
+
+# ---- Staff onboarding: landlord accounts created by staff ------------------
+# paddy staff go door to door, sign up homeowners and list their homes for
+# them on a phone. These views let staff find an existing landlord or create
+# a new one (name, email, phone; no password). The landlord then gets an
+# invite email, sets a password through the normal reset page, and owns the
+# account from then on.
+
+LANDLORD_SEARCH_LIMIT = 20
+# The search box shows at most this many matches. Staff type a few letters
+# of a name or phone number; a short list is all a phone screen can show.
+
+
+def generate_landlord_username(first_name, last_name):
+    # Staff-created landlords skip onboarding, so they need a username
+    # (their dashboard URL slug) made for them: "Ama Mensah" -> "ama_mensah",
+    # or "ama_mensah_2" if that's taken. It must pass the same rules as a
+    # chosen username (USERNAME_PATTERN and RESERVED_USERNAMES in
+    # models.py). There's no self-service rename yet; staff can change it
+    # in Django admin.
+    base = slugify(f'{first_name} {last_name}').replace('-', '_')[:24]
+    # slugify lowercases, drops accents and anything that isn't a letter,
+    # digit, hyphen or underscore, and joins words with hyphens. 24
+    # characters leaves room for a "_<number>" suffix inside the 30 limit.
+    if not re.fullmatch(USERNAME_PATTERN, base):
+        base = 'landlord'
+        # e.g. a name with no Latin letters at all, or one starting with a digit
+    candidate = base
+    number = 1
+    while candidate in RESERVED_USERNAMES or User.objects.filter(username=candidate).exists():
+        number += 1
+        candidate = f'{base}_{number}'
+    return candidate
+    # Two staff creating the same name at the same instant could both get
+    # "ama_mensah"; the database's unique constraint stops the second one,
+    # and landlords() answers it with "try again" (see below).
+
+
+def send_landlord_invite_email(user):
+    # The "your home is on paddy, set your password" email. It's a normal
+    # password-reset link (same token, same /reset-password page) plus
+    # `invite=1`, which only tells the frontend to show a welcome message
+    # instead of "reset your password". Like any reset link, it stops
+    # working once a password is set, and expires after
+    # PASSWORD_RESET_TIMEOUT (3 days by default); staff can resend it.
+    token = password_reset_token.make_token(user)
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    invite_link = f"{settings.FRONTEND_URL}/reset-password?uid={uid}&token={token}&invite=1"
+
+    plain_text_body = (
+        f"Your home is on paddy. Set your password to manage it: {invite_link}\n\n"
+        f"A member of the paddy team created this account for you. "
+        f"If you weren't expecting this email, you can ignore it."
+    )
+
+    html_body = f"""
+    <html>
+      <body style="font-family: sans-serif; color: #1a1a1a;">
+        <h2>Your home is on paddy</h2>
+        <p>
+          A member of the paddy team created a landlord account for you.
+          Set your password to manage your home on paddy.
+        </p>
+        <p>
+          <a href="{invite_link}"
+             style="display: inline-block; padding: 12px 24px;
+                    background-color: #16a34a; color: #ffffff;
+                    text-decoration: none; border-radius: 6px;">
+            Set my password
+          </a>
+        </p>
+        <p style="color: #666; font-size: 13px;">
+          If the button doesn't work, copy and paste this link into your
+          browser: {invite_link}
+        </p>
+        <p style="color: #666; font-size: 13px;">
+          If you weren't expecting this email, you can ignore it.
+        </p>
+      </body>
+    </html>
+    """
+    # Same plain-text + HTML pair as the verification and reset emails, for
+    # the same deliverability reasons. No names or other staff-typed text
+    # go into the HTML, so nothing here needs escaping.
+
+    email_message = EmailMultiAlternatives(
+        subject='Your home is on paddy',
+        body=plain_text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[user.email],
+        headers={
+            "List-Unsubscribe": f"<mailto:{settings.DEFAULT_FROM_EMAIL}>",
+        },
+    )
+    email_message.attach_alternative(html_body, "text/html")
+    email_message.send()
+
+
+def _landlords_for_staff():
+    # Every account staff may see through these endpoints: landlords with a
+    # LandlordProfile. Renters, staff and admins never appear, whatever the
+    # search says. select_related fetches each profile in the same query.
+    return User.objects.filter(
+        role=User.Role.LANDLORD, landlordprofile__isnull=False,
+    ).select_related('landlordprofile')
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsStaffOrAdmin])
+def landlords(request: Request) -> Response:
+    # GET  /accounts/landlords/?search=ama  -> up to 20 matching landlords
+    # POST /accounts/landlords/             -> create one and email the invite
+    #   body: {"first_name", "last_name", "email", "phone"}
+    # Staff and admins only (IsStaffOrAdmin): these responses carry
+    # landlords' emails and phone numbers.
+
+    if request.method == 'GET':
+        search = request.query_params.get('search', '').strip()
+        queryset = _landlords_for_staff()
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(landlordprofile__full_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(username__icontains=search)
+            )
+            # Q objects joined with | mean OR: a match on any one field
+            # counts. icontains = "contains, ignoring case".
+        queryset = queryset.order_by('-created_at')[:LANDLORD_SEARCH_LIMIT]
+        # Newest first, so an empty search shows the landlords added most
+        # recently (often the one a colleague just signed up).
+        return Response(StaffLandlordSerializer(queryset, many=True).data)
+
+    serializer = StaffCreateLandlordSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    data = serializer.validated_data
+
+    email = User.objects.normalize_email(data['email'])
+    email_taken = Response(
+        {'detail': 'A paddy account already uses this email.', 'code': 'email_taken'},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+    if User.objects.filter(email__iexact=email).exists():
+        return email_taken
+        # iexact: "Ama@Gmail.com" and "ama@gmail.com" are the same inbox,
+        # so staff can't create a second account for someone who already
+        # has one. The frontend can then search for the existing landlord.
+
+    first_name = data['first_name']
+    last_name = data['last_name']
+    try:
+        with transaction.atomic():
+            # All or nothing: never a landlord User without its profile.
+            user = User.objects.create_user(
+                email=email,
+                password=None,
+                # password=None makes Django store an UNUSABLE password:
+                # nobody can sign in with a password until the landlord
+                # sets one from the invite link. has_usable_password()
+                # turning True is what "claimed" means.
+                role=User.Role.LANDLORD,
+                username=generate_landlord_username(first_name, last_name),
+                first_name=first_name,
+                last_name=last_name,
+                phone=data['phone'],
+            )
+            # is_verified stays False (the default) until the landlord
+            # uses the emailed link, which proves the address is theirs.
+            LandlordProfile.objects.create(
+                user=user, full_name=f'{first_name} {last_name}'.strip(),
+            )
+            # No national_id_number: staff don't collect ID numbers here,
+            # and id_verified stays False.
+    except IntegrityError:
+        if User.objects.filter(email__iexact=email).exists():
+            return email_taken
+            # Someone created an account with this email between our check
+            # above and the insert.
+        return Response(
+            {'detail': 'Another account was created at the same moment. Please try again.'},
+            status=status.HTTP_409_CONFLICT,
+        )
+        # The generated username was claimed in that same instant. A retry
+        # generates a fresh one.
+
+    try:
+        send_landlord_invite_email(user)
+    except Exception:
+        logger.exception("Failed to send the landlord invite email (user id %s).", user.id)
+        # The account stays: the staff member is standing in the property
+        # and needs it to list the home now. It shows as unclaimed, and
+        # "Resend invite" (resend_landlord_invite below) sends the email
+        # again once the provider is back.
+
+    return Response(StaffLandlordSerializer(user).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([IsStaffOrAdmin])
+@throttle_classes([ScopedRateThrottle])
+@throttle_scope('password_reset')
+# The same 5-per-minute limit as the other "send an email on demand"
+# endpoints, counted per staff account: enough to fix a lost invite, too
+# few to flood a landlord's inbox.
+def resend_landlord_invite(request: Request, user_id: int) -> Response:
+    # POST /accounts/landlords/<user id>/resend-invite/
+    # Sends a fresh invite link, only while the landlord hasn't set a
+    # password yet. Once claimed, a forgotten password goes through the
+    # normal "forgot password" flow instead.
+    try:
+        user = _landlords_for_staff().get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({'detail': 'Landlord not found.'}, status=status.HTTP_404_NOT_FOUND)
+        # Also the answer for a renter's or staff member's id: this endpoint
+        # can never email anyone who isn't a landlord.
+
+    if user.has_usable_password():
+        return Response(
+            {'detail': 'This landlord has already set a password.', 'code': 'already_claimed'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        send_landlord_invite_email(user)
+    except Exception:
+        logger.exception("Failed to resend the landlord invite email (user id %s).", user.id)
+        return Response(
+            {'detail': 'We could not send the email right now. Please try again shortly.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        # Sending the email is this endpoint's whole job, so a failure is
+        # reported, same as resend_verification_email.
+
+    return Response({'message': 'Invite sent.'})
 

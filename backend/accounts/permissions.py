@@ -1,4 +1,28 @@
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import BasePermission
+
+from .models import User
+
+
+class IsStaffOrAdmin(BasePermission):
+    # A DRF permission class: DRF asks has_permission() BEFORE the view
+    # runs, and answers 403 for us when it returns False (401 when nobody
+    # is logged in at all). Used by the staff onboarding endpoints
+    # (accounts/views.py landlords, resend_landlord_invite): only paddy
+    # staff and admins may look up landlords' contact details or create
+    # accounts for them.
+    #
+    # Checks User.role, not Django's is_staff flag: is_staff only means
+    # "may open Django admin", while role is what the rest of the API uses.
+    message = 'Only paddy staff can do this.'
+
+    def has_permission(self, request, view):
+        return (
+            request.user.is_authenticated
+            and request.user.role in (User.Role.STAFF, User.Role.ADMIN)
+        )
+        # is_authenticated first: an anonymous visitor has no `role`, and
+        # `and` stops before reading it.
 
 
 EMAIL_NOT_VERIFIED_CODE = 'email_not_verified'

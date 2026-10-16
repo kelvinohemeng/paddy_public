@@ -8,7 +8,7 @@ from core.models import Amenity
 # name (gis_models) so it doesn't collide with the regular `models` import
 # above — we'll use both in this same file, for different fields
 
-from accounts.models import LandlordProfile, StaffProfile
+from accounts.models import LandlordProfile, StaffProfile, User
 from django.core.validators import FileExtensionValidator
 from django.utils.text import slugify
 
@@ -34,7 +34,19 @@ class Listing(models.Model):
     # database level (null) and the validation level (blank) — makes
     # sense, since a brand new listing has no verifying staff member YET
 
-    title = models.CharField(max_length=200)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='listings_created',
+    )
+    # WHO typed this listing in: the landlord, or a staff member listing a
+    # home for a landlord while standing in it (staff onboarding). Not the
+    # same as the owner: landlord_profile above stays the owner either way.
+    # Lets staff see "Homes I added" (GET /listings/?created_by=me).
+    # SET_NULL for the same reason as verified_by_staff: deleting a staff
+    # account must not delete the homes they added. Listings made before
+    # this field existed stay null ("not recorded"); nobody guesses them.
+
+    title =models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, blank=True)
     description = models.TextField()
     # TextField again, same reasoning as About Me earlier — long-form,

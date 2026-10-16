@@ -33,5 +33,13 @@ urlpatterns = [
     path('verify-email/resend/', views.resend_verification_email, name='resend_verification_email'),
     path('password-reset/', views.request_password_reset, name='password_reset_request'),
     path('password-reset/confirm/', views.confirm_password_reset, name='password_reset_confirm'),
+    path('landlords/', views.landlords, name='staff_landlords'),
+    path(
+        'landlords/<int:user_id>/resend-invite/',
+        views.resend_landlord_invite,
+        name='staff_landlord_resend_invite',
+    ),
+    # Staff onboarding (staff/admin only): find or create a landlord and
+    # send them the "set your password" invite.
 ]
 

@@ -283,9 +283,12 @@ class LandlordProfile(models.Model):
     full_name = models.CharField(max_length=150)
     # Plain short text field, required — matches the ERD
 
-    national_id_number = models.CharField(max_length=50)
+    national_id_number = models.CharField(max_length=50, blank=True)
     # Plain short text field — Ghana Card / national ID number, used for identity
-    # verification. Required, since verification depends on having this on file.
+    # verification. Optional (blank=True) since staff onboarding: staff create
+    # landlord accounts in the field with just a name, email and phone, and
+    # must not be blocked by an ID number they don't collect. Empty means
+    # "not on file", and id_verified stays False until staff check one.
     # Note: stored as CharField, not IntegerField — ID numbers often contain
     # letters/dashes and are never used in math, so text is the correct type
     # even though it looks like a "number"
