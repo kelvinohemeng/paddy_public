@@ -15,6 +15,27 @@ import { PaddySpinnerIcon } from "@/components/paddy-icons";
 // Once listings arrive the page stops rendering this.
 const GIVE_UP_AFTER_MS = 120_000;
 
+// Render holds a direct request while the backend wakes, then answers.
+// The root URL is a tiny 404 with no database work; any answer will do,
+// and no-cors because we never read it.
+function knock() {
+  return fetch(`${process.env.NEXT_PUBLIC_API_URL}/`, {
+    mode: "no-cors",
+    cache: "no-store",
+    signal: AbortSignal.timeout(60_000),
+  }).catch(() => {});
+}
+
+// In the root layout: every visit starts waking the backend straight
+// away, so it's up (or nearly) by the time someone signs in or opens a
+// page whose server fetch needs it.
+export function WakeBackend() {
+  useEffect(() => {
+    knock();
+  }, []);
+  return null;
+}
+
 export function BackendWaking() {
   const router = useRouter();
   const [round, setRound] = useState(0);
@@ -25,12 +46,7 @@ export function BackendWaking() {
     const started = Date.now();
     (async () => {
       while (!cancelled && Date.now() - started < GIVE_UP_AFTER_MS) {
-        // no-cors: we only need the backend to answer, not to read it.
-        await fetch(`${process.env.NEXT_PUBLIC_API_URL}/listings/`, {
-          mode: "no-cors",
-          cache: "no-store",
-          signal: AbortSignal.timeout(60_000),
-        }).catch(() => {});
+        await knock();
         if (cancelled) return;
         router.refresh();
         await new Promise((resolve) => setTimeout(resolve, 5_000));
