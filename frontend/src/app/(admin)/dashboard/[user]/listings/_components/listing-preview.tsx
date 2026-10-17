@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Archive, ArchiveRestore, Loader2, PencilLine, SendHorizontal } from "lucide-react";
 
 import { useApiInvalidate, useApiOne } from "@/hooks/use-api";
+import { useMe } from "@/hooks/use-auth";
 import { useSubmitForReview } from "@/hooks/use-submit-for-review";
 import { apiPost } from "@/lib/api-client";
 import { errorMessage } from "@/lib/api";
@@ -95,6 +96,10 @@ export function ListingOwnerActions({
   const router = useRouter();
   const { data: listing } = useApiOne("listings", listingId);
   const status = parseStatus(listing?.status);
+  // Staff open these too, from Homes I added. Submit for review is the
+  // owner's alone (backend submit_for_review); archive and edit aren't.
+  const { data: me } = useMe();
+  const canSubmit = me?.role === "landlord";
 
   // Landlords ARCHIVE instead of deleting (Kelvin's 2026-09 decision):
   // DELETE /listings/<id>/ is admin-only on the backend, because deleting
@@ -141,7 +146,7 @@ export function ListingOwnerActions({
 
   return (
     <>
-      {status && OWNER_ACTIONABLE.has(status) && (
+      {canSubmit && status && OWNER_ACTIONABLE.has(status) && (
         <PaddyButton
           size="sm"
           variant="secondary"

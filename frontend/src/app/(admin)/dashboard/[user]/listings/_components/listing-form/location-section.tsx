@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Controller, useFormContext, useFormState } from "react-hook-form";
-import { Search } from "lucide-react";
+import { LocateFixed, Search } from "lucide-react";
 
+import { PaddyButton } from "@/components/paddy-button";
 import {
   PlaceAutocompleteInput,
   type PlaceDetails,
@@ -177,6 +178,37 @@ export function LocationSection({ active }: { active: boolean }) {
     [],
   );
 
+  // "Use my current location": for staff standing in the home. The
+  // browser asks for permission only now, on the tap. Works without
+  // Google Maps too (it commits the point like pasted coordinates).
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState<string | null>(null);
+  function locateMe() {
+    if (!navigator.geolocation) {
+      setLocateError("This browser can't share its location. Drop the pin on the map instead.");
+      return;
+    }
+    setLocating(true);
+    setLocateError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setLocating(false);
+        const { latitude, longitude } = position.coords;
+        commitLocation(latitude, longitude);
+        showOnMap(latitude, longitude);
+      },
+      (error) => {
+        setLocating(false);
+        setLocateError(
+          error.code === error.PERMISSION_DENIED
+            ? "Location is blocked for this site. Allow it in your browser settings, or drop the pin on the map."
+            : "Couldn't find your location. Try again, or drop the pin on the map.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 },
+    );
+  }
+
   // "Paste coordinates": accepts "lat, lng", "lat lng", or Google Maps'
   // "lat,lng" copy. Commits through the same path as the map.
   function handleCoordsInput(raw: string) {
@@ -287,6 +319,21 @@ export function LocationSection({ active }: { active: boolean }) {
       <FormRow name="location" label="Pin on map" labelType="plus">
         {({ describedBy }) => (
           <div className="flex flex-col gap-1.5">
+            <PaddyButton
+              variant="secondary"
+              size="xl"
+              leftIcon={LocateFixed}
+              onClick={locateMe}
+              isLoading={locating}
+              className="mb-1.5 max-md:w-full md:self-start"
+            >
+              Use my current location
+            </PaddyButton>
+            {locateError && (
+              <p role="alert" className="text-destructive text-[13px] leading-5">
+                {locateError}
+              </p>
+            )}
             <div
               ref={mapDivRef}
               // A bare, ref-only div: Google Maps draws into it directly.

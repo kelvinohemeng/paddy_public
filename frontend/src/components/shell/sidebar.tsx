@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
-import { ChartColumn, LockOpen, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
+import { ChartColumn, HousePlus, LockOpen, ShieldCheck, Wrench, type LucideIcon } from "lucide-react";
 
 import { useLogout, useMe } from "@/hooks/use-auth";
 import {
@@ -34,8 +34,10 @@ import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 // frames' look but not their exact list — see navFor() below:
 //   landlord        My Listings · Analytics (soon) | Payment · About me
 //   renter          Browse Homes · Unlocked Listings · Saved Homes | Payment · About me
-//   staff           Review Queue · Browse Homes | About me
-//   admin           Review Queue · Admin panel ↗ · Browse Homes | About me
+//   staff           Review Queue · Add a home · Homes I added · Browse Homes | About me
+//   admin           Review Queue · Add a home · Homes I added · Admin panel ↗ ·
+//                   Browse Homes | About me
+// (Add a home / Homes I added: Phase 2, staff list homes for landlords.)
 //   everyone        | Logout
 //
 // Gone since the frames: "Dashboard" (there's no dashboard home page any
@@ -112,6 +114,9 @@ function navFor(role: string | undefined, base: string): NavGroupsForRole {
       return {
         main: [
           { href: `${base}/reviews`, label: "Review Queue", icon: ShieldCheck },
+          // The listing form, with a Landlord step first for these roles.
+          { href: `${base}/listings/create`, label: "Add a home", icon: HousePlus },
+          { href: `${base}/added`, label: "Homes I added", icon: "listings" },
           // Viewings row goes here once its page exists (behind VIEWINGS_ENABLED).
           ...(role === "admin"
             ? [{ href: DJANGO_ADMIN_URL, label: "Admin panel", icon: Wrench, external: true }]

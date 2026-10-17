@@ -8,6 +8,7 @@ import { PaddyButton } from "@/components/paddy-button";
 import { PaddyBadge } from "@/components/paddy-badge";
 import { useApiList } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
+import type { StaffLandlord } from "./landlord-step";
 import { FileImage } from "./photos-section";
 import { SectionHeading } from "./form-parts";
 import {
@@ -26,12 +27,17 @@ export function ReviewStep({
   files,
   existingPhotoUrls,
   onEditStep,
+  landlord,
 }: {
   files: File[];
   /** Edit mode: the photos already on the listing. */
   existingPhotoUrls: string[];
-  onEditStep: (step: number) => void;
+  /** Steps counted from Basics (0). Omitted: no Edit links. */
+  onEditStep?: (step: number) => void;
+  /** Staff/admin create: who the home is for. */
+  landlord?: StaffLandlord | null;
 }) {
+  const edit = (step: number) => onEditStep && (() => onEditStep(step));
   const { control } = useFormContext<ListingFormValues>();
   const values = useWatch({ control }) as ListingFormValues;
   // Same query (and cache) as the AmenityPicker on step 1 — no extra
@@ -54,7 +60,19 @@ export function ReviewStep({
 
   return (
     <div className="flex flex-col gap-6">
-      <ReviewGroup title="Basics" onEdit={() => onEditStep(0)}>
+      {landlord && (
+        // -1: the Landlord step, just before Basics.
+        <ReviewGroup title="Landlord" onEdit={edit(-1)}>
+          <ReviewItem label="Name" wide>
+            {landlord.full_name}
+          </ReviewItem>
+          <ReviewItem label="Phone">{landlord.phone}</ReviewItem>
+          <ReviewItem label="Email">
+            <span className="break-all">{landlord.email}</span>
+          </ReviewItem>
+        </ReviewGroup>
+      )}
+      <ReviewGroup title="Basics" onEdit={edit(0)}>
         <ReviewItem label="Photos" wide>
           {photoCount === 0 ? (
             <span className="text-muted-foreground">
@@ -105,7 +123,7 @@ export function ReviewStep({
         </ReviewItem>
       </ReviewGroup>
 
-      <ReviewGroup title="Location" onEdit={() => onEditStep(1)}>
+      <ReviewGroup title="Location" onEdit={edit(1)}>
         <ReviewItem label="Address" wide>
           {values.address_precise}
         </ReviewItem>
@@ -122,7 +140,7 @@ export function ReviewStep({
         </ReviewItem>
       </ReviewGroup>
 
-      <ReviewGroup title="Pricing & type" onEdit={() => onEditStep(2)}>
+      <ReviewGroup title="Pricing & type" onEdit={edit(2)}>
         {isSale ? (
           <ReviewItem label="Listing type" wide>
             For sale · GHS {Number(values.price_one_time ?? 0).toLocaleString()} (unchanged)
@@ -143,7 +161,7 @@ export function ReviewStep({
         )}
       </ReviewGroup>
 
-      <ReviewGroup title="Others" onEdit={() => onEditStep(3)}>
+      <ReviewGroup title="Others" onEdit={edit(3)}>
         <ReviewItem label="360° tour URL" wide>
           {values.virtual_tour_url ? (
             <span className="break-all">{values.virtual_tour_url}</span>
@@ -162,22 +180,24 @@ function ReviewGroup({
   children,
 }: {
   title: string;
-  onEdit: () => void;
+  onEdit?: () => void;
   children: ReactNode;
 }) {
   return (
     <section className="border-hairline rounded-lg border p-4 md:p-5">
       <div className="mb-3 flex items-center justify-between gap-3">
         <SectionHeading>{title}</SectionHeading>
-        <PaddyButton
-          variant="transparent"
-          size="sm"
-          leftIcon={PencilLine}
-          onClick={onEdit}
-          aria-label={`Edit ${title}`}
-        >
-          Edit
-        </PaddyButton>
+        {onEdit && (
+          <PaddyButton
+            variant="transparent"
+            size="sm"
+            leftIcon={PencilLine}
+            onClick={onEdit}
+            aria-label={`Edit ${title}`}
+          >
+            Edit
+          </PaddyButton>
+        )}
       </div>
       <dl className="grid grid-cols-2 gap-x-6 gap-y-3">{children}</dl>
     </section>

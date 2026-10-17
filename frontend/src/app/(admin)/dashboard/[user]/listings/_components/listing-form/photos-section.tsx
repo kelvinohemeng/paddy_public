@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Camera, X } from "lucide-react";
 
+import { PaddyButton } from "@/components/paddy-button";
 import { ArrowDownTrayIcon } from "@/components/paddy-icons";
 import { PaddyLabel } from "@/components/paddy-label";
 import { cn } from "@/lib/utils";
@@ -76,6 +77,7 @@ export function PhotosSection({
   existingPhotos?: ManagedPhoto[];
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
   const [problems, setProblems] = useState<string[]>([]);
   const [dragging, setDragging] = useState(false);
 
@@ -185,6 +187,32 @@ export function PhotosSection({
             : "Drag and drop files here or click to upload"}
         </span>
       </button>
+      {/* Phones: straight to the camera, for staff in the home. Its own
+          input: `capture` on the one above would stop people choosing
+          photos they already took. */}
+      <PaddyButton
+        variant="secondary"
+        size="xl"
+        leftIcon={Camera}
+        onClick={() => cameraRef.current?.click()}
+        disabled={roomLeft <= 0}
+        className="md:hidden"
+      >
+        Take a photo
+      </PaddyButton>
+      <input
+        ref={cameraRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => {
+          addFiles(Array.from(e.target.files ?? []));
+          e.target.value = "";
+        }}
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden
+      />
       <input
         ref={inputRef}
         id="photos-input"
