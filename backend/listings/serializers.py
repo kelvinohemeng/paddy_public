@@ -34,6 +34,12 @@ class ListingSerializer(serializers.ModelSerializer):
     # broken on the frontend. Never includes phone/email — that stays
     # behind landlord_contact's real access gate
 
+    landlord_has_claimed = serializers.SerializerMethodField()
+    # Staff/admin only: has the landlord set a password yet (claimed the
+    # account staff made for them)? Lets "Homes I added" show an "Invite
+    # pending" badge. null for everyone else: whether an account has a
+    # password is nobody else's business.
+
     is_staff_verified = serializers.SerializerMethodField()
     # Whether staff have verified this specific listing — safe to
     # expose unconditionally (it's a badge, not contact info), but
@@ -204,6 +210,19 @@ class ListingSerializer(serializers.ModelSerializer):
             'full_name': landlord_profile.full_name,
             'id_verified': landlord_profile.id_verified,
         }
+
+    def get_landlord_has_claimed(self, listing):
+        request = self.context.get('request')
+        if request is None or not request.user.is_authenticated:
+            return None
+        if request.user.role not in (request.user.Role.STAFF, request.user.Role.ADMIN):
+            return None
+        return listing.landlord_profile.user.has_usable_password()
+        # The same test as `has_claimed` in GET /accounts/landlords/
+        # (accounts/serializers.py): staff create landlords with an
+        # unusable password, and setting one through the invite link is
+        # what "claimed" means. No extra query: get_queryset joins the
+        # landlord's user in (select_related).
 
     def get_is_staff_verified(self, listing):
         return listing.verified_at is not None

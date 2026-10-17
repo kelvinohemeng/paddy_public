@@ -271,9 +271,14 @@ class ListingViewSet(viewsets.ModelViewSet):
             # listings that haven't been geocoded yet without needing a
             # separate check
 
-        return queryset
+        return queryset.select_related('landlord_profile__user')
         # Only NOW do we actually return — after every optional filter
-        # has had a chance to narrow things down further
+        # has had a chance to narrow things down further.
+        # select_related fetches each listing's landlord profile and
+        # user in the SAME query (a SQL join). The serializer reads both
+        # for every row (landlord_public, landlord_has_claimed, the owner
+        # check); without the join, a list of 20 homes would cost 20-40
+        # extra queries.
 
     def perform_create(self, serializer):
         # Called automatically by ModelViewSet during its built-in
