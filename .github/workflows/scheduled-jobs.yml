@@ -36,7 +36,10 @@ concurrency:
 
 jobs:
   daily:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    # Pinned, not ubuntu-latest: that label moves to Ubuntu 26 from
+    # 2026-10-19, which would change the GDAL version apt installs below
+    # without anyone choosing to. Move up deliberately, with a CI run.
 
     defaults:
       run:
@@ -70,10 +73,10 @@ jobs:
 
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
