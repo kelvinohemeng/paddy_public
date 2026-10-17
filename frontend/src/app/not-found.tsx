@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
+
 // Framework-free 404: plain markup + links, no auth wrapper. The
 // (admin) layout still gates dashboard routes server-side; this page
 // just needs to point lost visitors somewhere useful.
@@ -13,7 +15,7 @@ export default function NotFound() {
         removed.
       </p>
       <div className="flex gap-4 text-sm font-medium">
-        <Link href="/" className="underline">
+        <Link href={DISCOVERY_PATH} className="underline">
           Discover homes
         </Link>
         <Link href="/dashboard" className="underline">

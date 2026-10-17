@@ -24,6 +24,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { DISCOVERY_PATH } from "@/app/(public)/_components/discovery-path";
 import { Button } from "@/components/ui/button";
 import { verifyPayment } from "@/lib/payments";
 
@@ -82,7 +83,7 @@ export function PaymentCallbackClient() {
         router.push(returnPath);
         return;
       }
-      router.push("/");
+      router.push(DISCOVERY_PATH);
       return;
     }
     // Subscription: land back on /dashboard — the server-redirect there
