@@ -93,6 +93,14 @@ async function loginRequest(input: LoginInput): Promise<void> {
 
   const { email, password } = input as EmailLogin;
   const res = await postAuthRoute("/api/auth/login", { email, password });
+  // 429/5xx: too many tries, or the backend still waking up on Render's
+  // free plan. Saying "invalid password" there sent people chasing the
+  // wrong problem.
+  if (res.status === 429 || res.status >= 500) {
+    throw new Error(
+      "Couldn't sign in right now. The server may be waking up, so try again in a minute.",
+    );
+  }
   if (!res.ok) throw new Error("Invalid email or password");
 }
 
