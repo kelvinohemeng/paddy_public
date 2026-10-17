@@ -1,6 +1,7 @@
 "use client";
 
 import { SideDrawer } from "@/components/side-drawer";
+import { useMe } from "@/hooks/use-auth";
 import { ListingFormStepper } from "@/app/(admin)/dashboard/[user]/listings/_components/listing-form-stepper";
 
 // Intercepts client-side navigation to /dashboard/[user]/listings/create
@@ -16,11 +17,18 @@ import { ListingFormStepper } from "@/app/(admin)/dashboard/[user]/listings/_com
 // header row itself (SideDrawer's actions slot); below md the drawer is
 // full-screen and they sit in a bar at the bottom instead.
 export default function InterceptedListingCreatePanel() {
+  // Staff and admins list a home FOR a landlord: one extra step first.
+  const { data: me } = useMe();
+  const forLandlord = me?.role === "staff" || me?.role === "admin";
   return (
     <SideDrawer
-      title="Create listing"
+      title={forLandlord ? "Add a home" : "Create listing"}
       showTitle
-      subtitle="Five short steps — nothing is saved until the last one."
+      subtitle={
+        forLandlord
+          ? "Six short steps. Nothing is saved until the last one."
+          : "Five short steps — nothing is saved until the last one."
+      }
       dismissOnOutsideClick={false}
       bodyClassName="px-5 pb-8 md:px-8"
     >

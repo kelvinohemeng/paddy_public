@@ -22,7 +22,9 @@ import type { ManagedPhoto } from "./photo-manager";
 import { AMENITY_FIELDS, AmenitiesSection } from "./listing-form/amenities-section";
 import { BASICS_FIELDS, BasicsSection } from "./listing-form/basics-section";
 import { SectionHeading } from "./listing-form/form-parts";
+import { LandlordStep, type StaffLandlord } from "./listing-form/landlord-step";
 import { LOCATION_FIELDS, LocationSection } from "./listing-form/location-section";
+import { PhotoUploadList, uploadPhoto, type PhotoUpload } from "./listing-form/photo-uploads";
 import { PhotosSection } from "./listing-form/photos-section";
 import { PRICING_FIELDS, PricingSection } from "./listing-form/pricing-section";
 import { ReviewStep } from "./listing-form/review-step";
@@ -78,6 +80,14 @@ import { TOUR_FIELDS, TourSection } from "./listing-form/tour-section";
 // own refusals are handled too (listing_total_limit_reached on create,
 // listing_limit_reached on submit, email_not_verified on either) — always
 // with a friendly message, never the raw error.
+//
+// Staff and admins creating (Phase 2, field sales) get a "Landlord" step
+// first: the home is listed FOR a landlord (contract C4). The POST sends
+// landlord_profile_id, and the backend publishes it or sends it for
+// review right away, so their last step has one button, "Add home". The
+// landlord's plan limits come back as errors on that POST. Their photos
+// upload one at a time with progress (photo-uploads.tsx); failed ones can
+// be retried without losing anything.
 
 type StepConfig = { label: string; fields: readonly ListingFieldName[] };
 
@@ -88,7 +98,9 @@ const STEPS: StepConfig[] = [
   { label: "Others", fields: TOUR_FIELDS },
   { label: "Review", fields: [] },
 ];
-const REVIEW_STEP = STEPS.length - 1;
+const STAFF_STEPS: StepConfig[] = [{ label: "Landlord", fields: [] }, ...STEPS];
+
+type SaveIntent = "draft" | "submit" | "upgrade" | "save" | "add";
 
 type ListingFormStepperProps = {
   // Edit mode when set: prefills from GET /listings/<id>/ and saves with
@@ -109,8 +121,13 @@ export function ListingFormStepper({
 }: ListingFormStepperProps) {
   const isEdit = listingId !== undefined && listingId !== null;
   const record = useApiOne("listings", isEdit ? listingId : undefined);
-  // Only a new listing is gated by the plan (edit never submits).
-  const subscription = useMySubscription({ enabled: !isEdit });
+  const { data: me } = useMe();
+  const staffCreate = !isEdit && (me?.role === "staff" || me?.role === "admin");
+  // Only a landlord's new listing is gated by their own plan (edit never
+  // submits; staff hit the chosen landlord's limits on the POST instead).
+  const subscription = useMySubscription({
+    enabled: !isEdit && me !== undefined && !staffCreate,
+  });
 
   // The "Free total limit reached" check is decided ONCE, when the
   // subscription first arrives. Saving invalidates the subscription
@@ -120,7 +137,9 @@ export function ListingFormStepper({
   const [gate, setGate] = useState<"pending" | "open" | "blocked">(
     isEdit ? "open" : "pending",
   );
-  if (gate === "pending" && (subscription.isSuccess || subscription.isError)) {
+  if (gate === "pending" && staffCreate) {
+    setGate("open");
+  } else if (gate === "pending" && (subscription.isSuccess || subscription.isError)) {
     const s = subscription.data;
     const blocked = Boolean(
       s &&
@@ -162,6 +181,7 @@ export function ListingFormStepper({
       // Remount (fresh form) if the same drawer ever switches listing.
       key={isEdit ? String(listingId) : "new"}
       listingId={isEdit ? listingId : undefined}
+      forLandlord={staffCreate}
       initialValues={isEdit ? listingToFormValues(record.data) : EMPTY_LISTING_FORM}
       // Live, not a snapshot: PhotoManager's cover/reorder/delete refetch
       // the listing, and the gallery should follow.
@@ -188,6 +208,7 @@ type Outcome = {
 
 function StepperForm({
   listingId,
+  forLandlord,
   initialValues,
   existingPhotos,
   liveLimit,
@@ -195,6 +216,8 @@ function StepperForm({
   onCancel,
 }: {
   listingId?: string | number;
+  /** Staff/admin create: adds the Landlord step and the "Add home" save. */
+  forLandlord: boolean;
   initialValues: ListingFormValues;
   existingPhotos: ManagedPhoto[];
   liveLimit: { used: number; cap: number } | null;
@@ -206,7 +229,20 @@ function StepperForm({
   const userId = params.user;
   const isEdit = listingId !== undefined;
   const { data: me } = useMe();
-  const emailUnverified = me?.is_verified === false;
+  // Staff don't need a verified email to list (backend perform_create).
+  const emailUnverified = me?.is_verified === false && !forLandlord;
+
+  const steps = forLandlord ? STAFF_STEPS : STEPS;
+  // Index of Basics: 1 when the Landlord step comes first.
+  const first = forLandlord ? 1 : 0;
+  const reviewStep = steps.length - 1;
+  const [landlord, setLandlord] = useState<StaffLandlord | null>(null);
+  const [landlordMissing, setLandlordMissing] = useState(false);
+  // Staff's per-photo uploads, keyed by the picked File.
+  const [uploads, setUploads] = useState<Map<File, PhotoUpload>>(new Map());
+  // Created, but some photos failed: the last step offers Retry / Finish.
+  const [photosFailed, setPhotosFailed] = useState(false);
+  const createdStatusRef = useRef<string | undefined>(undefined);
 
   const form = useForm<ListingFormValues, unknown, ListingFormOutput>({
     resolver: zodResolver(listingFormSchema),
@@ -219,9 +255,9 @@ function StepperForm({
   const [step, setStep] = useState(0);
   // Furthest step reached — in create mode the step row only lets you
   // jump back to steps you've already been through.
-  const [maxReached, setMaxReached] = useState(isEdit ? REVIEW_STEP : 0);
+  const [maxReached, setMaxReached] = useState(isEdit ? reviewStep : 0);
   const [files, setFiles] = useState<File[]>([]);
-  const [busy, setBusy] = useState<null | "draft" | "submit" | "upgrade" | "save">(null);
+  const [busy, setBusy] = useState<null | SaveIntent>(null);
   const [saveError, setSaveError] = useState<ReactNode>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   // Once the POST has created the listing, never create it again (a
@@ -258,7 +294,11 @@ function StepperForm({
   }
 
   async function validateStep(index: number, focus: boolean) {
-    const fields = STEPS[index].fields;
+    if (forLandlord && index === 0) {
+      setLandlordMissing(landlord === null);
+      return landlord !== null;
+    }
+    const fields = steps[index].fields;
     if (fields.length === 0) return true;
     const valid = await form.trigger(fields as ListingFieldName[], { shouldFocus: focus });
     if (!valid) {
@@ -310,7 +350,9 @@ function StepperForm({
     router.push(
       isEdit
         ? `/dashboard/${userId}/listings/${savedId}`
-        : `/dashboard/${userId}/listings`,
+        : forLandlord
+          ? `/dashboard/${userId}/added`
+          : `/dashboard/${userId}/listings`,
     );
   }
 
@@ -318,16 +360,21 @@ function StepperForm({
 
   // Final-step buttons. handleSubmit validates EVERYTHING first; if a
   // step has a problem (e.g. edited back to empty), jump to it.
-  function save(intent: "draft" | "submit" | "upgrade" | "save") {
+  function save(intent: SaveIntent) {
+    if (forLandlord && landlord === null) {
+      setLandlordMissing(true);
+      goTo(0);
+      return;
+    }
     return form.handleSubmit(
-      (values) => runSave(intent, values),
+      (values) => (intent === "add" ? addForLandlord(values) : runSave(intent, values)),
       (errors: FieldErrors<ListingFormValues>) => {
-        const firstBad = STEPS.findIndex((s) => s.fields.some((f) => f in errors));
+        const firstBad = steps.findIndex((s) => s.fields.some((f) => f in errors));
         if (firstBad >= 0) {
           goTo(firstBad);
           // Wait for the step to show before focusing its first error.
           window.setTimeout(() => {
-            const field = STEPS[firstBad].fields.find((f) => f in errors);
+            const field = steps[firstBad].fields.find((f) => f in errors);
             if (field) form.setFocus(field);
           }, 0);
         }
@@ -335,8 +382,83 @@ function StepperForm({
     )();
   }
 
+  // Staff/admin "Add home" (and its retry): POST once with the chosen
+  // landlord, then each photo that isn't up yet.
+  async function addForLandlord(values: ListingFormOutput) {
+    setBusy("add");
+    setSaveError(null);
+    try {
+      let id = createdIdRef.current;
+      if (id === null) {
+        try {
+          const saved = (await createMutation.mutateAsync({
+            ...toPayload(values),
+            landlord_profile_id: landlord!.landlord_profile_id,
+          })) as { id: string | number; status?: string };
+          id = saved.id;
+          createdIdRef.current = id;
+          createdStatusRef.current = saved.status;
+        } catch (err) {
+          setSaveError(staffSaveErrorText(err));
+          return;
+        }
+      }
+
+      let failed = 0;
+      for (const file of files) {
+        if (uploads.get(file)?.state === "done") continue;
+        const set = (upload: PhotoUpload) =>
+          setUploads((prev) => new Map(prev).set(file, upload));
+        set({ state: "uploading", progress: 0 });
+        const result = await uploadPhoto(id, file, (progress) =>
+          set({ state: "uploading", progress }),
+        );
+        if (result.ok) {
+          set({ state: "done", progress: 1 });
+        } else {
+          failed++;
+          set({ state: "failed", progress: 0, error: result.message });
+        }
+      }
+      void invalidate(["listings"]);
+
+      if (failed > 0) {
+        setPhotosFailed(true);
+        setSaveError(
+          `The home is saved, but ${failed} photo${failed === 1 ? "" : "s"} didn't upload. Retry them, or finish and add them later from the listing.`,
+        );
+        return;
+      }
+      finishAdded(0);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function finishAdded(missingPhotos: number) {
+    const status = createdStatusRef.current;
+    toast.success(
+      status === "published" ? "Published" : status === "pending_review" ? "Sent for review" : "Home added",
+      {
+        description: [
+          status === "published"
+            ? "It's live on the Discovery Hub."
+            : status === "pending_review"
+              ? "A colleague who can approve listings will check it."
+              : "",
+          missingPhotos > 0
+            ? `Add the ${missingPhotos} missing photo${missingPhotos === 1 ? "" : "s"} from the listing.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      },
+    );
+    finish(createdIdRef.current!);
+  }
+
   async function runSave(
-    intent: "draft" | "submit" | "upgrade" | "save",
+    intent: Exclude<SaveIntent, "add">,
     values: ListingFormOutput,
   ) {
     setBusy(intent);
@@ -446,14 +568,20 @@ function StepperForm({
 
   const actions = (
     <StepperActions
-      step={step}
+      isFirst={step === 0}
+      isReview={step === reviewStep}
       isEdit={isEdit}
+      forLandlord={forLandlord}
+      photosFailed={photosFailed}
       busy={busy}
       liveLimitReached={liveLimitReached}
       onBack={() => goTo(step - 1)}
       onCancel={cancel}
       onNext={next}
       onSave={save}
+      onFinishWithoutPhotos={() =>
+        finishAdded(files.filter((f) => uploads.get(f)?.state !== "done").length)
+      }
     />
   );
 
@@ -470,9 +598,11 @@ function StepperForm({
         className="flex flex-col gap-8"
       >
         <StepIndicator
-          steps={STEPS}
+          steps={steps}
           current={step}
-          canVisit={(i) => i <= maxReached}
+          // Once the home exists (photos failed), only the last step is
+          // left: earlier edits wouldn't be saved.
+          canVisit={(i) => !photosFailed && i <= maxReached}
           onSelect={(i) => void jumpTo(i)}
         />
 
@@ -481,14 +611,26 @@ function StepperForm({
         <div className="flex flex-col gap-8">
           <SectionHeading>
             <span ref={headingRef} tabIndex={-1} className="outline-none">
-              {STEPS[step].label}
+              {steps[step].label}
             </span>
           </SectionHeading>
 
           {/* Every step stays mounted (hidden when not current) so typed
               values, picked-photo previews and the Google map all survive
               Back/Next. */}
-          <div hidden={step !== 0} className="flex flex-col gap-8">
+          {forLandlord && (
+            <div hidden={step !== 0}>
+              <LandlordStep
+                selected={landlord}
+                onSelect={(chosen) => {
+                  setLandlord(chosen);
+                  setLandlordMissing(false);
+                }}
+                missing={landlordMissing}
+              />
+            </div>
+          )}
+          <div hidden={step !== first} className="flex flex-col gap-8">
             <PhotosSection
               files={files}
               onFilesChange={setFiles}
@@ -498,17 +640,18 @@ function StepperForm({
             <BasicsSection />
             <AmenitiesSection />
           </div>
-          <div hidden={step !== 1}>
-            <LocationSection active={step === 1} />
+          <div hidden={step !== first + 1}>
+            <LocationSection active={step === first + 1} />
           </div>
-          <div hidden={step !== 2}>
+          <div hidden={step !== first + 2}>
             <PricingSection />
           </div>
-          <div hidden={step !== 3}>
+          <div hidden={step !== first + 3}>
             <TourSection />
           </div>
-          {step === REVIEW_STEP && (
+          {step === reviewStep && (
             <div className="flex flex-col gap-6">
+              {uploads.size > 0 && <PhotoUploadList files={files} uploads={uploads} />}
               {!isEdit && liveLimitReached && liveLimit && (
                 <Notice tone="warning">
                   You&apos;re using all {liveLimit.cap} live listings on your plan
@@ -522,7 +665,8 @@ function StepperForm({
                 existingPhotoUrls={existingPhotos
                   .map((p) => p.image)
                   .filter((u): u is string => Boolean(u))}
-                onEditStep={(i) => goTo(i)}
+                onEditStep={photosFailed ? undefined : (i) => goTo(first + i)}
+                landlord={landlord}
               />
             </div>
           )}
@@ -558,30 +702,62 @@ function DesktopActions({ children }: { children: ReactNode }) {
 }
 
 function StepperActions({
-  step,
+  isFirst,
+  isReview,
   isEdit,
+  forLandlord,
+  photosFailed,
   busy,
   liveLimitReached,
   onBack,
   onCancel,
   onNext,
   onSave,
+  onFinishWithoutPhotos,
 }: {
-  step: number;
+  isFirst: boolean;
+  isReview: boolean;
   isEdit: boolean;
-  busy: null | "draft" | "submit" | "upgrade" | "save";
+  forLandlord: boolean;
+  photosFailed: boolean;
+  busy: null | SaveIntent;
   liveLimitReached: boolean;
   onBack: () => void;
   onCancel: () => void;
   onNext: () => void;
-  onSave: (intent: "draft" | "submit" | "upgrade" | "save") => void;
+  onSave: (intent: SaveIntent) => void;
+  onFinishWithoutPhotos: () => void;
 }) {
   const saving = busy !== null;
-  const isReview = step === REVIEW_STEP;
+
+  // Staff: the home exists but some photos didn't upload.
+  if (photosFailed) {
+    return (
+      <>
+        <PaddyButton
+          variant="secondary"
+          size="xl"
+          onClick={onFinishWithoutPhotos}
+          disabled={saving}
+          className="max-md:flex-1"
+        >
+          Finish
+        </PaddyButton>
+        <PaddyButton
+          size="xl"
+          isLoading={busy === "add"}
+          onClick={() => onSave("add")}
+          className="max-md:flex-1"
+        >
+          Retry photos
+        </PaddyButton>
+      </>
+    );
+  }
 
   return (
     <>
-      {step === 0 ? (
+      {isFirst ? (
         <PaddyButton variant="secondary" size="xl" onClick={onCancel} disabled={saving}>
           Cancel
         </PaddyButton>
@@ -622,7 +798,18 @@ function StepperActions({
         </PaddyButton>
       )}
 
-      {isReview && !isEdit && (
+      {isReview && forLandlord && (
+        <PaddyButton
+          size="xl"
+          isLoading={busy === "add"}
+          onClick={() => onSave("add")}
+          className="max-md:flex-1"
+        >
+          Add home
+        </PaddyButton>
+      )}
+
+      {isReview && !isEdit && !forLandlord && (
         <>
           <PaddyButton
             variant="secondary"
@@ -853,6 +1040,18 @@ function saveErrorText(err: unknown, action: "create" | "update", userId?: strin
   return action === "create"
     ? `Couldn't save the listing: ${errorMessage(err, "please try again.")}`
     : `Couldn't save your changes: ${errorMessage(err, "please try again.")}`;
+}
+
+// Staff hit the LANDLORD's plan limits (backend _staff_publishing_fields
+// and the Free total), so the copy is about their plan, not "yours".
+function staffSaveErrorText(err: unknown): ReactNode {
+  if (err instanceof ApiError && err.code === "listing_limit_reached") {
+    return "This landlord is using every live listing on their plan, so the home wasn't saved. They can archive a listing or upgrade their plan, then try again.";
+  }
+  if (err instanceof ApiError && err.code === "listing_total_limit_reached") {
+    return "This landlord has reached the Free plan's 10 listings, so the home wasn't saved. They can archive a listing or upgrade their plan, then try again.";
+  }
+  return saveErrorText(err, "create");
 }
 
 function submitFailureText(result: Extract<SubmitForReviewResult, { ok: false }>): string {
