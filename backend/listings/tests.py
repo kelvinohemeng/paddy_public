@@ -135,7 +135,8 @@ class ListingCreateTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertNotIn('created_by', response.data)
-        self.assertIsNone(Listing.objects.get(title='Claims someone else made it').created_by)
+        self.assertEqual(Listing.objects.get(title='Claims someone else made it').created_by, self.landlord_user)
+        # The server records whoever is logged in, never the id in the body.
 
     def test_first_listing_is_free_for_landlord(self):
         self.client.force_authenticate(user=self.landlord_user)
