@@ -5,9 +5,12 @@ accounts, is tested in accounts/test_staff_landlords.py.
 """
 
 from datetime import timedelta
+from uuid import uuid4
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -249,3 +252,48 @@ class StaffManageListingTests(APITestCase):
         self.listing.refresh_from_db()
         self.assertEqual(self.listing.title, 'Managed home')
         self.assertTrue(ListingPhoto.objects.filter(id=self.photo.id).exists())
+
+
+class LandlordHasClaimedTests(APITestCase):
+    # "Homes I added" shows an "Invite pending" badge from this field.
+
+    def setUp(self):
+        self.claimed_landlord, claimed_profile = _landlord('claimed@example.com')
+        self.claimed_landlord.set_password(uuid4().hex)
+        self.claimed_landlord.save()
+        # A password set = the invite was used. Random, so no password
+        # string ever sits in the code.
+        _, pending_profile = _landlord('pending@example.com')
+        # _landlord makes users without a password, like staff onboarding.
+        self.claimed = _listing(claimed_profile, 'Claimed home')
+        self.pending = _listing(pending_profile, 'Pending home')
+
+    def _flags(self, user):
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/listings/')
+        return {row['id']: row['landlord_has_claimed'] for row in response.data}
+
+    def test_staff_and_admin_see_whether_the_landlord_claimed(self):
+        for role in (User.Role.STAFF, User.Role.ADMIN):
+            user = _user(f'{role}-claims@example.com', role)
+            self.assertEqual(self._flags(user), {self.claimed.id: True, self.pending.id: False}, role)
+
+    def test_everyone_else_gets_null(self):
+        renter = _user('renter-claims@example.com', User.Role.RENTER)
+        other_landlord, _ = _landlord('other-claims@example.com')
+
+        for user in (None, renter, other_landlord, self.claimed_landlord):
+            # None = signed out. The owner gets null too: the badge is a
+            # staff tool, and they know whether they set a password.
+            self.assertEqual(self._flags(user), {self.claimed.id: None, self.pending.id: None}, user)
+
+    def test_no_extra_query_per_listing(self):
+        self.client.force_authenticate(user=_user('query-staff@example.com', User.Role.STAFF))
+
+        with CaptureQueriesContext(connection) as queries:
+            self.client.get('/listings/')
+
+        standalone = [q['sql'] for q in queries if 'FROM "accounts_' in q['sql']]
+        self.assertEqual(standalone, [])
+        # The landlord profile and user arrive JOINed into the listings
+        # query (select_related), so no query starts FROM an accounts table.
