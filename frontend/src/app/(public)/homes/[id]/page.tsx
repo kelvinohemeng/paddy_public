@@ -16,6 +16,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 
+import { BackendWaking } from "@/components/backend-waking";
 import { fetchListingForViewer } from "@/lib/listing-server";
 import { DiscoveryHeader } from "../../_components/discovery-header";
 import { DISCOVERY_PATH } from "../../_components/discovery-path";
@@ -30,7 +31,8 @@ export default async function PropertyDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id: slug } = await params;
-  const { listing, isAuthenticated } = await fetchListingForViewer(slug);
+  const { listing, waking, isAuthenticated } =
+    await fetchListingForViewer(slug);
 
   return (
     <div className="min-h-(--page-h) bg-white">
@@ -52,6 +54,8 @@ export default async function PropertyDetailPage({
 
       {listing ? (
         <ListingDetail listing={listing} isAuthenticated={isAuthenticated} />
+      ) : waking ? (
+        <BackendWaking />
       ) : (
         <p className="text-muted-foreground p-6 text-center">
           Listing not found — it may have been unpublished or removed.

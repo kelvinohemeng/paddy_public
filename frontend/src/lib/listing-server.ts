@@ -26,13 +26,14 @@ export async function fetchListingForViewer(slugOrId: string) {
   const slugUrl = `${base}/listings/by-slug/${encodeURIComponent(slugOrId)}/`;
   const idUrl = `${base}/listings/${encodeURIComponent(slugOrId)}/`;
 
+  // No connection at all counts the same as Render's 429/5xx (`waking`).
   const get = (url: string, authed: boolean) =>
     fetch(
       url,
       authed
         ? { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" }
         : { cache: "force-cache", next: { revalidate: 60 } },
-    );
+    ).catch(() => new Response(null, { status: 503 }));
 
   let res = token ? await get(slugUrl, true) : await get(slugUrl, false);
 
@@ -56,6 +57,9 @@ export async function fetchListingForViewer(slugOrId: string) {
 
   return {
     listing: res.ok ? await res.json() : null,
+    // The backend didn't answer (asleep on Render's free plan): callers
+    // show BackendWaking instead of "Listing not found".
+    waking: res.status === 429 || res.status >= 500,
     // Cookie presence only — enough to pick which CTA state renders,
     // same check (admin)/layout.tsx uses. Real role checks happen on
     // the backend for every action.
