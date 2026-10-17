@@ -6,6 +6,7 @@ import { DiscoverySplitView } from "./../_components/discovery-split-view";
 import { DiscoveryFallbackNotice } from "./../_components/discovery-fallback-notice";
 import type { PublicListing } from "@/lib/listing-card-data";
 import { DISCOVERY_PATH } from "./../_components/discovery-path";
+import { BackendWaking } from "@/components/backend-waking";
 
 // Discovery Hub at /homes — the Figma "Default State" build: branded
 // header row (logo + List-your-property CTA + menu), centered Rent/Buy
@@ -45,21 +46,24 @@ async function fetchListings(searchParams: Awaited<SearchParams>) {
   if (searchParams.max_price)
     filteredParams.set("max_price", searchParams.max_price);
 
-  async function get(params: URLSearchParams): Promise<PublicListing[]> {
+  // null = the backend didn't answer (asleep on Render's free plan), so
+  // the page shows BackendWaking instead of an empty "no homes" grid.
+  async function get(params: URLSearchParams): Promise<PublicListing[] | null> {
     const res = await fetch(
       `${process.env.NEXT_PUBLIC_API_URL}/listings/?${params.toString()}`,
       {
         next: { revalidate: 60 },
       },
-    );
+    ).catch(() => null);
 
+    if (!res || res.status === 429 || res.status >= 500) return null;
     if (!res.ok) return [];
     const data = await res.json();
     return (Array.isArray(data) ? data : (data.results ?? [])) as PublicListing[];
   }
 
   const filtered = await get(withAmenities(filteredParams));
-  if (filtered.length > 0 || !searchParams.city) {
+  if (filtered === null || filtered.length > 0 || !searchParams.city) {
     return { listings: filtered, cityFallback: false };
   }
 
@@ -105,17 +109,23 @@ export default async function HomesHubPage({
       {/* No key-remount on toggle flips: the split view re-seeds its
           own client state via an effect on listingType, so the map
           (and its InfoWindow React root) stays mounted. */}
-      <DiscoverySplitView
-        listings={listings}
-        listingType={listingType}
-        focusLocation={params.city ?? null}
-        city={params.city}
-        notice={
-          cityFallback && params.city ? (
-            <DiscoveryFallbackNotice city={params.city} />
-          ) : undefined
-        }
-      />
+      {listings === null ? (
+        <div className="flex flex-1 items-center justify-center">
+          <BackendWaking />
+        </div>
+      ) : (
+        <DiscoverySplitView
+          listings={listings}
+          listingType={listingType}
+          focusLocation={params.city ?? null}
+          city={params.city}
+          notice={
+            cityFallback && params.city ? (
+              <DiscoveryFallbackNotice city={params.city} />
+            ) : undefined
+          }
+        />
+      )}
     </div>
   );
 }

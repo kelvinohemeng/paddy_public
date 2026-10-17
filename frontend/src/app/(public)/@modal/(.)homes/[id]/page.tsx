@@ -1,3 +1,4 @@
+import { BackendWaking } from "@/components/backend-waking";
 import { fetchListingForViewer } from "@/lib/listing-server";
 import { ListingDetail } from "../../../homes/[id]/_components/listing-detail";
 import { ListingDetailDrawer } from "../../../homes/[id]/_components/listing-detail-drawer";
@@ -16,12 +17,15 @@ export default async function InterceptedListingPreview({
   params: Promise<{ id: string }>;
 }) {
   const { id: slug } = await params;
-  const { listing, isAuthenticated } = await fetchListingForViewer(slug);
+  const { listing, waking, isAuthenticated } =
+    await fetchListingForViewer(slug);
 
   return (
     <ListingDetailDrawer listingSlug={slug}>
       {listing ? (
         <ListingDetail listing={listing} isAuthenticated={isAuthenticated} />
+      ) : waking ? (
+        <BackendWaking />
       ) : (
         <p className="text-muted-foreground p-8 text-center text-sm">
           Listing not found — it may have been unpublished or removed.
